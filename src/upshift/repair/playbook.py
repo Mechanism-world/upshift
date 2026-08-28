@@ -38,9 +38,30 @@ def _read(agent_dir: Path, rel: str) -> str:
     return (agent_dir / rel).read_text()
 
 
-def _agent_json_edit(agent_dir: Path, mutate) -> FileEdit:
-    raw = json.loads(_read(agent_dir, "agent.json"))
-    mutate(raw)
+def _json_key_edit(text: str, key: str, old_value, new_value) -> str | None:
+    """Replace `"key": <old>` with `"key": <new>` textually so the emitted git diff touches
+    only the changed line, never reformatting the rest of the file. Returns None when the
+    fragment is not found exactly once (caller falls back to a full re-serialize)."""
+    fragment = f"{json.dumps(key)}: {json.dumps(old_value)}"
+    if text.count(fragment) == 1:
+        return text.replace(fragment, f"{json.dumps(key)}: {json.dumps(new_value)}")
+    return None
+
+
+def _agent_json_edit(agent_dir: Path, key_path: list[str], new_value) -> FileEdit:
+    text = _read(agent_dir, "agent.json")
+    raw = json.loads(text)
+    node = raw
+    for key in key_path[:-1]:
+        node = node.setdefault(key, {})
+    minimal = (
+        _json_key_edit(text, key_path[-1], node[key_path[-1]], new_value)
+        if key_path[-1] in node
+        else None
+    )
+    if minimal is not None:
+        return FileEdit(file="agent.json", new_content=minimal)
+    node[key_path[-1]] = new_value
     return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
 
 
@@ -51,13 +72,23 @@ def _prompt_append(agent_dir: Path, raw_config: dict, block: str) -> FileEdit:
 
 def _book_tool_edit(agent_dir: Path, raw_config: dict) -> FileEdit | None:
     rel = raw_config["tools_file"]
-    tools = json.loads(_read(agent_dir, rel))
+    text = _read(agent_dir, rel)
+    tools = json.loads(text)
     for tool in tools:
         fn = tool.get("function", {})
         if fn.get("name") == "book_flight":
-            if "exactly once" in fn.get("description", "").lower():
+            old_desc = fn.get("description", "")
+            if "exactly once" in old_desc.lower():
                 return None
-            fn["description"] = fn.get("description", "").rstrip() + BOOK_TOOL_SUFFIX
+            new_desc = old_desc.rstrip() + BOOK_TOOL_SUFFIX
+            minimal = (
+                text.replace(json.dumps(old_desc), json.dumps(new_desc))
+                if old_desc and text.count(json.dumps(old_desc)) == 1
+                else None
+            )
+            if minimal is not None:
+                return FileEdit(file=rel, new_content=minimal)
+            fn["description"] = new_desc
             return FileEdit(file=rel, new_content=json.dumps(tools, indent=2) + "\n")
     return None
 
@@ -85,7 +116,7 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     "Route API calls from /v1/chat/completions to /v1/responses "
                     "(function tools + reasoning_effort are rejected on chat/completions "
                     "for this model family).",
-                    [_agent_json_edit(agent_dir, lambda c: c.update(endpoint="responses"))],
+                    [_agent_json_edit(agent_dir, ["endpoint"], "responses")],
                 )
             if raw_config.get("params", {}).get("reasoning_effort") != "none":
                 add(
@@ -94,12 +125,7 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     sig,
                     "Set reasoning_effort='none' to keep function tools working on "
                     "/v1/chat/completions (documented alternative to endpoint routing).",
-                    [
-                        _agent_json_edit(
-                            agent_dir,
-                            lambda c: c["params"].__setitem__("reasoning_effort", "none"),
-                        )
-                    ],
+                    [_agent_json_edit(agent_dir, ["params", "reasoning_effort"], "none")],
                 )
         elif sig == "duplicate_tool_calls":
             if "at most once" not in prompt and "exactly once" not in prompt:
@@ -153,12 +179,7 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     sig,
                     "Raise reasoning_effort to 'high' (fallback for unclassified "
                     "behavioral failures).",
-                    [
-                        _agent_json_edit(
-                            agent_dir,
-                            lambda c: c["params"].__setitem__("reasoning_effort", "high"),
-                        )
-                    ],
+                    [_agent_json_edit(agent_dir, ["params", "reasoning_effort"], "high")],
                 )
 
     # De-duplicate by patch id AND by resulting content (two signatures can propose the
