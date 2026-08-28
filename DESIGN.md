@@ -155,6 +155,27 @@ Honesty: sim results validate the MACHINERY, not the thesis. Every manifest and 
 carries the provider name; the decisive number may only come from provider=openai. The sim's
 response to repairs is assumed by construction and proves nothing about real models.
 
+## Batch execution (added 2026-08-27)
+
+The Batch API cannot run an interactive tool loop as one request, but a fleet of episodes
+advances in lockstep: every live episode parks its next request, one batch job executes the
+wave at 50% token cost, tools run locally, repeat (`providers/openai_batch.py`,
+provider name `openai-batch`). Both `/v1/chat/completions` and `/v1/responses` are
+batch-supported. Baseline, candidate, and repair screen/verify runs all go through
+`run_suite`, so `--batch` covers all of them. Batching changes transport and price, never
+request bodies or acceptance criteria; reports treat `openai` and `openai-batch` as equally
+real evidence. Exact cost accounting: `upshift cost` sums recorded usage and prices it at
+verified rates (`pricing.py`; 5.5: $5/$30, 5.6-sol: $4/$20 per 1M, batch = half).
+
+## Pilot protocol (before the full experiment)
+
+Spend gate: prove a real regression exists for < $10 before funding the full run.
+Pilot = 8 cases x 5 reps on both models via batch (~80 episodes): 3 duplicate_call-checkable
+booking cases, 2 over_acting-checkable, 1 skip_tool-checkable, 1 exact-args search, 1 edge.
+After the pilot: report exact token cost + observed regressions, then stop for a go/no-go.
+The pilot never changes the final experiment's statistics (N=5, thresholds 0.8/0.4, Fisher
+reporting, full-suite verification) — it only de-risks spend.
+
 ## Dependencies
 
 Runtime: `openai`, `rich`. Dev: `pytest`, `ruff`. Python ≥3.12. Nothing else without a
