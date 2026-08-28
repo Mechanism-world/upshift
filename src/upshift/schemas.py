@@ -34,7 +34,7 @@ class AgentConfig:
     agent_dir: str  # absolute path of the directory the config was loaded from
 
     @staticmethod
-    def load(agent_dir: str | Path) -> "AgentConfig":
+    def load(agent_dir: str | Path) -> AgentConfig:
         agent_dir = Path(agent_dir)
         raw = json.loads((agent_dir / "agent.json").read_text())
         if raw["endpoint"] not in ENDPOINTS:
@@ -75,7 +75,7 @@ class Case:
     sim: dict[str, Any] = field(default_factory=dict)  # sim-provider oracle only; never checked
 
     @staticmethod
-    def load_all(path: str | Path) -> list["Case"]:
+    def load_all(path: str | Path) -> list[Case]:
         raw = json.loads(Path(path).read_text())
         cases = [Case(**c) for c in raw]
         ids = [c.id for c in cases]
@@ -141,7 +141,7 @@ class RepRecord:
         return json.dumps(asdict(self), indent=1, sort_keys=True)
 
     @staticmethod
-    def from_dict(d: dict[str, Any]) -> "RepRecord":
+    def from_dict(d: dict[str, Any]) -> RepRecord:
         d = dict(d)
         d["api_calls"] = [APICall(**a) for a in d["api_calls"]]
         d["tool_executions"] = [ToolExecution(**t) for t in d["tool_executions"]]

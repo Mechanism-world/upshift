@@ -114,8 +114,10 @@ def repair(
     accepted: list[Patch] = []
     tried = 0
     log: list[str] = [
-        f"repair start: {len(regressed)} regressed case(s), {len(protected)} protected "
-        f"passing case(s), budget {budget} candidates"
+        (
+            f"repair start: {len(regressed)} regressed case(s), {len(protected)} protected "
+            f"passing case(s), budget {budget} candidates"
+        )
     ]
     tried_ids: set[str] = set()
     final_verify_run_id: str | None = None

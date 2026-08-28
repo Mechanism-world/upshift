@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +45,7 @@ def write_manifest(
 ) -> dict[str, Any]:
     manifest = {
         "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "provider": provider,
         "agent": {
             "name": config.name,

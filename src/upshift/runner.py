@@ -9,9 +9,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from upshift import recorder
 from upshift.agent_loop import run_episode
