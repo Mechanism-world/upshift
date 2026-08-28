@@ -170,7 +170,9 @@ verified rates (`pricing.py`; 5.5: $5/$30, 5.6-sol: $4/$20 per 1M, batch = half)
 ## Pilot protocol (before the full experiment)
 
 Spend gate: prove a real regression exists for < $10 before funding the full run.
-Pilot = 8 cases x 5 reps on both models via batch (~80 episodes): 3 duplicate_call-checkable
+Preferred transport: flex (--flex) — batch-level 50% off, synchronous, and prompt caching
+stacks on top; fall back to --batch if flex rejects a model, plain sync as last resort.
+Pilot = 8 cases x 5 reps on both models (~80 episodes): 3 duplicate_call-checkable
 booking cases, 2 over_acting-checkable, 1 skip_tool-checkable, 1 exact-args search, 1 edge.
 After the pilot: report exact token cost + observed regressions, then stop for a go/no-go.
 The pilot never changes the final experiment's statistics (N=5, thresholds 0.8/0.4, Fisher
