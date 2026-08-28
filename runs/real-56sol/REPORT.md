@@ -9,7 +9,7 @@
 
 ## Verdict: STAY PINNED
 
-reason: 10 of 36 regressed cases still fail after the repair budget
+reason: 4 of 36 regressed cases still fail after the repair budget
 
 still regressed: edge_ambiguous_missing_date, edge_book_unknown_flight, edge_cancel_already_cancelled, edge_cancel_nonexistent, edge_impatient_duplicate_phrasing, edge_no_availability, edge_out_of_scope_hotel, edge_sold_out_flight, exact_book_cheapest_from_search, exact_cancel_by_reference, exact_cancel_then_rebook, exact_city_names_to_iata
 
@@ -18,18 +18,25 @@ repair log:
 - repair start: 36 regressed case(s), 0 protected passing case(s), budget 6 candidates
 - candidate 1/6: [endpoint_routing] route-to-responses — Route API calls from /v1/chat/completions to /v1/responses (function tools + reasoning_effort are rejected on chat/completions for this model family).
 -   screen: 27/36 broken cases restored — running full verification
--   ACCEPTED: restored ['edge_ambiguous_missing_date', 'edge_cancel_already_cancelled', 'edge_cancel_nonexistent', 'edge_no_availability', 'edge_out_of_scope_hotel', 'exact_book_cheapest_from_search', 'exact_cancel_by_reference', 'exact_iata_direct_then_book', 'exact_max_price_filter', 'exact_multiturn_departure_time', 'exact_nonstop_and_budget_then_book', 'exact_nonstop_flag', 'exact_price_cap_then_book', 'exact_reverse_direction', 'exact_second_cheapest', 'happy_book_earliest_departure', 'happy_book_only_nonstop', 'happy_cancel_existing_booking', 'happy_cancel_one_of_two', 'happy_cancel_then_confirm', 'happy_multiturn_book_by_time', 'happy_report_cheapest_price', 'happy_search_and_book_cheapest', 'happy_search_basic', 'happy_search_multiple_options', 'happy_search_then_decline']; 0 previously-passing cases broken; 10 regressed case(s) remain
+-   ACCEPTED: restored ['edge_ambiguous_missing_date', 'edge_cancel_already_cancelled', 'edge_cancel_nonexistent', 'edge_no_availability', 'edge_out_of_scope_hotel', 'exact_book_cheapest_from_search', 'exact_cancel_by_reference', 'exact_iata_direct_then_book', 'exact_max_price_filter', 'exact_multiturn_departure_time', 'exact_nonstop_and_budget_then_book', 'exact_nonstop_flag', 'exact_price_cap_then_book', 'exact_reverse_direction', 'exact_second_cheapest', 'happy_book_earliest_departure', 'happy_book_only_nonstop', 'happy_cancel_existing_booking', 'happy_cancel_one_of_two', 'happy_cancel_then_confirm', 'happy_multiturn_book_by_time', 'happy_report_cheapest_price', 'happy_search_and_book_cheapest', 'happy_search_basic', 'happy_search_then_decline', 'happy_two_leg_searches']; 0 previously-passing cases broken; 10 regressed case(s) remain
 - candidate 2/6: [prompt_edit] prompt-execute-dont-ask — Append an execute-don't-interrogate block: when a request already contains everything a tool needs, call it instead of asking for details the tool does not require (observed on real gpt-5.6-sol).
 -   screen: 5/10 broken cases restored — running full verification
--   REJECTED: relapsed earlier-restored case(s) ['happy_search_multiple_options']
-- candidate 3/6: [model_params] reasoning-effort-high — Raise reasoning_effort to 'high' (fallback for unclassified behavioral failures).
--   screen: 2/10 broken cases restored — running full verification
--   REJECTED: relapsed earlier-restored case(s) ['happy_search_multiple_options']
-- candidate 4/6: [prompt_edit] prompt-verbatim-identifiers — Append a verbatim-identifiers block: report flight/booking ids exactly as tools returned them (observed on real gpt-5.6-sol).
--   screen: 2/10 broken cases restored — running full verification
--   REJECTED: relapsed earlier-restored case(s) ['happy_book_only_nonstop']
+-   ACCEPTED: restored ['edge_sold_out_flight', 'exact_cancel_then_rebook', 'exact_passenger_name_hyphenated', 'happy_book_by_flight_id', 'happy_book_then_cancel']; 0 previously-passing cases broken; 5 regressed case(s) remain
+- candidate 3/6: [prompt_edit] prompt-ground-in-results — Append a results-grounding block: never claim nothing is available when search returned flights (observed on real gpt-5.6-sol).
+-   screen: 3/5 broken cases restored — running full verification
+-   adjudication edge_sold_out_flight: verify 3/5 + extra 5/5 = 8/10 — cleared
+-   adjudication exact_nonstop_flag: verify 3/5 + extra 2/5 = 5/10 — CONFIRMED
+-   REJECTED: relapsed earlier-restored case(s) ['exact_nonstop_flag']
+- candidate 4/6: [model_params] reasoning-effort-high — Raise reasoning_effort to 'high' (fallback for unclassified behavioral failures).
+-   screen: 3/5 broken cases restored — running full verification
+-   ACCEPTED: restored ['happy_search_multiple_options']; 0 previously-passing cases broken; 4 regressed case(s) remain
+- candidate 5/6: [prompt_edit] prompt-verbatim-identifiers — Append a verbatim-identifiers block: report flight/booking ids exactly as tools returned them (observed on real gpt-5.6-sol).
+-   screen: 3/4 broken cases restored — running full verification
+-   adjudication exact_nonstop_flag: verify 3/5 + extra 5/5 = 8/10 — cleared
+-   adjudication happy_book_then_cancel: verify 3/5 + extra 4/5 = 7/10 — CONFIRMED
+-   REJECTED: relapsed earlier-restored case(s) ['happy_book_then_cancel']
 - all current candidates rejected; giving up
-- repair end: 26/36 regressed cases restored; unrestored: ['edge_book_unknown_flight', 'edge_impatient_duplicate_phrasing', 'edge_sold_out_flight', 'exact_cancel_then_rebook', 'exact_city_names_to_iata', 'exact_date_written_out', 'exact_passenger_name_hyphenated', 'happy_book_by_flight_id', 'happy_book_then_cancel', 'happy_two_leg_searches']
+- repair end: 32/36 regressed cases restored; unrestored: ['edge_book_unknown_flight', 'edge_impatient_duplicate_phrasing', 'exact_city_names_to_iata', 'exact_date_written_out']
 
 ## Summary
 
