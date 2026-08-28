@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -163,7 +164,23 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _load_dotenv(path: str | Path = ".env") -> None:
+    """Minimal .env loader: KEY=VALUE lines, existing environment wins, never logged."""
+    path = Path(path)
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
     parser = argparse.ArgumentParser(prog="upshift", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
