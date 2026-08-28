@@ -104,7 +104,8 @@ class APICall:
 
 @dataclass
 class ToolExecution:
-    turn: int
+    turn: int  # assistant-call index across the whole episode, 0-based
+    segment: int  # user-message segment index, 0-based (checks can scope to final segment)
     name: str
     arguments: dict[str, Any]
     result: dict[str, Any]

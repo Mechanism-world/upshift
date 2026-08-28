@@ -1,0 +1,173 @@
+"""Repair candidate generation. Rule-based playbook keyed on failure signatures.
+
+Repairs are limited to the four allowed types (SCOPE.md): prompt edits, model params,
+tool schema edits, endpoint routing. Candidates are whole-file replacements of the victim's
+three patchable files, ordered by how directly they target the observed signature.
+
+The marker phrases inside the text blocks below are contracts with providers/sim.py
+(corruption suppression) — change them only together.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from upshift.schemas import FileEdit, Patch
+
+DISCIPLINE_BLOCK = (
+    "\n\nExecution discipline: call each tool at most once per user request unless the "
+    "previous call failed. Never repeat a tool call that already succeeded."
+)
+STOP_BLOCK = (
+    "\n\nStop once the task is complete. After the user's goal has been achieved, do not "
+    "make any further tool calls; reply to the user instead."
+)
+NO_FABRICATION_BLOCK = (
+    "\n\nNever state a confirmation number or booking detail that was not returned by a "
+    "tool call in this conversation. If the booking tool has not been called yet, call it "
+    "before confirming anything to the user."
+)
+BOOK_TOOL_SUFFIX = (
+    " This tool must be called to create any real booking. Call it exactly once per "
+    "confirmed itinerary; never confirm a booking without calling it."
+)
+
+
+def _read(agent_dir: Path, rel: str) -> str:
+    return (agent_dir / rel).read_text()
+
+
+def _agent_json_edit(agent_dir: Path, mutate) -> FileEdit:
+    raw = json.loads(_read(agent_dir, "agent.json"))
+    mutate(raw)
+    return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
+
+
+def _prompt_append(agent_dir: Path, raw_config: dict, block: str) -> FileEdit:
+    rel = raw_config["system_prompt_file"]
+    return FileEdit(file=rel, new_content=_read(agent_dir, rel).rstrip("\n") + block + "\n")
+
+
+def _book_tool_edit(agent_dir: Path, raw_config: dict) -> FileEdit | None:
+    rel = raw_config["tools_file"]
+    tools = json.loads(_read(agent_dir, rel))
+    for tool in tools:
+        fn = tool.get("function", {})
+        if fn.get("name") == "book_flight":
+            if "exactly once" in fn.get("description", "").lower():
+                return None
+            fn["description"] = fn.get("description", "").rstrip() + BOOK_TOOL_SUFFIX
+            return FileEdit(file=rel, new_content=json.dumps(tools, indent=2) + "\n")
+    return None
+
+
+def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Patch]:
+    """Ordered repair candidates for the observed failure signatures, computed against the
+    CURRENT contents of agent_dir (so candidates stack across repair iterations)."""
+    agent_dir = Path(agent_dir)
+    raw_config = json.loads(_read(agent_dir, "agent.json"))
+    prompt = _read(agent_dir, raw_config["system_prompt_file"]).lower()
+    candidates: list[Patch] = []
+
+    def add(patch_id, repair_type, signature, description, edits):
+        edits = [e for e in edits if e is not None]
+        if edits:
+            candidates.append(Patch(patch_id, repair_type, signature, description, edits))
+
+    for sig in signatures:
+        if sig == "api_error_tools_reasoning":
+            if raw_config["endpoint"] != "responses":
+                add(
+                    "route-to-responses",
+                    "endpoint_routing",
+                    sig,
+                    "Route API calls from /v1/chat/completions to /v1/responses "
+                    "(function tools + reasoning_effort are rejected on chat/completions "
+                    "for this model family).",
+                    [_agent_json_edit(agent_dir, lambda c: c.update(endpoint="responses"))],
+                )
+            if raw_config.get("params", {}).get("reasoning_effort") != "none":
+                add(
+                    "reasoning-effort-none",
+                    "model_params",
+                    sig,
+                    "Set reasoning_effort='none' to keep function tools working on "
+                    "/v1/chat/completions (documented alternative to endpoint routing).",
+                    [
+                        _agent_json_edit(
+                            agent_dir,
+                            lambda c: c["params"].__setitem__("reasoning_effort", "none"),
+                        )
+                    ],
+                )
+        elif sig == "duplicate_tool_calls":
+            if "at most once" not in prompt and "exactly once" not in prompt:
+                add(
+                    "prompt-execution-discipline",
+                    "prompt_edit",
+                    sig,
+                    "Append an execution-discipline block: each tool at most once per "
+                    "request, never repeat a successful call.",
+                    [_prompt_append(agent_dir, raw_config, DISCIPLINE_BLOCK)],
+                )
+            add(
+                "tool-schema-book-once",
+                "tool_schema_edit",
+                sig,
+                "Strengthen book_flight description: exactly once per confirmed itinerary.",
+                [_book_tool_edit(agent_dir, raw_config)],
+            )
+        elif sig == "acting_past_goal":
+            if "stop once the task is complete" not in prompt:
+                add(
+                    "prompt-stop-after-goal",
+                    "prompt_edit",
+                    sig,
+                    "Append a stop-after-goal block: no further tool calls once the goal "
+                    "is achieved.",
+                    [_prompt_append(agent_dir, raw_config, STOP_BLOCK)],
+                )
+        elif sig == "skipped_tool_hallucination":
+            if "never state a confirmation number" not in prompt:
+                add(
+                    "prompt-no-fabrication",
+                    "prompt_edit",
+                    sig,
+                    "Append a no-fabrication block: never state a confirmation number a "
+                    "tool did not return; call the tool instead.",
+                    [_prompt_append(agent_dir, raw_config, NO_FABRICATION_BLOCK)],
+                )
+            add(
+                "tool-schema-book-required",
+                "tool_schema_edit",
+                sig,
+                "Strengthen book_flight description: must be called to create any booking.",
+                [_book_tool_edit(agent_dir, raw_config)],
+            )
+        elif sig in ("wrong_or_missing_tool_call", "other_behavioral"):
+            if raw_config.get("params", {}).get("reasoning_effort") not in ("high",):
+                add(
+                    "reasoning-effort-high",
+                    "model_params",
+                    sig,
+                    "Raise reasoning_effort to 'high' (fallback for unclassified "
+                    "behavioral failures).",
+                    [
+                        _agent_json_edit(
+                            agent_dir,
+                            lambda c: c["params"].__setitem__("reasoning_effort", "high"),
+                        )
+                    ],
+                )
+
+    # De-duplicate by patch id AND by resulting content (two signatures can propose the
+    # same edit; trying identical content twice would waste repair budget).
+    seen: set[str] = set()
+    unique = []
+    for patch in candidates:
+        content_key = "|".join(f"{e.file}:{hash(e.new_content)}" for e in patch.edits)
+        if patch.id not in seen and content_key not in seen:
+            seen.update((patch.id, content_key))
+            unique.append(patch)
+    return unique

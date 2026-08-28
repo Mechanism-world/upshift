@@ -30,13 +30,22 @@ class Provider(ABC):
     name: str
 
     @abstractmethod
-    def call(self, endpoint: str, request: dict[str, Any], seed_key: str) -> dict[str, Any]:
+    def call(
+        self,
+        endpoint: str,
+        request: dict[str, Any],
+        seed_key: str,
+        sim_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Execute one API call.
 
         endpoint: "chat_completions" or "responses".
         request: verbatim request body (model, messages/input, tools, params).
-        seed_key: stable string like "<case_id>:<rep>:<call_idx>"; the sim uses it for
+        seed_key: stable string "<case_id>:<rep>:<call_idx>"; the sim uses it for
             deterministic behavior, the OpenAI provider ignores it.
+        sim_context: {"case_id": str, "rep": int, "sim": <case.sim block>} — consumed only
+            by the sim provider (oracle plan + vulnerability flags); the OpenAI provider
+            ignores it entirely.
         Returns the response as a dict. Raises ProviderAPIError on API errors.
         """
 
