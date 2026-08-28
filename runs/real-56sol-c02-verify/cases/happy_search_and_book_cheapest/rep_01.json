@@ -1,0 +1,1468 @@
+{
+ "api_calls": [
+  {
+   "endpoint": "responses",
+   "error": null,
+   "request": {
+    "input": [
+     {
+      "content": "You are the Skyway Travel booking assistant. You help travelers find flights, reserve them, and\ncancel reservations they already hold, working through the Skyway reservation system.\n\nROLE AND TONE\nWrite like a competent human at a travel desk: short sentences, concrete details, no filler, no\nemoji. Give fares in whole US dollars and departure times in 24-hour local time. Never invent\nflights, fares, seat counts, or reservation details - everything you tell a traveler comes from\na tool result.\n\nUSING THE TOOLS\n- search_flights: reach for this whenever the traveler asks what is available, or when you need\n  a flight_id before you can reserve anything. Airports are IATA codes, so convert city names\n  yourself (Chicago O'Hare becomes ORD, Boston becomes BOS) and send dates as YYYY-MM-DD. Pass\n  max_price when the traveler names a budget, and nonstop_only when they want a direct flight.\n- book_flight: reach for this once the traveler has settled on a specific flight and given a\n  name to travel under. Pass the flight_id exactly as search_flights returned it.\n- cancel_booking: reach for this when the traveler asks to cancel and you have the booking\n  reference, either from them or from a reservation you made earlier.\n\nAFTER A RESERVATION\nReport the confirmation number from the tool response, with the flight, date, departure time,\nand passenger name, so the traveler can find the reservation later.\n\nWHEN THE REQUEST IS INCOMPLETE\nIf something you need is missing - origin, destination, date, passenger name, or which of\nseveral flights the traveler wants - ask one short question and wait. Guessing an airport or a\ndate is worse than asking.\n\nWHEN A TOOL RETURNS AN ERROR\nSay plainly what went wrong (sold-out flight, unknown flight, reservation already cancelled,\nnothing matching the filters) and offer the closest real alternative in the data. Do not paper\nover a failure, and do not repeat a call that failed for a reason that will not change.\n\nOUT OF SCOPE\nSkyway handles flights. For hotels, rental cars, seat upgrades, or refunds, say that is outside\nwhat you can do and point the traveler at support@skyway.example.\n\nWhen the traveler's request already contains everything a tool needs, call the tool immediately instead of asking for more information. book_flight requires only the flight id and passenger name; never ask for details a tool does not require.\n",
+      "role": "system"
+     },
+     {
+      "content": "Find me flights from SEA to DEN on 2026-04-12 and book the cheapest one for Maria Lopez.",
+      "role": "user"
+     }
+    ],
+    "model": "gpt-5.6-sol",
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "service_tier": "flex",
+    "store": false,
+    "tools": [
+     {
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "response": {
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1787901436.0,
+    "conversation": null,
+    "created_at": 1787901434.0,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "resp_03c60a96dae8b9a0016a9135fae87c87d099206ec865422fa7",
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "metadata": {},
+    "model": "gpt-5.6-sol",
+    "moderation": null,
+    "object": "response",
+    "output": [
+     {
+      "content": [],
+      "encrypted_content": "gAAAAABqkTX8AAnfgpPiZqZGALUX8MTuOGKP7R8bk6ytDkLCcnUUX5Li5EODIf92V5lXANWWvo4NiRm62BCoRBI6DHciksNTwrJS-qsvCiG5utf-a0LG62ILKXDrJz_7BgUc19ry63RADRyWi_KPqTiLK4Nda2UfxLMeb0rXrEv0yDTcgtHmApShZgVWseO-ZvGB_P699Y2XUxokmA1LanW0__cpwQ80lbbBDqqa2LLNnq5rnB3sE3hwkLJFJ58xOOyxKy9mvtoj96299_3C8HeX0fPsGt05GIHaUNXeKyQsh6I3uFx3sJv3n43rGZdRDqyFf7K9el7mPIBiXnB9--JjT0xFgQEP4g7UF-BuA6_b0vnXWmTEcT-x7sYGc0B407G7setIl4D2259DNsbb8SOK8HnF7ulLL0rfpdAhQWEVj9LEt-hEChiqNCnlEKRwMMEnuP6FCqGQCgPYRBdGf8B_VNL_LolZp1r9lZ-urLq_lIQFadPMp25nHvB4tAhQ1zyL2KSRXhDj799uIkINbaL0jl5DISSbfHZXvH_JUHYNs8GrQaffhfxipyYbVRElycL30uU1P9M48WiQGadWFl-za87XDPoiq2IY7NY_bvGMvbi56UoFkW_qQ9HAQJWLITZJCH7o7Y7Accft1VWethDJ1-oYYfbNhZ9hLBin0NfTUbWChbiK5IcOdVNVMLPj7CTwzn2oKypKDpJFnYrUZLW6Ljb0vYM44L2s6bqZRF9Xj8pEKRLki87rxfWFweDaJdexFz55exu88GSz6RSCIc7MauoVKphXlzk2cTU9IGbnKO95QQ8qjzMow4zV4FYTJt3cpQa6jHh-cMY74DwrP-VCdvE-iMvyKnUJU5vADFnoiDeXYfHdSjcwYS7TEqjDbRNQYmlYhUi9BSrdNEmm1mj8ONVpBcUrYp0VnbWcZwJPh4E9hoTb50ihNDsihAVUXoNnoR1dal5oWvkOv_7Tw2UnvyqVvMgRrvIQzK5s-vtrRxhIUA4DGSfHUQ_qpUt9PUkvm4-hlREIUXRwZJBRq20s3gFqu7L2YKRNqSTybWAJzlEmYC_TNovN8_sN8AcCYyKmbFdY25-xN_NWFj3p_qfRyyylnb9bagx51VEx90c8Dm9rx-_tXdrYEryJx85kFOiHze-8SwRvKLaCwKnxw2MHcP9qOsi-bzScASMWaCeh7_aDipkcwsESU9GZQaaUG5YqDJoMVcA6od2VopeXrbXT9B5B22PNrc0O5RH9pWTBW0Y6FmXWeFOev3iUh0HDvRtDrrMMuVitdL8z3Hak-ToH3Rsk9gYnSYCTdpUByii-kf49SgZBo08=",
+      "id": "rs_03c60a96dae8b9a0016a9135fba8c887d09ea5ef18ffadb383",
+      "status": null,
+      "summary": [],
+      "type": "reasoning"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":0,\"nonstop_only\":false}",
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "caller": null,
+      "id": "fc_03c60a96dae8b9a0016a9135fc109887d08a427a6c8f22127b",
+      "name": "search_flights",
+      "namespace": null,
+      "status": "completed",
+      "type": "function_call"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "prompt_cache_options": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "generate_summary": null,
+     "mode": "standard",
+     "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "flex",
+    "status": "completed",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date",
+        "max_price",
+        "nonstop_only"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 927,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 69,
+     "output_tokens_details": {
+      "reasoning_tokens": 24
+     },
+     "total_tokens": 996
+    },
+    "user": null
+   }
+  },
+  {
+   "endpoint": "responses",
+   "error": null,
+   "request": {
+    "input": [
+     {
+      "content": "You are the Skyway Travel booking assistant. You help travelers find flights, reserve them, and\ncancel reservations they already hold, working through the Skyway reservation system.\n\nROLE AND TONE\nWrite like a competent human at a travel desk: short sentences, concrete details, no filler, no\nemoji. Give fares in whole US dollars and departure times in 24-hour local time. Never invent\nflights, fares, seat counts, or reservation details - everything you tell a traveler comes from\na tool result.\n\nUSING THE TOOLS\n- search_flights: reach for this whenever the traveler asks what is available, or when you need\n  a flight_id before you can reserve anything. Airports are IATA codes, so convert city names\n  yourself (Chicago O'Hare becomes ORD, Boston becomes BOS) and send dates as YYYY-MM-DD. Pass\n  max_price when the traveler names a budget, and nonstop_only when they want a direct flight.\n- book_flight: reach for this once the traveler has settled on a specific flight and given a\n  name to travel under. Pass the flight_id exactly as search_flights returned it.\n- cancel_booking: reach for this when the traveler asks to cancel and you have the booking\n  reference, either from them or from a reservation you made earlier.\n\nAFTER A RESERVATION\nReport the confirmation number from the tool response, with the flight, date, departure time,\nand passenger name, so the traveler can find the reservation later.\n\nWHEN THE REQUEST IS INCOMPLETE\nIf something you need is missing - origin, destination, date, passenger name, or which of\nseveral flights the traveler wants - ask one short question and wait. Guessing an airport or a\ndate is worse than asking.\n\nWHEN A TOOL RETURNS AN ERROR\nSay plainly what went wrong (sold-out flight, unknown flight, reservation already cancelled,\nnothing matching the filters) and offer the closest real alternative in the data. Do not paper\nover a failure, and do not repeat a call that failed for a reason that will not change.\n\nOUT OF SCOPE\nSkyway handles flights. For hotels, rental cars, seat upgrades, or refunds, say that is outside\nwhat you can do and point the traveler at support@skyway.example.\n\nWhen the traveler's request already contains everything a tool needs, call the tool immediately instead of asking for more information. book_flight requires only the flight id and passenger name; never ask for details a tool does not require.\n",
+      "role": "system"
+     },
+     {
+      "content": "Find me flights from SEA to DEN on 2026-04-12 and book the cheapest one for Maria Lopez.",
+      "role": "user"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":0,\"nonstop_only\":false}",
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "name": "search_flights",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "output": "{\"results\": []}",
+      "type": "function_call_output"
+     }
+    ],
+    "model": "gpt-5.6-sol",
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "service_tier": "flex",
+    "store": false,
+    "tools": [
+     {
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "response": {
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1787901439.0,
+    "conversation": null,
+    "created_at": 1787901436.0,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "resp_0dd4fb88a3979f23016a9135fcc61c87d08b49462a4665cdc4",
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "metadata": {},
+    "model": "gpt-5.6-sol",
+    "moderation": null,
+    "object": "response",
+    "output": [
+     {
+      "content": [],
+      "encrypted_content": "gAAAAABqkTX_QQFdqlJMDetRrI73SWTzauXhaXKydklAvjARZd5tUQaF2dq_8Zs_WuDAKFS_smQpQLWH6ds_2lMcmJ2zYbQcgxgD98d26WudXREZrlPRlpq9nc6VBeqhupsgWWLOsKSKYe0Irmj8L6GRWEcEIIil1mlRylUJFt3U_p-_zpFHKnSsXrbhcByLbBuSZc4uZbYZZCvGgSdWYf-yh14_0Ib_-AuWia_y1ex-qo8ZVeuafoPpSIk33SqhgxPR-pMYAJfEkczxQATBNjMAorEC4IH7640iQwlCBOLpJVm7wJUquVZjMnX-1_iogDFpsQXw_85kR54gcteDTTGZ_hZtDlwpWo7Q6_zT4r8X1FGD_P-Sz-GLkK5aB5X0l9hq65rcJ1bslVA2IyBNskkKpmS2JyNk9Cx0S9CpyARw0uvWiadRJD1V3IF_CvJOyJN0LYJaWB9S5zxcmRSR-tpf8shJGDoUKulLbGktrkHhD3pM3wDd9QEh7cRKrj-3kTFge8ajQ3c9vzfScYEqHg43mJ7n8qzJHhAbZuQUaYHtuiBYuepL78t6eE4lQ7rId_dF8iJYMOx1e4_LM6Vc6LsB1Yb2TAqx8oJtj91RDOY2I4LYSqFGAUh0opfpXRJtraEW9VrmHa06EXCap3ePz6c98va7tEFxAA7qB00XSrm9DaVvG_PRnkjN3soBj_8-cvfdlUo2IKPId2I7fp78SwxSwhumjZECPoD_T7_FaOSwzbQ3k2bW3wzEwGMh-HwQ-5t18cyGC2-SCioUDhQwWPAN9CC6m_bZtU4rEc28Nw85_5H05b-JTK7NtUlorTsznUEFLkzlQTsba9oJINO_JL4pcMPQH9s0x40lqnlyBwAcIYat2LknYiWj3C0E3paYXI5fz8IWOQmmLNEcWKnfwbwFZ1Bn7dd1Mo0BtHk1iqNd-eYX9IZdI7TC-d8fhDPZ7rvkcKUS4pBxaDwlL7xPN74L5VM2U7ykzEg6bfHYlpbG08BxyM3UIXAp04bU5_IOWzRX-tGIEZ83Qrl---7TVXYlaYqk_lMVBuXOfDZLDoEwblhz64ppHjJOGl6fWVFi1n24P0dd4yKOL3jufFDwEsz-5hGNHHlLZGz8M1_wM-Rt1wW8iPbtfyEBVivSy5IT8E-07rCMGjAtvfTlrjB8P9MlMqI1aNW4QxFqO4W2Bqh4Q940a4wI9dB_290TnmUyeeF35Ft4FFqryd5XVuL_UIrjb6vOlhyd5CoFTckZhnuklaI62V8M2J41zV3hABr9q5KXxfrMaGspSPoxzMqDzvdTec72BBaiZepYQNg-uQGQ0LKoFTTRVOuAHOxSKirDBi7OMkBIZJX-_gzzz1DMsyVOIp0qQHA5ofrokZn0B8GagbptDu30lOPdyRs66Uy2sST2Yaxppf6b0wJk7rGyy8iZbBdiawBr5C-sdZarLcriS3DBkjQR4foLZIXhW_w5UEOJElbxzjz7AAixh8Qb-12iNC_OEKe_bgDFTjKtCx22K26JgJT7VoDDTGTMX1pX34g7d2dw1FXojbAgygNAr4fBs5_2cN-_TMOfuwdKixxAvGm8rygCvitUerUdK4k39aLEp-q0OiElzlF5WDgFJchETf8e4BVFHMTVyu24CMiGL2Tv8ZJsvOmoQ9H_gv45wDks-o-8l5kCF0NrQgkHrwnFGqTGxhyz92a95cV0okZoX-OtjmzD4P7VQA7VOupf-ReSWd7QId-RrYrStTDocWntgVeuxqGzLuxeQ9ymXCMnF8nupPl3t7MGGDUtXOcuI8BlRBjfs21EtbjG7wkK7mjTORfU7PWjWjt6uNeqQ1icjT-rJg7DFp3zAQQ0MwONQ_JGEbXIVva5JnTBDBi9MU2fAipDf3G_nCr1mm-44pbxd8gug7NbCvCnWPUq1wcKeb9MVG9NmiVuiEijUHHLYsv2h8FcPpwEh799VDuNssBakXeTZio2oXqsJzt46c40Vpf9Wpo8C-vGfbn3muc3iKeCCPmFwuKyuWLQ09qSKQxY6Y6xQ7WgWqlILMSPxbR1MATCQVX1pXoz",
+      "id": "rs_0dd4fb88a3979f23016a9135fd80e487d096e102605a0d8719",
+      "status": null,
+      "summary": [],
+      "type": "reasoning"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":1000000,\"nonstop_only\":false}",
+      "call_id": "call_kqa3h29eHJbFcBEv8lr35euf",
+      "caller": null,
+      "id": "fc_0dd4fb88a3979f23016a9135ff897487d0956c3adbb9445562",
+      "name": "search_flights",
+      "namespace": null,
+      "status": "completed",
+      "type": "function_call"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "prompt_cache_options": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "generate_summary": null,
+     "mode": "standard",
+     "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "flex",
+    "status": "completed",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date",
+        "max_price",
+        "nonstop_only"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 987,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 183,
+     "output_tokens_details": {
+      "reasoning_tokens": 136
+     },
+     "total_tokens": 1170
+    },
+    "user": null
+   }
+  },
+  {
+   "endpoint": "responses",
+   "error": null,
+   "request": {
+    "input": [
+     {
+      "content": "You are the Skyway Travel booking assistant. You help travelers find flights, reserve them, and\ncancel reservations they already hold, working through the Skyway reservation system.\n\nROLE AND TONE\nWrite like a competent human at a travel desk: short sentences, concrete details, no filler, no\nemoji. Give fares in whole US dollars and departure times in 24-hour local time. Never invent\nflights, fares, seat counts, or reservation details - everything you tell a traveler comes from\na tool result.\n\nUSING THE TOOLS\n- search_flights: reach for this whenever the traveler asks what is available, or when you need\n  a flight_id before you can reserve anything. Airports are IATA codes, so convert city names\n  yourself (Chicago O'Hare becomes ORD, Boston becomes BOS) and send dates as YYYY-MM-DD. Pass\n  max_price when the traveler names a budget, and nonstop_only when they want a direct flight.\n- book_flight: reach for this once the traveler has settled on a specific flight and given a\n  name to travel under. Pass the flight_id exactly as search_flights returned it.\n- cancel_booking: reach for this when the traveler asks to cancel and you have the booking\n  reference, either from them or from a reservation you made earlier.\n\nAFTER A RESERVATION\nReport the confirmation number from the tool response, with the flight, date, departure time,\nand passenger name, so the traveler can find the reservation later.\n\nWHEN THE REQUEST IS INCOMPLETE\nIf something you need is missing - origin, destination, date, passenger name, or which of\nseveral flights the traveler wants - ask one short question and wait. Guessing an airport or a\ndate is worse than asking.\n\nWHEN A TOOL RETURNS AN ERROR\nSay plainly what went wrong (sold-out flight, unknown flight, reservation already cancelled,\nnothing matching the filters) and offer the closest real alternative in the data. Do not paper\nover a failure, and do not repeat a call that failed for a reason that will not change.\n\nOUT OF SCOPE\nSkyway handles flights. For hotels, rental cars, seat upgrades, or refunds, say that is outside\nwhat you can do and point the traveler at support@skyway.example.\n\nWhen the traveler's request already contains everything a tool needs, call the tool immediately instead of asking for more information. book_flight requires only the flight id and passenger name; never ask for details a tool does not require.\n",
+      "role": "system"
+     },
+     {
+      "content": "Find me flights from SEA to DEN on 2026-04-12 and book the cheapest one for Maria Lopez.",
+      "role": "user"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":0,\"nonstop_only\":false}",
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "name": "search_flights",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "output": "{\"results\": []}",
+      "type": "function_call_output"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":1000000,\"nonstop_only\":false}",
+      "call_id": "call_kqa3h29eHJbFcBEv8lr35euf",
+      "name": "search_flights",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_kqa3h29eHJbFcBEv8lr35euf",
+      "output": "{\"results\": [{\"flight_id\": \"UA771\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"09:20\", \"price\": 168, \"stops\": 0, \"seats_available\": 6}, {\"flight_id\": \"DL903\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"14:35\", \"price\": 189, \"stops\": 1, \"seats_available\": 2}, {\"flight_id\": \"AS512\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"06:00\", \"price\": 214, \"stops\": 0, \"seats_available\": 4}, {\"flight_id\": \"F9145\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"21:05\", \"price\": 250, \"stops\": 1, \"seats_available\": 8}]}",
+      "type": "function_call_output"
+     }
+    ],
+    "model": "gpt-5.6-sol",
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "service_tier": "flex",
+    "store": false,
+    "tools": [
+     {
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "response": {
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1787901441.0,
+    "conversation": null,
+    "created_at": 1787901440.0,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "resp_0bcbf9823a5aa99b016a9135fff6e887d082720b0646dc06a7",
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "metadata": {},
+    "model": "gpt-5.6-sol",
+    "moderation": null,
+    "object": "response",
+    "output": [
+     {
+      "content": [],
+      "encrypted_content": "gAAAAABqkTYBuMEjp7ggf2a7zg3dyG6hLPMGqrIDRMlU6TTEI8iPIP4XW8uBpK6FVfv5vmAqiJhvPx-I3lonscNwXKr5aaJswRAO5-i_kfIYsHB6ZA18LqYdadriSnFfhSYlT_PDa8j8x6nptHfmcaBUEdgtWXH3B-4AVlplpf09jg4zgUAY42Lecz2ZNmOvq_dtjNo3yi8H7InVvO2VJC9PEKirENaE_iY1YUFUR--fRtPbdvKviY4xvqgrtPDEZPDY_y9QJvIRugA-d4r6CwXY4dlEcOEx0AROjs6ZGK0e-TmIQG7-OcvB8aaWmY9oodCoFTCSVXTIOaP_wRPd0eFTODkGAuzGRmgdZw6cE5CejmyK5B1gsdQVsNg0cnlIr9_KzDcXb52JYF5yOBEwH15apl8xPSfgUaqOWEuQcuJVDD5mVYDkT3dkouAwxhj3JxkW1SOUwSLT_VCc4B9peY4wzhl9C-gQiSFZc_TQjT3Zr9Iuu2QSpw-BuSBfstS5QZGDaGt7WrdBGZFPkeqSMU2LydepGWBvCL7tg_l6mHVISV1mnEDBcvbhRoGJMhxEg_J0ZFhG8R9NMl2NCTSMIf9rJSSHKQwhCjh9m7yw6N0zEL4CBI349uBDuyuHohrtKERZ9L12BV5-nrsnXcv9Mq9Mk71xvAsEBhaiLCIhmkl2C4ew8wn5O6yhzhmRjl_zhQX2r4OvEZu_wCW6e3ySiXJmjDpcCwBjZ3Ur7tuF_g0hqIH6gNShqGKyr4QeR3eLGCoPBcPf7EU3YYOSkzw7FtBWWql1AMpoFxx0ykxte7f59yV7jBs87V_j0fM1j1yiI87FbqW0vAZ09NvcSSQi2H-GBbiWhQoUh2fPFxMn-eZJ-5FPqVlcb5CSEaOUnpHZfrpB8nfNkfFkDMRQluEVdO6lyYxEjTwodtcShfWAK8pmrTRdJy1nFRTR-x8yn8bv7t_Z2KjP2ABVaPc4exwFxWQg1-miCTOvtZj9SA4tj5vDBU6p4ynIANKCeLIMbdM4jsrTCji60KqFChUn4RIi4-PZmavU3fD6tyzE1mXIVUf5QhRvPvkwkGS4Ov917SICYFyI2BLW3Lz3xcKype3IXTHdfZWOy1VGlx09q4lcWcYc5zyikFq3-MI3pye15jYV0KXCHGZhAqvkFFzkvuzh0mQwkcbrGfz6wvb8tctBpHNL3rPGUpUPuXhAETlPQh-XXiRB-SBgIZdsTG2J4agQ2mKYaLBzVyo0mp_1vc8sZ_8XXj36i5xKupES6SBF57Lc_dSnvTxJGrdm",
+      "id": "rs_0bcbf9823a5aa99b016a913600fb6087d0b103e4f2b0317932",
+      "status": null,
+      "summary": [],
+      "type": "reasoning"
+     },
+     {
+      "arguments": "{\"flight_id\":\"UA771\",\"passenger\":\"Maria Lopez\"}",
+      "call_id": "call_SLqz8g0rSmjzpFTfqLDGlG6c",
+      "caller": null,
+      "id": "fc_0bcbf9823a5aa99b016a913601379c87d0ab65ac139da3b0a4",
+      "name": "book_flight",
+      "namespace": null,
+      "status": "completed",
+      "type": "function_call"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "prompt_cache_options": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "generate_summary": null,
+     "mode": "standard",
+     "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "flex",
+    "status": "completed",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date",
+        "max_price",
+        "nonstop_only"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 1293,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 1290
+     },
+     "output_tokens": 49,
+     "output_tokens_details": {
+      "reasoning_tokens": 20
+     },
+     "total_tokens": 1342
+    },
+    "user": null
+   }
+  },
+  {
+   "endpoint": "responses",
+   "error": null,
+   "request": {
+    "input": [
+     {
+      "content": "You are the Skyway Travel booking assistant. You help travelers find flights, reserve them, and\ncancel reservations they already hold, working through the Skyway reservation system.\n\nROLE AND TONE\nWrite like a competent human at a travel desk: short sentences, concrete details, no filler, no\nemoji. Give fares in whole US dollars and departure times in 24-hour local time. Never invent\nflights, fares, seat counts, or reservation details - everything you tell a traveler comes from\na tool result.\n\nUSING THE TOOLS\n- search_flights: reach for this whenever the traveler asks what is available, or when you need\n  a flight_id before you can reserve anything. Airports are IATA codes, so convert city names\n  yourself (Chicago O'Hare becomes ORD, Boston becomes BOS) and send dates as YYYY-MM-DD. Pass\n  max_price when the traveler names a budget, and nonstop_only when they want a direct flight.\n- book_flight: reach for this once the traveler has settled on a specific flight and given a\n  name to travel under. Pass the flight_id exactly as search_flights returned it.\n- cancel_booking: reach for this when the traveler asks to cancel and you have the booking\n  reference, either from them or from a reservation you made earlier.\n\nAFTER A RESERVATION\nReport the confirmation number from the tool response, with the flight, date, departure time,\nand passenger name, so the traveler can find the reservation later.\n\nWHEN THE REQUEST IS INCOMPLETE\nIf something you need is missing - origin, destination, date, passenger name, or which of\nseveral flights the traveler wants - ask one short question and wait. Guessing an airport or a\ndate is worse than asking.\n\nWHEN A TOOL RETURNS AN ERROR\nSay plainly what went wrong (sold-out flight, unknown flight, reservation already cancelled,\nnothing matching the filters) and offer the closest real alternative in the data. Do not paper\nover a failure, and do not repeat a call that failed for a reason that will not change.\n\nOUT OF SCOPE\nSkyway handles flights. For hotels, rental cars, seat upgrades, or refunds, say that is outside\nwhat you can do and point the traveler at support@skyway.example.\n\nWhen the traveler's request already contains everything a tool needs, call the tool immediately instead of asking for more information. book_flight requires only the flight id and passenger name; never ask for details a tool does not require.\n",
+      "role": "system"
+     },
+     {
+      "content": "Find me flights from SEA to DEN on 2026-04-12 and book the cheapest one for Maria Lopez.",
+      "role": "user"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":0,\"nonstop_only\":false}",
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "name": "search_flights",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_O0A4eTcRmxkzlREixgQEhanI",
+      "output": "{\"results\": []}",
+      "type": "function_call_output"
+     },
+     {
+      "arguments": "{\"origin\":\"SEA\",\"destination\":\"DEN\",\"date\":\"2026-04-12\",\"max_price\":1000000,\"nonstop_only\":false}",
+      "call_id": "call_kqa3h29eHJbFcBEv8lr35euf",
+      "name": "search_flights",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_kqa3h29eHJbFcBEv8lr35euf",
+      "output": "{\"results\": [{\"flight_id\": \"UA771\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"09:20\", \"price\": 168, \"stops\": 0, \"seats_available\": 6}, {\"flight_id\": \"DL903\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"14:35\", \"price\": 189, \"stops\": 1, \"seats_available\": 2}, {\"flight_id\": \"AS512\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"06:00\", \"price\": 214, \"stops\": 0, \"seats_available\": 4}, {\"flight_id\": \"F9145\", \"origin\": \"SEA\", \"destination\": \"DEN\", \"date\": \"2026-04-12\", \"depart_time\": \"21:05\", \"price\": 250, \"stops\": 1, \"seats_available\": 8}]}",
+      "type": "function_call_output"
+     },
+     {
+      "arguments": "{\"flight_id\":\"UA771\",\"passenger\":\"Maria Lopez\"}",
+      "call_id": "call_SLqz8g0rSmjzpFTfqLDGlG6c",
+      "name": "book_flight",
+      "type": "function_call"
+     },
+     {
+      "call_id": "call_SLqz8g0rSmjzpFTfqLDGlG6c",
+      "output": "{\"confirmation_id\": \"UPS-1001\", \"booking_id\": \"UPS-1001\", \"status\": \"confirmed\", \"flight_id\": \"UA771\", \"passenger\": \"Maria Lopez\"}",
+      "type": "function_call_output"
+     }
+    ],
+    "model": "gpt-5.6-sol",
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "service_tier": "flex",
+    "store": false,
+    "tools": [
+     {
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     },
+     {
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "response": {
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1787901443.0,
+    "conversation": null,
+    "created_at": 1787901441.0,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "resp_0ba54831153e2777016a913601923887d08854dcd111dfe6a7",
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "metadata": {},
+    "model": "gpt-5.6-sol",
+    "moderation": null,
+    "object": "response",
+    "output": [
+     {
+      "content": [
+       {
+        "annotations": [],
+        "logprobs": [],
+        "text": "Booked the cheapest flight.\n\nConfirmation: **UPS-1001**  \nPassenger: Maria Lopez  \nFlight: UA771  \nRoute: SEA to DEN  \nDate: April 12, 2026  \nDeparture: 09:20 local time  \nFare: $168",
+        "type": "output_text"
+       }
+      ],
+      "id": "msg_0ba54831153e2777016a9136025e2887d0aea69021c3838b84",
+      "phase": "final_answer",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt": null,
+    "prompt_cache_key": "upshift-02384a90750b0b6c",
+    "prompt_cache_options": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "generate_summary": null,
+     "mode": "standard",
+     "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "flex",
+    "status": "completed",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Search Skyway inventory for flights on one route and one date. Use it before quoting availability or fares, and to obtain the flight_id needed for a reservation. Returns matching flights sorted cheapest first; an empty list means nothing matched the filters, which is a normal outcome and not a failure.",
+      "name": "search_flights",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "date": {
+         "description": "Departure date in YYYY-MM-DD format, for example 2026-03-05.",
+         "type": "string"
+        },
+        "destination": {
+         "description": "Arrival airport as a three-letter IATA code, for example BOS.",
+         "type": "string"
+        },
+        "max_price": {
+         "description": "Optional upper bound on the one-way fare in US dollars. Supply it when the traveler names a budget or a price cap.",
+         "type": "number"
+        },
+        "nonstop_only": {
+         "description": "Optional. Set to true when the traveler wants a direct flight with no layovers.",
+         "type": "boolean"
+        },
+        "origin": {
+         "description": "Departure airport as a three-letter IATA code, for example SFO. Convert city or airport names to the code before calling.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "origin",
+        "destination",
+        "date",
+        "max_price",
+        "nonstop_only"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Reserve one seat on a specific flight for one passenger. Use it after the traveler has chosen a flight and supplied the name to travel under. The response carries the confirmation number to report back, and the seat count on the flight drops by one.",
+      "name": "book_flight",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "flight_id": {
+         "description": "Flight identifier exactly as returned by search_flights, for example UA771.",
+         "type": "string"
+        },
+        "passenger": {
+         "description": "Full name of the passenger as it should appear on the reservation.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "flight_id",
+        "passenger"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     },
+     {
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Cancel an existing reservation and release its seat back to inventory. Use it when the traveler asks to cancel and you have the booking reference. Returns an error if the reference is unknown or the reservation was already cancelled.",
+      "name": "cancel_booking",
+      "output_schema": null,
+      "parameters": {
+       "additionalProperties": false,
+       "properties": {
+        "booking_id": {
+         "description": "Booking reference of the reservation to cancel, for example UPS-1001.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "booking_id"
+       ],
+       "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 1374,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 1371
+     },
+     "output_tokens": 57,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 1431
+    },
+    "user": null
+   }
+  }
+ ],
+ "api_error": null,
+ "case_id": "happy_search_and_book_cheapest",
+ "check_results": [
+  {
+   "check": {
+    "type": "no_api_error"
+   },
+   "detail": "No API error: the episode completed against the model endpoint.",
+   "passed": true
+  },
+  {
+   "check": {
+    "args_subset": {
+     "date": "2026-04-12",
+     "destination": "DEN",
+     "origin": "SEA"
+    },
+    "name": "search_flights",
+    "type": "tool_called"
+   },
+   "detail": "search_flights called 2 times with the expected arguments (min_times=1).",
+   "passed": true
+  },
+  {
+   "check": {
+    "args_subset": {
+     "flight_id": "UA771",
+     "passenger": "Maria Lopez"
+    },
+    "max_times": 1,
+    "name": "book_flight",
+    "type": "tool_called"
+   },
+   "detail": "book_flight called 1 time with the expected arguments (min_times=1, max_times=1).",
+   "passed": true
+  },
+  {
+   "check": {
+    "equals": 1,
+    "type": "bookings_count"
+   },
+   "detail": "final state holds 1 confirmed booking(s), as expected.",
+   "passed": true
+  },
+  {
+   "check": {
+    "equals": "confirmed",
+    "path": "bookings[0].status",
+    "type": "final_state"
+   },
+   "detail": "final_state bookings[0].status is 'confirmed', as expected.",
+   "passed": true
+  },
+  {
+   "check": {
+    "equals": "UA771",
+    "path": "bookings[0].flight_id",
+    "type": "final_state"
+   },
+   "detail": "final_state bookings[0].flight_id is 'UA771', as expected.",
+   "passed": true
+  },
+  {
+   "check": {
+    "type": "confirmation_id_valid"
+   },
+   "detail": "every confirmation number stated (UPS-1001) exists in backend state.",
+   "passed": true
+  },
+  {
+   "check": {
+    "name": "book_flight",
+    "type": "no_tool_calls_after_success"
+   },
+   "detail": "no tool calls followed the successful book_flight in the final user segment.",
+   "passed": true
+  }
+ ],
+ "endpoint": "responses",
+ "final_message": "Booked the cheapest flight.\n\nConfirmation: **UPS-1001**  \nPassenger: Maria Lopez  \nFlight: UA771  \nRoute: SEA to DEN  \nDate: April 12, 2026  \nDeparture: 09:20 local time  \nFare: $168",
+ "final_state": {
+  "bookings": [
+   {
+    "booking_id": "UPS-1001",
+    "flight_id": "UA771",
+    "passenger": "Maria Lopez",
+    "status": "confirmed"
+   }
+  ],
+  "flights": [
+   {
+    "date": "2026-04-12",
+    "depart_time": "06:00",
+    "destination": "DEN",
+    "flight_id": "AS512",
+    "origin": "SEA",
+    "price": 214,
+    "seats_available": 4,
+    "stops": 0
+   },
+   {
+    "date": "2026-04-12",
+    "depart_time": "09:20",
+    "destination": "DEN",
+    "flight_id": "UA771",
+    "origin": "SEA",
+    "price": 168,
+    "seats_available": 5,
+    "stops": 0
+   },
+   {
+    "date": "2026-04-12",
+    "depart_time": "14:35",
+    "destination": "DEN",
+    "flight_id": "DL903",
+    "origin": "SEA",
+    "price": 189,
+    "seats_available": 2,
+    "stops": 1
+   },
+   {
+    "date": "2026-04-12",
+    "depart_time": "21:05",
+    "destination": "DEN",
+    "flight_id": "F9145",
+    "origin": "SEA",
+    "price": 250,
+    "seats_available": 8,
+    "stops": 1
+   }
+  ]
+ },
+ "latency_s": 8.457,
+ "model_requested": "gpt-5.6-sol",
+ "params": {},
+ "passed": true,
+ "rep": 1,
+ "resolved_model": "gpt-5.6-sol",
+ "seed": 479435272,
+ "tool_executions": [
+  {
+   "arguments": {
+    "date": "2026-04-12",
+    "destination": "DEN",
+    "max_price": 0,
+    "nonstop_only": false,
+    "origin": "SEA"
+   },
+   "name": "search_flights",
+   "result": {
+    "results": []
+   },
+   "segment": 0,
+   "turn": 0
+  },
+  {
+   "arguments": {
+    "date": "2026-04-12",
+    "destination": "DEN",
+    "max_price": 1000000,
+    "nonstop_only": false,
+    "origin": "SEA"
+   },
+   "name": "search_flights",
+   "result": {
+    "results": [
+     {
+      "date": "2026-04-12",
+      "depart_time": "09:20",
+      "destination": "DEN",
+      "flight_id": "UA771",
+      "origin": "SEA",
+      "price": 168,
+      "seats_available": 6,
+      "stops": 0
+     },
+     {
+      "date": "2026-04-12",
+      "depart_time": "14:35",
+      "destination": "DEN",
+      "flight_id": "DL903",
+      "origin": "SEA",
+      "price": 189,
+      "seats_available": 2,
+      "stops": 1
+     },
+     {
+      "date": "2026-04-12",
+      "depart_time": "06:00",
+      "destination": "DEN",
+      "flight_id": "AS512",
+      "origin": "SEA",
+      "price": 214,
+      "seats_available": 4,
+      "stops": 0
+     },
+     {
+      "date": "2026-04-12",
+      "depart_time": "21:05",
+      "destination": "DEN",
+      "flight_id": "F9145",
+      "origin": "SEA",
+      "price": 250,
+      "seats_available": 8,
+      "stops": 1
+     }
+    ]
+   },
+   "segment": 0,
+   "turn": 1
+  },
+  {
+   "arguments": {
+    "flight_id": "UA771",
+    "passenger": "Maria Lopez"
+   },
+   "name": "book_flight",
+   "result": {
+    "booking_id": "UPS-1001",
+    "confirmation_id": "UPS-1001",
+    "flight_id": "UA771",
+    "passenger": "Maria Lopez",
+    "status": "confirmed"
+   },
+   "segment": 0,
+   "turn": 2
+  }
+ ],
+ "usage": {
+  "cached_input_tokens": 2661,
+  "input_tokens": 4581,
+  "output_tokens": 358
+ }
+}

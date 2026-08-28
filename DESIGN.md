@@ -132,6 +132,18 @@ originally-regressed case is PASS and no originally-PASS case leaves PASS → el
 candidate. Budget: max 6 candidates. Composable: an accepted candidate becomes the new base
 and remaining regressions continue the loop (e.g. endpoint fix first, then prompt fix).
 
+Contested statuses are adjudicated on 2N reps, same thresholds (added 2026-08-28 after the
+first real run showed single-sample vetoes firing on borderline-flaky cases — 4/5, 3/5,
+3/5, 4/5 for the same case across four verify runs regardless of patch):
+- A case only counts as RESTORED if it passes the threshold on screen+verify combined
+  (2N reps of the same trial config). Lucky single-run passes do not count.
+- A protected or earlier-restored case that dips below PASS in one verify sample is a
+  suspect, not a verdict: N adjudication reps of the same config are run and the combined
+  2N decides at the same 0.8 threshold. Symmetric evidence, thresholds unchanged — this
+  strengthens both directions ("never a single run" applies to vetoes too).
+Repair run ids embed a hash of the trial config, so identical re-runs resume from disk
+free while a changed candidate lineage gets fresh run dirs.
+
 Patch output: unified git diff over victim files, generated with difflib, applyable with
 `git apply`.
 

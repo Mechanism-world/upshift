@@ -63,15 +63,27 @@ def _apply(patch: Patch, agent_dir: Path) -> None:
         (agent_dir / edit.file).write_text(edit.new_content)
 
 
-def _case_outcomes(run_directory: Path, case_ids: list[str], thresholds: dict) -> dict[str, str]:
-    outcomes = {}
+def _case_pass_counts(run_directory: Path, case_ids: list[str]) -> dict[str, tuple[int, int]]:
+    counts = {}
     for case_id in case_ids:
         reps = recorder.load_case_reps(run_directory, case_id)
         if not reps:
             raise ValueError(f"no reps recorded for case {case_id} in {run_directory}")
-        passes = sum(1 for r in reps if r.passed)
-        outcomes[case_id] = outcome(passes, len(reps), thresholds["pass"], thresholds["fail"])
-    return outcomes
+        counts[case_id] = (sum(1 for r in reps if r.passed), len(reps))
+    return counts
+
+
+def _config_hash(agent_dir: Path) -> str:
+    """Short stable hash of the three patchable files, used in repair run ids so identical
+    re-runs resume from disk while a changed candidate lineage gets fresh run dirs."""
+    import hashlib
+    import json
+
+    raw = json.loads((agent_dir / "agent.json").read_text())
+    h = hashlib.sha256()
+    for rel in ("agent.json", raw["system_prompt_file"], raw["tools_file"]):
+        h.update((agent_dir / rel).read_bytes())
+    return h.hexdigest()[:8]
 
 
 def _ordered_signatures(per_case: dict[str, list[str]]) -> list[str]:
@@ -146,7 +158,10 @@ def repair(
                 _copy_agent_dir(work_dir, trial_dir)
                 _apply(patch, trial_dir)
 
-                screen_id = f"{run_prefix}-c{tried:02d}-screen"
+                # Run ids carry a hash of the trial config: identical re-runs resume from
+                # disk for free, while a changed candidate lineage gets fresh run dirs.
+                cfg = _config_hash(trial_dir)
+                screen_id = f"{run_prefix}-c{tried:02d}-{cfg}-screen"
                 run_suite(
                     trial_dir,
                     provider,
@@ -158,10 +173,14 @@ def repair(
                     workers=workers,
                     notes=f"repair screen for candidate {patch.id}",
                 )
-                screen_outcomes = _case_outcomes(
-                    recorder.run_dir(runs_root, screen_id), sorted(unrestored), thresholds
+                screen_counts = _case_pass_counts(
+                    recorder.run_dir(runs_root, screen_id), sorted(unrestored)
                 )
-                screen_restored = {c for c, o in screen_outcomes.items() if o == OUTCOME_PASS}
+                screen_restored = {
+                    c
+                    for c, (k, n) in screen_counts.items()
+                    if outcome(k, n, thresholds["pass"], thresholds["fail"]) == OUTCOME_PASS
+                }
                 if not screen_restored:
                     log.append(
                         f"  screen: 0/{len(unrestored)} broken cases restored — rejected "
@@ -173,7 +192,7 @@ def repair(
                     f"restored — running full verification"
                 )
 
-                verify_id = f"{run_prefix}-c{tried:02d}-verify"
+                verify_id = f"{run_prefix}-c{tried:02d}-{cfg}-verify"
                 run_suite(
                     trial_dir,
                     provider,
@@ -184,12 +203,61 @@ def repair(
                     workers=workers,
                     notes=f"repair full verification for candidate {patch.id}",
                 )
-                verify_outcomes = _case_outcomes(
-                    recorder.run_dir(runs_root, verify_id), all_case_ids, thresholds
+                verify_counts = _case_pass_counts(
+                    recorder.run_dir(runs_root, verify_id), all_case_ids
                 )
-                newly_restored = {c for c in unrestored if verify_outcomes[c] == OUTCOME_PASS}
-                broken = sorted(c for c in protected if verify_outcomes[c] != OUTCOME_PASS)
-                relapsed = sorted(c for c in restored if verify_outcomes[c] != OUTCOME_PASS)
+
+                def is_pass(k: int, n: int) -> bool:
+                    return outcome(k, n, thresholds["pass"], thresholds["fail"]) == OUTCOME_PASS
+
+                # Restoration claims must survive screen AND verify combined (2N reps on
+                # the same config) — a lucky single-run pass does not count as restored.
+                newly_restored = set()
+                for case_id in unrestored:
+                    sk, sn = screen_counts[case_id]
+                    vk, vn = verify_counts[case_id]
+                    if is_pass(sk + vk, sn + vn):
+                        newly_restored.add(case_id)
+
+                # A protected or earlier-restored case that dips below PASS in one N-rep
+                # sample is a SUSPECT, not a verdict: adjudicate on N more reps of the
+                # same trial config and decide on the combined 2N at the same threshold.
+                # Same evidence bar as restoration claims; thresholds never change.
+                suspects = sorted(
+                    c
+                    for c in (set(protected) | restored)
+                    if not is_pass(*verify_counts[c])
+                )
+                confirmed_bad: list[str] = []
+                if suspects and newly_restored:
+                    adj_id = f"{run_prefix}-c{tried:02d}-{cfg}-adj"
+                    run_suite(
+                        trial_dir,
+                        provider,
+                        adj_id,
+                        n_reps=n_reps,
+                        model_override=candidate_model,
+                        runs_root=runs_root,
+                        case_ids=suspects,
+                        workers=workers,
+                        notes=f"adjudication of contested cases for candidate {patch.id}",
+                    )
+                    adj_counts = _case_pass_counts(recorder.run_dir(runs_root, adj_id), suspects)
+                    for case_id in suspects:
+                        vk, vn = verify_counts[case_id]
+                        ak, an = adj_counts[case_id]
+                        verdict = "cleared" if is_pass(vk + ak, vn + an) else "CONFIRMED"
+                        log.append(
+                            f"  adjudication {case_id}: verify {vk}/{vn} + extra {ak}/{an} "
+                            f"= {vk + ak}/{vn + an} — {verdict}"
+                        )
+                        if verdict == "CONFIRMED":
+                            confirmed_bad.append(case_id)
+                elif suspects:
+                    confirmed_bad = suspects  # nothing restored anyway; no need to spend
+
+                broken = sorted(c for c in confirmed_bad if c in protected)
+                relapsed = sorted(c for c in confirmed_bad if c in restored)
 
                 if newly_restored and not broken and not relapsed:
                     _copy_agent_dir(trial_dir, work_dir)

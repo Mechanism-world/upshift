@@ -39,6 +39,14 @@ EXECUTE_BLOCK = (
     "tool immediately instead of asking for more information. book_flight requires only "
     "the flight id and passenger name; never ask for details a tool does not require."
 )
+# Observed on real gpt-5.6-sol (full run 2026-08-28): announces "no flights available"
+# after its own search returned flights, then refuses to book.
+RESULTS_GROUNDING_BLOCK = (
+    "\n\nBase every availability statement strictly on the tool results in this "
+    "conversation. If search_flights returned one or more flights, those flights exist "
+    "and are bookable; never claim nothing is available when the results list is "
+    "non-empty."
+)
 # Observed on real gpt-5.6-sol (pilot 2026-08-28): reformats identifiers ("B6 220" for
 # "B6220"), breaking exact-output contracts downstream systems rely on.
 VERBATIM_BLOCK = (
@@ -195,6 +203,18 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     "contains everything a tool needs, call it instead of asking for "
                     "details the tool does not require (observed on real gpt-5.6-sol).",
                     [_prompt_append(agent_dir, raw_config, EXECUTE_BLOCK)],
+                )
+            if (
+                sig == "wrong_or_missing_tool_call"
+                and "strictly on the tool results" not in prompt
+            ):
+                add(
+                    "prompt-ground-in-results",
+                    "prompt_edit",
+                    sig,
+                    "Append a results-grounding block: never claim nothing is available "
+                    "when search returned flights (observed on real gpt-5.6-sol).",
+                    [_prompt_append(agent_dir, raw_config, RESULTS_GROUNDING_BLOCK)],
                 )
             if sig == "other_behavioral" and "character for character" not in prompt:
                 add(
