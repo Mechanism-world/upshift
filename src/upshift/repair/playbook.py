@@ -32,6 +32,20 @@ BOOK_TOOL_SUFFIX = (
     " This tool must be called to create any real booking. Call it exactly once per "
     "confirmed itinerary; never confirm a booking without calling it."
 )
+# Observed on real gpt-5.6-sol (pilot 2026-08-28): interrogates instead of executing —
+# asks for route/date details book_flight does not even require, books nothing.
+EXECUTE_BLOCK = (
+    "\n\nWhen the traveler's request already contains everything a tool needs, call the "
+    "tool immediately instead of asking for more information. book_flight requires only "
+    "the flight id and passenger name; never ask for details a tool does not require."
+)
+# Observed on real gpt-5.6-sol (pilot 2026-08-28): reformats identifiers ("B6 220" for
+# "B6220"), breaking exact-output contracts downstream systems rely on.
+VERBATIM_BLOCK = (
+    "\n\nWrite identifiers such as flight ids, booking ids, and confirmation numbers "
+    "exactly as the tools returned them, character for character. Never insert spaces "
+    "into or otherwise reformat an identifier."
+)
 
 
 def _read(agent_dir: Path, rel: str) -> str:
@@ -172,6 +186,25 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 [_book_tool_edit(agent_dir, raw_config)],
             )
         elif sig in ("wrong_or_missing_tool_call", "other_behavioral"):
+            if sig == "wrong_or_missing_tool_call" and "call the tool immediately" not in prompt:
+                add(
+                    "prompt-execute-dont-ask",
+                    "prompt_edit",
+                    sig,
+                    "Append an execute-don't-interrogate block: when a request already "
+                    "contains everything a tool needs, call it instead of asking for "
+                    "details the tool does not require (observed on real gpt-5.6-sol).",
+                    [_prompt_append(agent_dir, raw_config, EXECUTE_BLOCK)],
+                )
+            if sig == "other_behavioral" and "character for character" not in prompt:
+                add(
+                    "prompt-verbatim-identifiers",
+                    "prompt_edit",
+                    sig,
+                    "Append a verbatim-identifiers block: report flight/booking ids "
+                    "exactly as tools returned them (observed on real gpt-5.6-sol).",
+                    [_prompt_append(agent_dir, raw_config, VERBATIM_BLOCK)],
+                )
             if raw_config.get("params", {}).get("reasoning_effort") not in ("high",):
                 add(
                     "reasoning-effort-high",
