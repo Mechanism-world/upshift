@@ -68,7 +68,8 @@ class OpenAIProvider(Provider):
         import openai
 
         client = self._get_client()
-        request = dict(request)
+        # Mutate the caller's dict deliberately: the agent loop records this exact object,
+        # and the record must show the request AS SENT (tier + cache key included).
         if self.service_tier:
             request.setdefault("service_tier", self.service_tier)
         request.setdefault("prompt_cache_key", _cache_key(endpoint, request))
