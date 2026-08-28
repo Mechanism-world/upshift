@@ -59,6 +59,10 @@ def get_provider(name: str) -> Provider:
         from upshift.providers.openai_batch import OpenAIBatchProvider
 
         return OpenAIBatchProvider()
+    if name == "openai-flex":
+        from upshift.providers.openai_provider import OpenAIProvider
+
+        return OpenAIProvider(service_tier="flex")
     if name == "sim":
         from upshift.providers.sim import SimProvider
 

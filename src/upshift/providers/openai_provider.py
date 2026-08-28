@@ -3,23 +3,33 @@ hands it a fully-built request body and it returns the verbatim response as a pl
 
 The client is created lazily so this module imports cleanly without OPENAI_API_KEY set; a
 missing key surfaces as a ProviderAPIError at call time.
+
+Flex tier (service_tier="flex"): same 50% token rate as the Batch API but synchronous, and
+prompt caching stacks on top — the cheapest transport for our cache-friendly workload
+(identical system+tools prefix on every call, append-only conversations). Capacity 429s on
+flex are not charged and are retried by the SDK. Two cost aids are injected into every
+request: `service_tier` (when flex) and a deterministic `prompt_cache_key` derived from the
+request's static prefix, which improves cache-hit routing across concurrent episodes.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from typing import Any
 
 from upshift.providers.base import Provider, ProviderAPIError
 
 TIMEOUT_S = 120.0
+FLEX_TIMEOUT_S = 900.0  # flex is slower; the guide recommends a 15-minute timeout
 MAX_RETRIES = 5
 
 
 class OpenAIProvider(Provider):
-    name = "openai"
-
-    def __init__(self) -> None:
+    def __init__(self, service_tier: str | None = None) -> None:
+        self.service_tier = service_tier
+        self.name = "openai-flex" if service_tier == "flex" else "openai"
         self._client: Any | None = None
 
     def _get_client(self) -> Any:
@@ -38,7 +48,7 @@ class OpenAIProvider(Provider):
 
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
-                "timeout": TIMEOUT_S,
+                "timeout": FLEX_TIMEOUT_S if self.service_tier == "flex" else TIMEOUT_S,
                 "max_retries": MAX_RETRIES,
             }
             base_url = os.environ.get("OPENAI_BASE_URL")
@@ -58,6 +68,10 @@ class OpenAIProvider(Provider):
         import openai
 
         client = self._get_client()
+        request = dict(request)
+        if self.service_tier:
+            request.setdefault("service_tier", self.service_tier)
+        request.setdefault("prompt_cache_key", _cache_key(endpoint, request))
         try:
             if endpoint == "chat_completions":
                 result = client.chat.completions.create(**request)
@@ -84,6 +98,15 @@ class OpenAIProvider(Provider):
                 error_type="network_error",
             ) from exc
         return result.model_dump(mode="json")
+
+
+def _cache_key(endpoint: str, request: dict[str, Any]) -> str:
+    """Deterministic routing hint for prompt caching: identical static prefixes (model +
+    tools + system text) share a key, so concurrent episodes hit the same cache shard."""
+    convo = request.get("messages") if endpoint == "chat_completions" else request.get("input")
+    first = convo[0] if isinstance(convo, list) and convo else None
+    blob = json.dumps([request.get("model"), request.get("tools"), first], sort_keys=True)
+    return "upshift-" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 def _status_message(exc: Any) -> str:

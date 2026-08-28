@@ -413,7 +413,7 @@ def test_usage_accumulation_chat_and_missing_usage():
 
     result = run_episode(make_config(), make_case(), provider, StubBackend(), rep=0, seed=0)
 
-    assert result.usage == {"input_tokens": 100, "output_tokens": 10}
+    assert result.usage == {"input_tokens": 100, "output_tokens": 10, "cached_input_tokens": 0}
 
 
 def test_usage_accumulation_responses():
@@ -427,7 +427,7 @@ def test_usage_accumulation_responses():
 
     result = run_episode(config, make_case(), provider, StubBackend(), rep=0, seed=0)
 
-    assert result.usage == {"input_tokens": 120, "output_tokens": 14}
+    assert result.usage == {"input_tokens": 120, "output_tokens": 14, "cached_input_tokens": 0}
 
 
 def test_resolved_model_is_last_successful_response_model():

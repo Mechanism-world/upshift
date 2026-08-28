@@ -75,7 +75,7 @@ def _providers(result: DiffResult) -> tuple[str, bool]:
     b = str(result.baseline_manifest.get("provider", "?"))
     c = str(result.candidate_manifest.get("provider", "?"))
     display = b if b == c else f"{b} -> {c}"
-    real = ("openai", "openai-batch")
+    real = ("openai", "openai-batch", "openai-flex")
     return display, not (b in real and c in real)
 
 

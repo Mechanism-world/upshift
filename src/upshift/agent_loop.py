@@ -35,7 +35,9 @@ class EpisodeResult:
     final_message: str = ""
     api_error: dict[str, Any] | None = None
     resolved_model: str | None = None
-    usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
+    usage: dict[str, int] = field(
+        default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0}
+    )
     latency_s: float = 0.0
 
 
@@ -183,11 +185,14 @@ def _tool_result_item(endpoint: str, call_id: Any, result: dict[str, Any]) -> di
 def _accumulate_usage(total: dict[str, int], endpoint: str, response: dict[str, Any]) -> None:
     usage = response.get("usage") or {}
     if endpoint == CHAT:
-        in_key, out_key = "prompt_tokens", "completion_tokens"
+        in_key, out_key, details_key = "prompt_tokens", "completion_tokens", "prompt_tokens_details"
     else:
-        in_key, out_key = "input_tokens", "output_tokens"
+        in_key, out_key, details_key = "input_tokens", "output_tokens", "input_tokens_details"
     total["input_tokens"] += _as_int(usage.get(in_key))
     total["output_tokens"] += _as_int(usage.get(out_key))
+    # Cached input is billed at a deep discount; record it so cost accounting is exact.
+    details = usage.get(details_key) or {}
+    total["cached_input_tokens"] += _as_int(details.get("cached_tokens"))
 
 
 def _as_int(value: Any) -> int:
