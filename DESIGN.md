@@ -159,3 +159,8 @@ response to repairs is assumed by construction and proves nothing about real mod
 
 Runtime: `openai`, `rich`. Dev: `pytest`, `ruff`. Python ≥3.12. Nothing else without a
 reason written here.
+
+Dev-env gotcha (macOS): uv's editable-install `.pth` files under
+`.venv/lib/python3.12/site-packages/` can carry the `UF_HIDDEN` flag, and this CPython build
+skips hidden `.pth` files, breaking `import upshift`. Fix:
+`chflags nohidden .venv/lib/python3.12/site-packages/*.pth` after `uv sync`.
