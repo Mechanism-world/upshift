@@ -70,11 +70,13 @@ def _model_endpoint(manifest: dict[str, Any]) -> str:
 
 
 def _providers(result: DiffResult) -> tuple[str, bool]:
-    """(display string, simulated?) — simulated when either run is not provider=openai."""
+    """(display string, simulated?) — simulated when either run is not a real OpenAI
+    provider ('openai' sync or 'openai-batch'; batching changes transport, not evidence)."""
     b = str(result.baseline_manifest.get("provider", "?"))
     c = str(result.candidate_manifest.get("provider", "?"))
     display = b if b == c else f"{b} -> {c}"
-    return display, not (b == "openai" and c == "openai")
+    real = ("openai", "openai-batch")
+    return display, not (b in real and c in real)
 
 
 def _n_reps(result: DiffResult) -> Any:

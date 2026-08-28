@@ -83,7 +83,21 @@ def run_suite(
         if not recorder.is_rep_complete(run_directory, case.id, rep)
     ]
 
+    # Wave-batching providers (see providers/openai_batch.py) need every episode running
+    # concurrently and pre-registered, so a wave can be declared complete.
+    batching = getattr(provider, "requires_all_workers", False)
+    if batching and todo:
+        workers = len(todo)
+        provider.episodes_starting([f"{case.id}:{rep}" for case, rep in todo])
+
     def one(case: Case, rep: int) -> RepRecord:
+        try:
+            return _one_inner(case, rep)
+        finally:
+            if batching:
+                provider.episode_finished(f"{case.id}:{rep}")
+
+    def _one_inner(case: Case, rep: int) -> RepRecord:
         start = time.monotonic()
         backend = backend_factory(case.initial_state)
         episode = run_episode(

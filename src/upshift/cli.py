@@ -36,16 +36,30 @@ def _progress(record) -> None:
 def _add_common_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--agent", default="victim/booking_agent", help="victim agent directory")
     p.add_argument("--provider", default="openai", choices=["openai", "sim"])
+    p.add_argument(
+        "--batch",
+        action="store_true",
+        help="execute API calls through the OpenAI Batch API (50%% token cost, slower "
+        "wall-clock; turn-wave scheduling). Only valid with --provider openai.",
+    )
     p.add_argument("--n", type=int, default=5, help="reps per case (default 5)")
     p.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--quiet", action="store_true", help="no per-rep progress lines")
 
 
+def _make_provider(args):
+    if getattr(args, "batch", False):
+        if args.provider != "openai":
+            raise ValueError("--batch is only valid with --provider openai")
+        return get_provider("openai-batch")
+    return get_provider(args.provider)
+
+
 def cmd_run(args) -> int:
     from upshift.runner import run_suite
 
-    provider = get_provider(args.provider)
+    provider = _make_provider(args)
     run_directory = run_suite(
         args.agent,
         provider,
@@ -86,7 +100,7 @@ def cmd_diff(args) -> int:
 def cmd_upgrade(args) -> int:
     from upshift.runner import run_suite
 
-    provider = get_provider(args.provider)
+    provider = _make_provider(args)
     tag = args.tag
     runs_root = args.runs_root
     baseline_id = f"{tag}-baseline"
@@ -154,6 +168,43 @@ def cmd_upgrade(args) -> int:
     return 0 if verdict["verdict"] in ("SAFE", SAFE_WITH_PATCH) else 1
 
 
+def cmd_cost(args) -> int:
+    from upshift.pricing import run_cost
+
+    root = Path(args.runs_root)
+    run_dirs = (
+        [root / rid for rid in args.run_ids]
+        if args.run_ids
+        else sorted(d for d in root.iterdir() if (d / "manifest.json").exists())
+    )
+    total_usd = 0.0
+    total_in = total_out = 0
+    any_unknown = False
+    for run_directory in run_dirs:
+        c = run_cost(run_directory)
+        usd = "$0 (sim)" if c["provider"] == "sim" else (
+            f"${c['usd']:.4f}" if c["usd"] is not None else "unknown rate"
+        )
+        console.print(
+            f"{c['run_id']:<28} {c['provider']:<13} {c['model']:<24} "
+            f"in {c['input_tokens']:>9,}  out {c['output_tokens']:>8,}  {usd}",
+            highlight=False,
+        )
+        if c["provider"] != "sim":
+            total_in += c["input_tokens"]
+            total_out += c["output_tokens"]
+            if c["usd"] is None:
+                any_unknown = True
+            else:
+                total_usd += c["usd"]
+    console.print(
+        f"{'TOTAL (real API)':<28} {'':<13} {'':<24} in {total_in:>9,}  out {total_out:>8,}  "
+        + (f"${total_usd:.4f}" + (" + unknown-rate runs" if any_unknown else "")),
+        highlight=False,
+    )
+    return 0
+
+
 def cmd_report(args) -> int:
     result = load_diff(args.diff_json)
     verdict = None
@@ -207,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
     p_up.add_argument("--budget", type=int, default=6, help="max repair candidates (default 6)")
     p_up.add_argument("--no-repair", action="store_true")
     p_up.set_defaults(func=cmd_upgrade)
+
+    p_cost = sub.add_parser("cost", help="exact token cost of recorded runs")
+    p_cost.add_argument("run_ids", nargs="*", help="run ids; default: every run on disk")
+    p_cost.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
+    p_cost.set_defaults(func=cmd_cost)
 
     p_rep = sub.add_parser("report", help="re-render a saved diff")
     p_rep.add_argument("diff_json")
