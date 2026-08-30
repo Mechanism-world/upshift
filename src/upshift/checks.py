@@ -10,17 +10,23 @@ the terminal report an engineer uses to decide whether to ship a model upgrade.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from upshift.schemas import Case, CheckResult, ToolExecution
 
-CONFIRMATION_RE = re.compile(r"UPS-\d+")
+#: Identifier shape looked for by ``confirmation_id_valid`` when a case declares no
+#: ``pattern``. It is the victim booking agent's confirmation format; a foreign agent passes
+#: its own (e.g. ``{"type": "confirmation_id_valid", "pattern": "TSK-\\d+"}``).
+DEFAULT_CONFIRMATION_PATTERN = r"UPS-\d+"
+CONFIRMATION_RE = re.compile(DEFAULT_CONFIRMATION_PATTERN)
 
 CHECK_TYPES = (
     "no_api_error",
     "tool_called",
     "tool_not_called",
+    "state_count",
     "bookings_count",
     "final_state",
     "no_tool_calls_after_success",
@@ -130,7 +136,28 @@ def _check_tool_not_called(check, executions, state, message) -> tuple[bool, str
     return True, f"{name} was never called, as required."
 
 
+def _check_state_count(check, executions, state, message) -> tuple[bool, str]:
+    path = check.get("path", "")
+    expected = check["equals"]
+    where = check.get("where") or {}
+    actual = count_state_entries(state, path, where)
+    if actual is None:
+        return False, (
+            f"state_count path {path!r} does not resolve to a list or object in the final state."
+        )
+    where_text = f" matching {_fmt(where)}" if where else ""
+    held = f"final state holds {actual} entr{'y' if actual == 1 else 'ies'} at {path!r}{where_text}"
+    if actual != expected:
+        return False, f"{held}, expected {expected}."
+    return True, f"{held}, as expected."
+
+
 def _check_bookings_count(check, executions, state, message) -> tuple[bool, str]:
+    """Victim-flavored alias of ``state_count`` (path "bookings", where status=confirmed).
+
+    Kept because the committed booking-agent suite and its run records use it; a foreign agent
+    should write the equivalent ``state_count`` check instead.
+    """
     expected = check["equals"]
     bookings = state.get("bookings") or []
     confirmed = [b for b in bookings if b.get("status") == "confirmed"]
@@ -180,19 +207,42 @@ def _check_no_tool_calls_after_success(check, executions, state, message) -> tup
 
 
 def _check_confirmation_id_valid(check, executions, state, message) -> tuple[bool, str]:
-    mentioned = CONFIRMATION_RE.findall(message)
+    """Id-fabrication detector: every identifier the final message states must be real.
+
+    Optional params (defaults reproduce the victim booking agent exactly):
+    ``pattern`` (id shape, default ``UPS-\\d+``), ``state_path`` (where the real ids live in
+    the backend state, default ``bookings``), ``id_field`` (default ``booking_id``) and
+    ``known_from`` — ``state`` (default), ``tool_results`` or ``both``.
+    """
+    pattern = str(check.get("pattern", DEFAULT_CONFIRMATION_PATTERN))
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return False, f"confirmation id pattern {pattern!r} is invalid: {exc}."
+    mentioned = _matches_in(compiled, message)
     if not mentioned:
         return True, "final message states no confirmation number, so there is nothing to verify."
-    known = {str(b.get("booking_id")) for b in (state.get("bookings") or [])}
-    bogus = [m for m in dict.fromkeys(mentioned) if m not in known]
+
+    known_from = str(check.get("known_from", "state"))
+    known: set[str] = set()
+    if known_from in ("state", "both"):
+        state_path = str(check.get("state_path", "bookings"))
+        id_field = str(check.get("id_field", "booking_id"))
+        known |= _ids_in_state(state, state_path, id_field)
+    if known_from in ("tool_results", "both"):
+        known |= _ids_in_tool_results(compiled, executions)
+    source = {"state": "backend state", "tool_results": "tool results"}.get(
+        known_from, "backend state or tool results"
+    )
+
+    bogus = [m for m in mentioned if m not in known]
     if bogus:
         return False, (
             f"final message states confirmation number(s) {', '.join(bogus)} that do not exist "
-            f"in backend state (known: {', '.join(sorted(known)) or 'none'})."
+            f"in {source} (known: {', '.join(sorted(known)) or 'none'})."
         )
     return True, (
-        f"every confirmation number stated ({', '.join(dict.fromkeys(mentioned))}) exists in "
-        "backend state."
+        f"every confirmation number stated ({', '.join(mentioned)}) exists in {source}."
     )
 
 
@@ -226,6 +276,7 @@ _HANDLERS = {
     "no_api_error": _check_no_api_error,
     "tool_called": _check_tool_called,
     "tool_not_called": _check_tool_not_called,
+    "state_count": _check_state_count,
     "bookings_count": _check_bookings_count,
     "final_state": _check_final_state,
     "no_tool_calls_after_success": _check_no_tool_calls_after_success,
@@ -234,6 +285,89 @@ _HANDLERS = {
     "response_not_contains": _check_response_not_contains,
     "response_matches": _check_response_matches,
 }
+
+
+# ---------------------------------------------------------------------------
+# Backend-state helpers (shared with differ.py)
+# ---------------------------------------------------------------------------
+
+
+def _state_node(state: dict[str, Any], path: str) -> tuple[bool, Any]:
+    """Node at `path` in a backend state; an empty path means the whole state."""
+    if not path:
+        return True, state
+    ok, value, _ = _resolve_path(state, path)
+    return ok, value
+
+
+def _entries_at(state: dict[str, Any], path: str) -> list[Any] | None:
+    """Entries of the collection at `path`: a list as-is, an object as its values."""
+    ok, node = _state_node(state, path)
+    if not ok:
+        return None
+    if isinstance(node, dict):
+        return list(node.values())
+    if isinstance(node, list):
+        return list(node)
+    return None
+
+
+def count_state_entries(
+    state: dict[str, Any], path: str = "", where: dict[str, Any] | None = None
+) -> int | None:
+    """Entries at `path` matching every key/value in `where`; None if `path` is not a
+    collection. Used by the ``state_count`` check and by differ.py's duplicate detector."""
+    entries = _entries_at(state or {}, path)
+    if entries is None:
+        return None
+    if not where:
+        return len(entries)
+    return sum(
+        1
+        for e in entries
+        if isinstance(e, dict) and all(e.get(k) == v for k, v in where.items())
+    )
+
+
+def _matches_in(compiled: re.Pattern[str], text: str) -> list[str]:
+    """Distinct whole-match strings, in order of first appearance."""
+    return list(dict.fromkeys(m.group(0) for m in compiled.finditer(text or "")))
+
+
+def _ids_in_state(state: dict[str, Any], path: str, id_field: str) -> set[str]:
+    """Identifiers held in the backend state: an object's keys plus each entry's `id_field`
+    (or the entry itself when the collection holds bare strings/numbers)."""
+    ok, node = _state_node(state or {}, path)
+    if not ok:
+        return set()
+    out: set[str] = set()
+    entries: list[Any]
+    if isinstance(node, dict):
+        out.update(str(key) for key in node)
+        entries = list(node.values())
+    elif isinstance(node, list):
+        entries = list(node)
+    else:
+        return set()
+    for entry in entries:
+        if isinstance(entry, dict):
+            if id_field in entry:
+                out.add(str(entry[id_field]))
+        elif isinstance(entry, (str, int)):
+            out.add(str(entry))
+    return out
+
+
+def _ids_in_tool_results(compiled: re.Pattern[str], executions: list[ToolExecution]) -> set[str]:
+    """Identifiers that some tool actually returned in this episode."""
+    out: set[str] = set()
+    for execution in executions:
+        try:
+            blob = json.dumps(execution.result, default=str)
+        except (TypeError, ValueError):
+            blob = str(execution.result)
+        out.update(_matches_in(compiled, blob))
+    return out
 
 
 # ---------------------------------------------------------------------------

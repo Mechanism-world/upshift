@@ -6,6 +6,11 @@ three patchable files, ordered by how directly they target the observed signatur
 
 The marker phrases inside the text blocks below are contracts with providers/sim.py
 (corruption suppression) — change them only together.
+
+The blocks are domain-neutral on purpose: they are appended verbatim to whatever agent is
+under repair, so nothing here may name a tool or a business domain. The single exception is
+the tool-schema edit, which targets a tool by name and is skipped when that tool is absent
+(see ``_tool_description_edit``).
 """
 
 from __future__ import annotations
@@ -24,35 +29,37 @@ STOP_BLOCK = (
     "make any further tool calls; reply to the user instead."
 )
 NO_FABRICATION_BLOCK = (
-    "\n\nNever state a confirmation number or booking detail that was not returned by a "
-    "tool call in this conversation. If the booking tool has not been called yet, call it "
-    "before confirming anything to the user."
+    "\n\nNever state a confirmation number or any other identifier that was not returned by "
+    "a tool call in this conversation. If the tool that produces it has not been called yet, "
+    "call it before confirming anything to the user."
 )
+#: The only tool name the playbook knows. Every candidate that mentions it is skipped for an
+#: agent that does not expose a tool with this exact name (see ``_tool_description_edit``).
+BOOK_TOOL_NAME = "book_flight"
+# Appended to that tool's description; skipped when the tool is absent.
 BOOK_TOOL_SUFFIX = (
     " This tool must be called to create any real booking. Call it exactly once per "
     "confirmed itinerary; never confirm a booking without calling it."
 )
 # Observed on real gpt-5.6-sol (pilot 2026-08-28): interrogates instead of executing —
-# asks for route/date details book_flight does not even require, books nothing.
+# asks for details the tool does not even require, then acts on nothing.
 EXECUTE_BLOCK = (
-    "\n\nWhen the traveler's request already contains everything a tool needs, call the "
-    "tool immediately instead of asking for more information. book_flight requires only "
-    "the flight id and passenger name; never ask for details a tool does not require."
+    "\n\nWhen the user's request already contains everything a tool needs, call the "
+    "tool immediately instead of asking for more information. Never ask for details that "
+    "a tool's schema does not require."
 )
-# Observed on real gpt-5.6-sol (full run 2026-08-28): announces "no flights available"
-# after its own search returned flights, then refuses to book.
+# Observed on real gpt-5.6-sol (full run 2026-08-28): announces "nothing available"
+# after its own search returned results, then refuses to act.
 RESULTS_GROUNDING_BLOCK = (
-    "\n\nBase every availability statement strictly on the tool results in this "
-    "conversation. If search_flights returned one or more flights, those flights exist "
-    "and are bookable; never claim nothing is available when the results list is "
-    "non-empty."
+    "\n\nBase every availability or status statement strictly on the tool results in this "
+    "conversation. If a tool returned one or more results, those results exist and are "
+    "usable; never claim nothing is available when the results list is non-empty."
 )
 # Observed on real gpt-5.6-sol (pilot 2026-08-28): reformats identifiers ("B6 220" for
 # "B6220"), breaking exact-output contracts downstream systems rely on.
 VERBATIM_BLOCK = (
-    "\n\nWrite identifiers such as flight ids, booking ids, and confirmation numbers "
-    "exactly as the tools returned them, character for character. Never insert spaces "
-    "into or otherwise reformat an identifier."
+    "\n\nWrite every identifier a tool returned exactly as the tool returned it, character "
+    "for character. Never insert spaces into or otherwise reformat an identifier."
 )
 
 
@@ -92,17 +99,26 @@ def _prompt_append(agent_dir: Path, raw_config: dict, block: str) -> FileEdit:
     return FileEdit(file=rel, new_content=_read(agent_dir, rel).rstrip("\n") + block + "\n")
 
 
-def _book_tool_edit(agent_dir: Path, raw_config: dict) -> FileEdit | None:
+def _tool_description_edit(
+    agent_dir: Path, raw_config: dict, tool_name: str, suffix: str
+) -> FileEdit | None:
+    """Append `suffix` to one named tool's description.
+
+    Returns None — and the caller then drops the candidate entirely — when the agent has no
+    such tool or its description already carries the marker. This is the one victim-flavored
+    repair: it fires only for an agent that literally exposes a tool called `tool_name`, and
+    is a silent no-op for every other agent.
+    """
     rel = raw_config["tools_file"]
     text = _read(agent_dir, rel)
     tools = json.loads(text)
     for tool in tools:
-        fn = tool.get("function", {})
-        if fn.get("name") == "book_flight":
+        fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+        if fn.get("name") == tool_name:
             old_desc = fn.get("description", "")
             if "exactly once" in old_desc.lower():
                 return None
-            new_desc = old_desc.rstrip() + BOOK_TOOL_SUFFIX
+            new_desc = old_desc.rstrip() + suffix
             minimal = (
                 text.replace(json.dumps(old_desc), json.dumps(new_desc))
                 if old_desc and text.count(json.dumps(old_desc)) == 1
@@ -163,8 +179,9 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 "tool-schema-book-once",
                 "tool_schema_edit",
                 sig,
-                "Strengthen book_flight description: exactly once per confirmed itinerary.",
-                [_book_tool_edit(agent_dir, raw_config)],
+                f"Strengthen the {BOOK_TOOL_NAME} description: exactly once per confirmed "
+                "itinerary (skipped when the agent has no such tool).",
+                [_tool_description_edit(agent_dir, raw_config, BOOK_TOOL_NAME, BOOK_TOOL_SUFFIX)],
             )
         elif sig == "acting_past_goal":
             if "stop once the task is complete" not in prompt:
@@ -190,8 +207,9 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 "tool-schema-book-required",
                 "tool_schema_edit",
                 sig,
-                "Strengthen book_flight description: must be called to create any booking.",
-                [_book_tool_edit(agent_dir, raw_config)],
+                f"Strengthen the {BOOK_TOOL_NAME} description: must be called to create any "
+                "booking (skipped when the agent has no such tool).",
+                [_tool_description_edit(agent_dir, raw_config, BOOK_TOOL_NAME, BOOK_TOOL_SUFFIX)],
             )
         elif sig in ("wrong_or_missing_tool_call", "other_behavioral"):
             if sig == "wrong_or_missing_tool_call" and "call the tool immediately" not in prompt:

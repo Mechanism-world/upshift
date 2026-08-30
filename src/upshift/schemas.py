@@ -36,7 +36,17 @@ class AgentConfig:
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
         agent_dir = Path(agent_dir)
-        raw = json.loads((agent_dir / "agent.json").read_text())
+        path = agent_dir / "agent.json"
+        if not path.is_file():
+            raise ValueError(f"agent dir {agent_dir} has no agent.json (see ADAPTER.md)")
+        raw = json.loads(path.read_text())
+        missing = [
+            key
+            for key in ("name", "endpoint", "model", "system_prompt_file", "tools_file")
+            if key not in raw
+        ]
+        if missing:
+            raise ValueError(f"{path} is missing required key(s): {', '.join(missing)}")
         if raw["endpoint"] not in ENDPOINTS:
             raise ValueError(f"unknown endpoint {raw['endpoint']!r}")
         return AgentConfig(

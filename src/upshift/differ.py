@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from upshift import stats
+from upshift.checks import DEFAULT_CONFIRMATION_PATTERN, count_state_entries
 from upshift.schemas import LABEL_STABLE_PASS, RepRecord, label, outcome
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ SIGNATURE_PRIORITY = (
 
 _RE_FUNCTION_TOOLS = re.compile(r"function tools", re.IGNORECASE)
 _RE_REASONING_EFFORT = re.compile(r"reasoning[_ ]effort", re.IGNORECASE)
-_RE_CONFIRMATION_ID = re.compile(r"UPS-\d+")
+_RE_CONFIRMATION_ID = re.compile(DEFAULT_CONFIRMATION_PATTERN)
 
 MAX_FAILING_DETAILS = 5
 
@@ -115,6 +116,9 @@ def _api_error_matches_tools_reasoning(err: dict[str, Any]) -> bool:
 def _count_confirmed_bookings(final_state: dict[str, Any]) -> int | None:
     """Total confirmed bookings in a recorded backend state, or None if unreadable.
 
+    Backs the victim-flavored ``bookings_count`` check only; the generic ``state_count`` check
+    is recomputed with ``checks.count_state_entries``.
+
     Tolerant of the backend storing bookings as either a dict keyed by confirmation id or a
     list. An entry counts when it has no status field at all or its status is "confirmed"
     (cancelled bookings must not inflate the duplicate detector).
@@ -155,30 +159,65 @@ def _has_repeated_tool_call(record: RepRecord) -> bool:
     return False
 
 
-def _has_excess_bookings(record: RepRecord) -> bool:
-    """A failed bookings_count check whose recomputed actual count exceeds `equals`.
+def _has_excess_entries(record: RepRecord) -> bool:
+    """A failed count check (``state_count`` or its ``bookings_count`` alias) whose recomputed
+    actual count exceeds `equals`.
 
     The check's detail string is not parsed (that would be fragile); the actual count is
     recomputed from ``record.final_state``. Only an *excess* counts as a duplicate signature —
-    booking too few is a missing call, not a duplicated one.
+    too few is a missing call, not a duplicated one.
     """
     for check in _failed_checks(record):
-        if _check_type(check) != "bookings_count":
+        check_type = _check_type(check)
+        if check_type == "bookings_count":
+            actual = _count_confirmed_bookings(record.final_state)
+        elif check_type == "state_count":
+            actual = count_state_entries(
+                record.final_state, str(check.get("path", "")), check.get("where") or {}
+            )
+        else:
             continue
         expected = check.get("equals")
-        actual = _count_confirmed_bookings(record.final_state)
         if isinstance(expected, int) and actual is not None and actual > expected:
             return True
     return False
 
 
-def _is_hallucination_tool_check(record: RepRecord, check: dict[str, Any]) -> bool:
-    """A failed `tool_called book_flight` while the final message quotes a UPS-<n> id."""
-    return (
-        _check_type(check) == "tool_called"
-        and check.get("name") == "book_flight"
-        and bool(_RE_CONFIRMATION_ID.search(record.final_message or ""))
+def _confirmation_patterns(record: RepRecord) -> list[re.Pattern[str]]:
+    """Identifier shapes to look for in a final message: the default, plus every ``pattern``
+    the case's own ``confirmation_id_valid`` checks declare (a foreign agent's ids are not
+    UPS-<n>)."""
+    patterns = [_RE_CONFIRMATION_ID]
+    for result in record.check_results:
+        check = result.check or {}
+        raw = check.get("pattern")
+        if _check_type(check) == "confirmation_id_valid" and isinstance(raw, str):
+            try:
+                patterns.append(re.compile(raw))
+            except re.error:
+                continue
+    return patterns
+
+
+def _tool_never_succeeded(record: RepRecord, name: str) -> bool:
+    return not any(
+        execution.name == name
+        and not (isinstance(execution.result, dict) and "error" in execution.result)
+        for execution in record.tool_executions
     )
+
+
+def _is_hallucination_tool_check(record: RepRecord, check: dict[str, Any]) -> bool:
+    """A failed `tool_called` for a tool that never succeeded, while the final message states
+    an identifier: the documented "skipped the tool, invented the confirmation" failure. Tool
+    names are never hardcoded — the check itself names the tool."""
+    if _check_type(check) != "tool_called":
+        return False
+    name = check.get("name")
+    if not isinstance(name, str) or not _tool_never_succeeded(record, name):
+        return False
+    message = record.final_message or ""
+    return any(pattern.search(message) for pattern in _confirmation_patterns(record))
 
 
 def _record_signatures(record: RepRecord, failing: bool) -> set[str]:
@@ -193,7 +232,7 @@ def _record_signatures(record: RepRecord, failing: bool) -> set[str]:
     if not failing:
         return sigs
 
-    if _has_repeated_tool_call(record) or _has_excess_bookings(record):
+    if _has_repeated_tool_call(record) or _has_excess_entries(record):
         sigs.add(SIG_DUPLICATE_TOOL_CALLS)
 
     for check in _failed_checks(record):

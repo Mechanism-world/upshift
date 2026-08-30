@@ -22,12 +22,19 @@ from upshift.schemas import AgentConfig, Case, RepRecord
 
 
 def load_backend_factory(agent_dir: str | Path) -> Callable[[dict], Any]:
-    """The victim agent dir must contain backend.py exposing create_backend(initial_state)."""
+    """An agent dir must contain backend.py exposing create_backend(initial_state). ADAPTER.md."""
     path = Path(agent_dir) / "backend.py"
-    spec = importlib.util.spec_from_file_location(f"victim_backend_{Path(agent_dir).name}", path)
+    if not path.is_file():
+        raise ValueError(f"agent dir {agent_dir} has no backend.py (see ADAPTER.md)")
+    spec = importlib.util.spec_from_file_location(f"upshift_backend_{Path(agent_dir).name}", path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{path} could not be loaded as a Python module")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    return module.create_backend
+    spec.loader.exec_module(module)
+    factory = getattr(module, "create_backend", None)
+    if factory is None:
+        raise ValueError(f"{path} does not expose create_backend(initial_state) (see ADAPTER.md)")
+    return factory
 
 
 def seed_for(case_id: str, rep: int) -> int:
@@ -51,7 +58,10 @@ def run_suite(
 ) -> Path:
     """Run every case n_reps times; returns the run directory."""
     config = AgentConfig.load(agent_dir)
-    cases = Case.load_all(Path(agent_dir) / "cases" / "cases.json")
+    cases_path = Path(agent_dir) / "cases" / "cases.json"
+    if not cases_path.is_file():
+        raise ValueError(f"agent dir {agent_dir} has no cases/cases.json (see ADAPTER.md)")
+    cases = Case.load_all(cases_path)
     effective_model = model_override or config.model
     effective_endpoint = endpoint_override or config.endpoint
     effective_params = dict(config.params) if params_override is None else dict(params_override)

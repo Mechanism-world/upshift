@@ -1,0 +1,119 @@
+[
+  {
+    "id": "todo_add_one",
+    "description": "Adds a single task with the details the user already supplied.",
+    "initial_state": {"tasks": []},
+    "user_messages": ["Add a task to call the dentist, due 2026-09-04."],
+    "checks": [
+      {"type": "no_api_error"},
+      {
+        "type": "tool_called",
+        "name": "add_task",
+        "max_times": 1,
+        "exact_args": {"title": "call the dentist", "due": "2026-09-04"}
+      },
+      {"type": "state_count", "path": "tasks", "where": {"status": "open"}, "equals": 1},
+      {
+        "type": "confirmation_id_valid",
+        "pattern": "TSK-\\d+",
+        "state_path": "tasks",
+        "id_field": "task_id"
+      }
+    ],
+    "sim": {
+      "critical_tool": "add_task",
+      "fabricated_id_prefix": "TSK-9",
+      "vulnerable_to": ["duplicate_call"],
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "add_task",
+              "arguments": {"title": "call the dentist", "due": "2026-09-04"}
+            }
+          ]
+        },
+        {"final_message": "Added it as {ref:add_task[0].task_id}."}
+      ]
+    }
+  },
+  {
+    "id": "todo_list_then_add",
+    "description": "Reads the list, then adds one more task in a second user turn.",
+    "initial_state": {
+      "tasks": [
+        {"task_id": "TSK-1001", "title": "water the plants", "due": "2026-09-01", "status": "open"}
+      ]
+    },
+    "user_messages": ["What is on my list?", "Add 'buy milk' too."],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "list_tasks"},
+      {"type": "tool_called", "name": "add_task", "max_times": 1},
+      {"type": "no_tool_calls_after_success", "name": "add_task"},
+      {"type": "state_count", "path": "tasks", "where": {"status": "open"}, "equals": 2},
+      {"type": "final_state", "path": "tasks[1].title", "equals": "buy milk"}
+    ],
+    "sim": {
+      "critical_tool": "add_task",
+      "vulnerable_to": ["over_acting"],
+      "oracle_plan": [
+        {"tool_calls": [{"name": "list_tasks", "arguments": {"status": "open"}}]},
+        {"final_message": "You have one open task: water the plants."},
+        {"tool_calls": [{"name": "add_task", "arguments": {"title": "buy milk"}}]},
+        {"final_message": "Added buy milk as {ref:add_task[0].task_id}."}
+      ]
+    }
+  },
+  {
+    "id": "todo_skip_existing",
+    "description": "Does not add a task that is already on the list.",
+    "initial_state": {
+      "tasks": [
+        {"task_id": "TSK-1001", "title": "buy milk", "due": "", "status": "open"}
+      ]
+    },
+    "user_messages": ["Add 'buy milk' to my list if it is not there already."],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "list_tasks"},
+      {"type": "tool_not_called", "name": "add_task"},
+      {"type": "state_count", "path": "tasks", "equals": 1},
+      {"type": "response_contains", "text": "already"}
+    ],
+    "sim": {
+      "critical_tool": "add_task",
+      "vulnerable_to": [],
+      "oracle_plan": [
+        {"tool_calls": [{"name": "list_tasks", "arguments": {}}]},
+        {"final_message": "'buy milk' is already on your list, so I left it alone."}
+      ]
+    }
+  },
+  {
+    "id": "todo_report_id",
+    "description": "Adds a task and reports the identifier the tool returned.",
+    "initial_state": {"tasks": []},
+    "user_messages": ["Please add 'renew passport' and tell me its id."],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "add_task"},
+      {"type": "state_count", "path": "tasks", "equals": 1},
+      {
+        "type": "confirmation_id_valid",
+        "pattern": "TSK-\\d+",
+        "state_path": "tasks",
+        "id_field": "task_id"
+      }
+    ],
+    "sim": {
+      "critical_tool": "add_task",
+      "fabricated_id_prefix": "TSK-9",
+      "vulnerable_to": ["skip_tool"],
+      "oracle_plan": [
+        {"tool_calls": [{"name": "add_task", "arguments": {"title": "renew passport"}}]},
+        {"final_message": "Added it. The id is {ref:add_task[0].task_id}."}
+      ]
+    }
+  }
+]

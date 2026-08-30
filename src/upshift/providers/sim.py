@@ -28,6 +28,10 @@ conversation (index defaults to 0). Unresolvable -> "REF-ERROR".
 Other knobs read off `case.sim`:
   * `"vulnerable_to": ["duplicate_call", "over_acting", "skip_tool"]` — 5.6 corruptions.
   * `"flaky": {"rate": 0.2, "mode": "skip_final_tool"}` — case-level flakiness, both models.
+  * `"critical_tool": "<tool name>"` — which tool the `duplicate_call` and `skip_tool`
+    corruptions target. Defaults to the victim's `book_flight`; a foreign agent names its own.
+  * `"fabricated_id_prefix": "UPS-9"` — prefix of the identifier `skip_tool` invents; must
+    match the case's `confirmation_id_valid` pattern for the fabrication to be detectable.
 """
 
 from __future__ import annotations
@@ -44,8 +48,16 @@ CHAT = "chat_completions"
 RESPONSES = "responses"
 
 REF_ERROR = "REF-ERROR"
+#: Default target of the duplicate_call / skip_tool corruptions (the victim's booking tool).
+#: Foreign agents override it per case with `sim.critical_tool`.
 BOOK_TOOL = "book_flight"
+#: Default prefix of the identifier the skip_tool corruption invents (`sim.fabricated_id_prefix`).
+FABRICATED_ID_PREFIX = "UPS-9"
 DONE_MESSAGE = "Done."
+
+NO_PLAN_MESSAGE = (
+    "sim provider requires sim.oracle_plan per case; use --provider openai for real agents"
+)
 
 HARD_BREAK_MESSAGE = (
     "Function tools with reasoning_effort are not supported for sim-5.6-sol in "
@@ -173,10 +185,15 @@ def _resolve_arguments(value: Any, results: dict[str, list[Any]]) -> Any:
     return value
 
 
-def _render_message(text: str, results: dict[str, list[Any]], fabricated: str | None = None) -> str:
+def _render_message(
+    text: str,
+    results: dict[str, list[Any]],
+    fabricated: str | None = None,
+    critical_tool: str = BOOK_TOOL,
+) -> str:
     def replace(match: re.Match[str]) -> str:
         ref = match.group(1).strip()
-        if fabricated is not None and ref.startswith(BOOK_TOOL):
+        if fabricated is not None and ref.startswith(critical_tool):
             return fabricated
         value = _resolve_ref(ref, results)
         if value is _MISSING:
@@ -390,15 +407,16 @@ class _EpisodeState:
         self.cursor = 0
         self.last_tool_call: tuple[str, Any] | None = None
         self.over_acting_done = False
+        self.critical_tool = str(sim.get("critical_tool") or BOOK_TOOL)
 
         tool_steps = [i for i, (kind, _) in enumerate(self.steps) if kind == "tools"]
         self.last_tool_idx = tool_steps[-1] if tool_steps else None
         message_steps = [i for i, (kind, _) in enumerate(self.steps) if kind == "message"]
         self.final_message_idx = message_steps[-1] if message_steps else None
-        self.first_book_idx = None
+        self.first_critical_idx = None
         for index, (kind, payload) in enumerate(self.steps):
-            if kind == "tools" and any(c["name"] == BOOK_TOOL for c in payload):
-                self.first_book_idx = index
+            if kind == "tools" and any(c["name"] == self.critical_tool for c in payload):
+                self.first_critical_idx = index
                 break
 
         flaky = sim.get("flaky") or {}
@@ -415,7 +433,8 @@ class _EpisodeState:
                     self.draws[rule] = _rng(case_id, rep, model, rule).random() < rate
 
         digits = _rng(case_id, rep, model, "fabricate").randrange(1000)
-        self.fabricated_id = f"UPS-9{digits:03d}"
+        prefix = str(sim.get("fabricated_id_prefix") or FABRICATED_ID_PREFIX)
+        self.fabricated_id = f"{prefix}{digits:03d}"
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +470,11 @@ class SimProvider(Provider):
         rep = int(context.get("rep", 0) or 0)
         sim = context.get("sim") or {}
 
+        # The sim can only replay a plan it was given. Without one it would silently answer
+        # "Done." to everything and every case would look like a real regression.
+        if not (sim.get("oracle_plan") or []):
+            raise ValueError(f"{NO_PLAN_MESSAGE} (case {case_id!r} declares none)")
+
         key = (case_id, rep, model)
         if seed_key.endswith(":0"):
             self._episodes.pop(key, None)
@@ -476,17 +500,17 @@ class SimProvider(Provider):
 
         results = _parse_results(endpoint, request)
         prompt = _system_prompt(endpoint, request).lower()
-        book_description = _tool_description(request, BOOK_TOOL).lower()
+        tool_description = _tool_description(request, state.critical_tool).lower()
 
         duplicate = state.draws.get("duplicate_call", False) and not (
             any(marker in prompt for marker in DUPLICATE_PROMPT_MARKERS)
-            or DUPLICATE_TOOL_MARKER in book_description
+            or DUPLICATE_TOOL_MARKER in tool_description
         )
         over_acting = state.draws.get("over_acting", False) and (
             OVER_ACTING_PROMPT_MARKER not in prompt
         )
         skip_tool = state.draws.get("skip_tool", False) and not (
-            SKIP_PROMPT_MARKER in prompt or SKIP_TOOL_MARKER in book_description
+            SKIP_PROMPT_MARKER in prompt or SKIP_TOOL_MARKER in tool_description
         )
 
         # Advance past steps this episode drops.
@@ -494,7 +518,7 @@ class SimProvider(Provider):
             kind, _ = state.steps[state.cursor]
             if kind != "tools":
                 break
-            if skip_tool and state.cursor == state.first_book_idx:
+            if skip_tool and state.cursor == state.first_critical_idx:
                 state.cursor += 1
                 continue
             if state.flaky_skip and state.cursor == state.last_tool_idx:
@@ -513,7 +537,11 @@ class SimProvider(Provider):
                 name = call["name"]
                 arguments = _resolve_arguments(call["arguments"], results)
                 calls.append((name, arguments))
-                if duplicate and state.cursor == state.first_book_idx and name == BOOK_TOOL:
+                if (
+                    duplicate
+                    and state.cursor == state.first_critical_idx
+                    and name == state.critical_tool
+                ):
                     calls.append((name, arguments))
             state.cursor += 1
             if calls:
@@ -531,7 +559,7 @@ class SimProvider(Provider):
             return self._tools(endpoint, model, seed_key, request, [state.last_tool_call])
 
         fabricated = state.fabricated_id if skip_tool else None
-        text = _render_message(payload, results, fabricated)
+        text = _render_message(payload, results, fabricated, state.critical_tool)
         # The invented confirmation is only volunteered at the end of the episode; an
         # intermediate turn keeps whatever the plan said.
         if (
