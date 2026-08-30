@@ -26,6 +26,13 @@ We ran a 38-case booking agent through the real `gpt-5.5` → `gpt-5.6-sol` upgr
 
 Total API cost of the experiment: $12.31 (flex tier + prompt caching).
 
+We then pointed the same pipeline at an agent we didn't write:
+[shell_gpt](https://github.com/TheR1D/shell_gpt) (12k stars), which the same upgrade
+hard-breaks — 14/14 cases regressed on the documented 400, with no workaround available in
+its config. One accepted repair (a one-line endpoint route to `/v1/responses`) restored
+14/14 with zero collateral: **SAFE WITH PATCH**, verified on 10 reps per case, for $0.56 of
+API spend. Full write-up: [reports/shellgpt-upgrade.md](reports/shellgpt-upgrade.md).
+
 ## Quickstart
 
 Sixty seconds, no API key — the built-in deterministic simulator runs the full pipeline:
@@ -105,7 +112,10 @@ source — it fits in an afternoon.
 ## Honest limits
 
 - Tested on two agents so far: our synthetic booking agent (the committed experiment above)
-  and one real open-source agent (report in this repo). That is not a benchmark suite.
+  and one real open-source agent — [shell_gpt](https://github.com/TheR1D/shell_gpt), which
+  the same upgrade hard-breaks and a verified one-line patch fully repairs
+  (**SAFE WITH PATCH**, 14/14 restored, $0.56 of API spend:
+  [the report](reports/shellgpt-upgrade.md)). That is not a benchmark suite.
 - OpenAI API agents only (chat/completions and responses). No Anthropic/Google/local models
   yet, no framework integrations (LangChain, crewAI, etc.).
 - Repairs are limited to prompt edits, model params, tool schema edits, and endpoint
