@@ -1,0 +1,3912 @@
+[
+  {
+    "id": "happy_search_basic",
+    "description": "Plain availability question on a route with three options; report, do not book.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA100",
+          "origin": "SFO",
+          "destination": "LAX",
+          "date": "2026-03-05",
+          "depart_time": "07:30",
+          "price": 118,
+          "stops": 0,
+          "seats_available": 9
+        },
+        {
+          "flight_id": "DL220",
+          "origin": "SFO",
+          "destination": "LAX",
+          "date": "2026-03-05",
+          "depart_time": "11:45",
+          "price": 142,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AS330",
+          "origin": "SFO",
+          "destination": "LAX",
+          "date": "2026-03-05",
+          "depart_time": "18:10",
+          "price": 99,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "What flights do you have from SFO to LAX on 2026-03-05?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SFO",
+          "destination": "LAX",
+          "date": "2026-03-05"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "AS330"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SFO",
+                "destination": "LAX",
+                "date": "2026-03-05"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Three options SFO to LAX on 2026-03-05: AS330 departs 18:10 for $99 with one stop, UA100 departs 07:30 for $118 nonstop, and DL220 departs 11:45 for $142 nonstop. Want me to hold one of them?"
+        }
+      ],
+      "vulnerable_to": [],
+      "flaky": {
+        "rate": 0.4,
+        "mode": "skip_final_tool"
+      }
+    }
+  },
+  {
+    "id": "happy_search_and_book_cheapest",
+    "description": "Search and book the cheapest fare in a single request; UA771 at $168 is the unique cheapest.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS512",
+          "origin": "SEA",
+          "destination": "DEN",
+          "date": "2026-04-12",
+          "depart_time": "06:00",
+          "price": 214,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA771",
+          "origin": "SEA",
+          "destination": "DEN",
+          "date": "2026-04-12",
+          "depart_time": "09:20",
+          "price": 168,
+          "stops": 0,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "DL903",
+          "origin": "SEA",
+          "destination": "DEN",
+          "date": "2026-04-12",
+          "depart_time": "14:35",
+          "price": 189,
+          "stops": 1,
+          "seats_available": 2
+        },
+        {
+          "flight_id": "F9145",
+          "origin": "SEA",
+          "destination": "DEN",
+          "date": "2026-04-12",
+          "depart_time": "21:05",
+          "price": 250,
+          "stops": 1,
+          "seats_available": 8
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Find me flights from SEA to DEN on 2026-04-12 and book the cheapest one for Maria Lopez."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SEA",
+          "destination": "DEN",
+          "date": "2026-04-12"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "args_subset": {
+          "flight_id": "UA771",
+          "passenger": "Maria Lopez"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "confirmed"
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "UA771"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SEA",
+                "destination": "DEN",
+                "date": "2026-04-12"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Maria Lopez"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Booked. Maria Lopez is on UA771, SEA to DEN on 2026-04-12, departing 09:20 for $168. Your confirmation number is {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "happy_multiturn_book_by_time",
+    "description": "Search first, then book the 09:00 departure named in the follow-up message.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA318",
+          "origin": "BOS",
+          "destination": "ORD",
+          "date": "2026-05-20",
+          "depart_time": "09:00",
+          "price": 210,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA640",
+          "origin": "BOS",
+          "destination": "ORD",
+          "date": "2026-05-20",
+          "depart_time": "12:30",
+          "price": 178,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6511",
+          "origin": "BOS",
+          "destination": "ORD",
+          "date": "2026-05-20",
+          "depart_time": "17:45",
+          "price": 233,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Show me flights from BOS to ORD on 2026-05-20.",
+      "Book the 9:00am one for Daniel Reyes."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "BOS",
+          "destination": "ORD",
+          "date": "2026-05-20"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "AA318",
+          "passenger": "Daniel Reyes"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "AA318"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "BOS",
+                "destination": "ORD",
+                "date": "2026-05-20"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "BOS to ORD on 2026-05-20: UA640 at 12:30 for $178 nonstop, AA318 at 09:00 for $210 nonstop, and B6511 at 17:45 for $233 with one stop."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[1].flight_id",
+                "passenger": "Daniel Reyes"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Done. Daniel Reyes is confirmed on AA318, BOS to ORD on 2026-05-20 at 09:00. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "happy_cancel_existing_booking",
+    "description": "Cancel a single confirmed reservation by the reference the traveler supplies.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "DL410",
+          "origin": "ATL",
+          "destination": "MCO",
+          "date": "2026-03-11",
+          "depart_time": "08:15",
+          "price": 129,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "F9220",
+          "origin": "ATL",
+          "destination": "MCO",
+          "date": "2026-03-11",
+          "depart_time": "13:50",
+          "price": 112,
+          "stops": 1,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "AA615",
+          "origin": "ATL",
+          "destination": "MCO",
+          "date": "2026-03-11",
+          "depart_time": "19:05",
+          "price": 147,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "DL410",
+          "passenger": "Erin Walsh",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Please cancel my booking UPS-1001."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1001"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 5
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "cancel_booking"
+      },
+      {
+        "type": "response_contains",
+        "text": "cancel"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1001"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Booking UPS-1001 for Erin Walsh on DL410, ATL to MCO on 2026-03-11, is now cancelled and the seat has been released."
+        }
+      ],
+      "vulnerable_to": [
+        "over_acting"
+      ]
+    }
+  },
+  {
+    "id": "happy_book_by_flight_id",
+    "description": "Traveler names the flight and the passenger outright; one booking call is all that is needed.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA318",
+          "origin": "JFK",
+          "destination": "AUS",
+          "date": "2026-06-03",
+          "depart_time": "10:20",
+          "price": 245,
+          "stops": 0,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "B6702",
+          "origin": "JFK",
+          "destination": "AUS",
+          "date": "2026-06-03",
+          "depart_time": "15:40",
+          "price": 231,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA905",
+          "origin": "JFK",
+          "destination": "AUS",
+          "date": "2026-06-03",
+          "depart_time": "20:05",
+          "price": 268,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight AA318 for Priya Raman."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "AA318",
+          "passenger": "Priya Raman"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].passenger",
+        "equals": "Priya Raman"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 5
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "AA318",
+                "passenger": "Priya Raman"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Priya Raman is confirmed on AA318, JFK to AUS on 2026-06-03, departing 10:20 for $245. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "over_acting"
+      ]
+    }
+  },
+  {
+    "id": "happy_cancel_then_confirm",
+    "description": "Cancel, then answer a follow-up asking for confirmation without touching any tool again.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "WN802",
+          "origin": "LAS",
+          "destination": "SAN",
+          "date": "2026-04-27",
+          "depart_time": "16:40",
+          "price": 88,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "WN640",
+          "origin": "LAS",
+          "destination": "SAN",
+          "date": "2026-04-27",
+          "depart_time": "08:25",
+          "price": 76,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "AS118",
+          "origin": "LAS",
+          "destination": "SAN",
+          "date": "2026-04-27",
+          "depart_time": "12:10",
+          "price": 95,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "WN802",
+          "passenger": "Jamie Cho",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Cancel booking UPS-1001, please.",
+      "Just to be sure - is it definitely cancelled now?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1001"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "response_matches",
+        "regex": "cancell?ed"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1001"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Booking UPS-1001 on WN802 is cancelled."
+        },
+        {
+          "final_message": "Yes - UPS-1001 came back from the reservation system as cancelled, and the seat on WN802 has gone back into inventory. Nothing further is owed."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "happy_search_then_decline",
+    "description": "Traveler asks what is available and then walks away; nothing may be booked.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA455",
+          "origin": "ORD",
+          "destination": "SEA",
+          "date": "2026-05-09",
+          "depart_time": "07:05",
+          "price": 198,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AS660",
+          "origin": "ORD",
+          "destination": "SEA",
+          "date": "2026-05-09",
+          "depart_time": "13:20",
+          "price": 176,
+          "stops": 0,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "DL771",
+          "origin": "ORD",
+          "destination": "SEA",
+          "date": "2026-05-09",
+          "depart_time": "19:50",
+          "price": 221,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "What can I get from ORD to SEA on 2026-05-09?",
+      "Thanks, I'll think about it."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ORD",
+          "destination": "SEA",
+          "date": "2026-05-09"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ORD",
+                "destination": "SEA",
+                "date": "2026-05-09"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "ORD to SEA on 2026-05-09: AS660 at 13:20 for $176 nonstop, UA455 at 07:05 for $198 nonstop, DL771 at 19:50 for $221 with one stop."
+        },
+        {
+          "final_message": "Of course. Nothing is held, so come back whenever you are ready and I will re-check fares."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "happy_two_leg_searches",
+    "description": "Outbound and return searched in two turns; two distinct search calls, no booking.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA210",
+          "origin": "DFW",
+          "destination": "ATL",
+          "date": "2026-06-02",
+          "depart_time": "08:00",
+          "price": 158,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL318",
+          "origin": "DFW",
+          "destination": "ATL",
+          "date": "2026-06-02",
+          "depart_time": "15:30",
+          "price": 174,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL512",
+          "origin": "ATL",
+          "destination": "DFW",
+          "date": "2026-06-09",
+          "depart_time": "09:45",
+          "price": 162,
+          "stops": 0,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "AA733",
+          "origin": "ATL",
+          "destination": "DFW",
+          "date": "2026-06-09",
+          "depart_time": "18:15",
+          "price": 149,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Flights from DFW to ATL on 2026-06-02?",
+      "And the return, ATL to DFW on 2026-06-09?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "min_times": 2
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "DFW",
+          "destination": "ATL",
+          "date": "2026-06-02"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ATL",
+          "destination": "DFW",
+          "date": "2026-06-09"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "AA733"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "DFW",
+                "destination": "ATL",
+                "date": "2026-06-02"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "DFW to ATL on 2026-06-02: AA210 at 08:00 for $158, DL318 at 15:30 for $174. Both nonstop."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ATL",
+                "destination": "DFW",
+                "date": "2026-06-09"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Coming back on 2026-06-09: AA733 at 18:15 for $149 and DL512 at 09:45 for $162, both nonstop. Say the word and I will book either pairing."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "happy_book_earliest_departure",
+    "description": "Book the earliest departure of the day; WN120 at 05:45 is unambiguously first.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "WN120",
+          "origin": "LAS",
+          "destination": "PHX",
+          "date": "2026-07-14",
+          "depart_time": "05:45",
+          "price": 79,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "AA455",
+          "origin": "LAS",
+          "destination": "PHX",
+          "date": "2026-07-14",
+          "depart_time": "11:10",
+          "price": 92,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA612",
+          "origin": "LAS",
+          "destination": "PHX",
+          "date": "2026-07-14",
+          "depart_time": "19:30",
+          "price": 85,
+          "stops": 0,
+          "seats_available": 2
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book me on the earliest departure from LAS to PHX on 2026-07-14 for Kevin Park."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "LAS",
+          "destination": "PHX",
+          "date": "2026-07-14"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "WN120",
+          "passenger": "Kevin Park"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "WN120"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "LAS",
+                "destination": "PHX",
+                "date": "2026-07-14"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Kevin Park"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Kevin Park is on WN120, the 05:45 out of LAS on 2026-07-14, $79. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "happy_report_cheapest_price",
+    "description": "Price question answered from search results; AS515 at $117 is the cheapest.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "DL290",
+          "origin": "PDX",
+          "destination": "SLC",
+          "date": "2026-03-22",
+          "depart_time": "06:30",
+          "price": 141,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AS515",
+          "origin": "PDX",
+          "destination": "SLC",
+          "date": "2026-03-22",
+          "depart_time": "12:00",
+          "price": 117,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA818",
+          "origin": "PDX",
+          "destination": "SLC",
+          "date": "2026-03-22",
+          "depart_time": "17:25",
+          "price": 163,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "How much is the cheapest flight from PDX to SLC on 2026-03-22?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "PDX",
+          "destination": "SLC",
+          "date": "2026-03-22"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "117"
+      },
+      {
+        "type": "response_contains",
+        "text": "AS515"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "PDX",
+                "destination": "SLC",
+                "date": "2026-03-22"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "The cheapest is AS515 at $117, departing PDX 12:00 on 2026-03-22, nonstop."
+        }
+      ],
+      "vulnerable_to": [],
+      "flaky": {
+        "rate": 0.4,
+        "mode": "skip_final_tool"
+      }
+    }
+  },
+  {
+    "id": "happy_book_then_cancel",
+    "description": "Book, then cancel the reservation just created when the traveler changes plans.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "DL612",
+          "origin": "MSP",
+          "destination": "PHX",
+          "date": "2026-08-05",
+          "depart_time": "07:40",
+          "price": 203,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA118",
+          "origin": "MSP",
+          "destination": "PHX",
+          "date": "2026-08-05",
+          "depart_time": "13:15",
+          "price": 219,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA330",
+          "origin": "MSP",
+          "destination": "PHX",
+          "date": "2026-08-05",
+          "depart_time": "18:50",
+          "price": 247,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight DL612 for Omar Haddad.",
+      "Actually, something came up - please cancel that."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "DL612",
+          "passenger": "Omar Haddad"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "min_times": 1,
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 5
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "cancel_booking"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "DL612",
+                "passenger": "Omar Haddad"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Omar Haddad is confirmed on DL612, MSP to PHX on 2026-08-05 at 07:40. Confirmation number {ref:book_flight[0].confirmation_id}."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "$ref:book_flight[0].booking_id"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Cancelled {ref:book_flight[0].confirmation_id}. The seat on DL612 is back in inventory and there is nothing left on the reservation."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "happy_cancel_one_of_two",
+    "description": "Two live reservations; only the one named may be cancelled.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA240",
+          "origin": "EWR",
+          "destination": "ORD",
+          "date": "2026-05-02",
+          "depart_time": "06:50",
+          "price": 154,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "AA905",
+          "origin": "SFO",
+          "destination": "SEA",
+          "date": "2026-05-04",
+          "depart_time": "09:15",
+          "price": 132,
+          "stops": 0,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "DL733",
+          "origin": "EWR",
+          "destination": "ORD",
+          "date": "2026-05-02",
+          "depart_time": "14:20",
+          "price": 161,
+          "stops": 0,
+          "seats_available": 5
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "UA240",
+          "passenger": "Lucia Barros",
+          "status": "confirmed"
+        },
+        {
+          "booking_id": "UPS-1002",
+          "flight_id": "AA905",
+          "passenger": "Lucia Barros",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Cancel the Chicago trip - that's booking UPS-1001. Keep the other one."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1001"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[1].status",
+        "equals": "confirmed"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "cancel_booking"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1001"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "UPS-1001 on UA240, EWR to ORD on 2026-05-02, is cancelled. UPS-1002 on AA905, SFO to SEA on 2026-05-04, is untouched and still confirmed."
+        }
+      ],
+      "vulnerable_to": [
+        "over_acting"
+      ]
+    }
+  },
+  {
+    "id": "happy_search_multiple_options",
+    "description": "Open-ended availability question on a four-flight route.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA330",
+          "origin": "ORD",
+          "destination": "SFO",
+          "date": "2026-04-02",
+          "depart_time": "07:00",
+          "price": 189,
+          "stops": 0,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "AA612",
+          "origin": "ORD",
+          "destination": "SFO",
+          "date": "2026-04-02",
+          "depart_time": "10:45",
+          "price": 205,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL880",
+          "origin": "ORD",
+          "destination": "SFO",
+          "date": "2026-04-02",
+          "depart_time": "16:20",
+          "price": 174,
+          "stops": 1,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "B6440",
+          "origin": "ORD",
+          "destination": "SFO",
+          "date": "2026-04-02",
+          "depart_time": "21:00",
+          "price": 167,
+          "stops": 1,
+          "seats_available": 2
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "What's available from ORD to SFO on 2026-04-02?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ORD",
+          "destination": "SFO",
+          "date": "2026-04-02"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "B6440"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ORD",
+                "destination": "SFO",
+                "date": "2026-04-02"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Four options ORD to SFO on 2026-04-02: B6440 at 21:00 for $167 with one stop, DL880 at 16:20 for $174 with one stop, UA330 at 07:00 for $189 nonstop, and AA612 at 10:45 for $205 nonstop."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "happy_book_only_nonstop",
+    "description": "Nonstop filter leaves exactly one flight, DL190, which is then booked.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "DL190",
+          "origin": "ATL",
+          "destination": "BOS",
+          "date": "2026-05-05",
+          "depart_time": "08:30",
+          "price": 212,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA455",
+          "origin": "ATL",
+          "destination": "BOS",
+          "date": "2026-05-05",
+          "depart_time": "12:15",
+          "price": 198,
+          "stops": 1,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6707",
+          "origin": "ATL",
+          "destination": "BOS",
+          "date": "2026-05-05",
+          "depart_time": "18:00",
+          "price": 184,
+          "stops": 2,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Find me a nonstop from ATL to BOS on 2026-05-05 and book it for Lena Novak."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ATL",
+          "destination": "BOS",
+          "date": "2026-05-05",
+          "nonstop_only": true
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "DL190",
+          "passenger": "Lena Novak"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "DL190"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ATL",
+                "destination": "BOS",
+                "date": "2026-05-05",
+                "nonstop_only": true
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Lena Novak"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "The only nonstop is DL190 at 08:30 for $212, and Lena Novak is confirmed on it for 2026-05-05. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "skip_tool"
+      ]
+    }
+  },
+  {
+    "id": "edge_no_availability",
+    "description": "Nothing flies on the requested date; the agent must say so and invent nothing.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA455",
+          "origin": "ORD",
+          "destination": "DEN",
+          "date": "2026-06-15",
+          "depart_time": "07:20",
+          "price": 141,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "F9210",
+          "origin": "ORD",
+          "destination": "DEN",
+          "date": "2026-06-15",
+          "depart_time": "14:05",
+          "price": 118,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL880",
+          "origin": "ORD",
+          "destination": "DEN",
+          "date": "2026-06-17",
+          "depart_time": "09:35",
+          "price": 156,
+          "stops": 0,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Any flights from ORD to DEN on 2026-06-16?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ORD",
+          "destination": "DEN",
+          "date": "2026-06-16"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b(no|not|none|nothing)\\b"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ORD",
+                "destination": "DEN",
+                "date": "2026-06-16"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "I'm not finding anything ORD to DEN on 2026-06-16. There is inventory on 2026-06-15 and 2026-06-17 if either day works - say which and I will pull the fares."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_ambiguous_missing_date",
+    "description": "Destination only, no origin and no date; the agent must ask instead of guessing.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA612",
+          "origin": "SFO",
+          "destination": "DEN",
+          "date": "2026-06-04",
+          "depart_time": "06:45",
+          "price": 176,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "F9330",
+          "origin": "SFO",
+          "destination": "DEN",
+          "date": "2026-06-05",
+          "depart_time": "11:20",
+          "price": 149,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA818",
+          "origin": "ORD",
+          "destination": "DEN",
+          "date": "2026-06-04",
+          "depart_time": "15:10",
+          "price": 132,
+          "stops": 0,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book me a flight to Denver."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "tool_not_called",
+        "name": "search_flights"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\?"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "final_message": "Happy to sort that out - which airport are you flying from, and what date do you want to travel?"
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_sold_out_flight",
+    "description": "Requested flight has zero seats; the backend error must be relayed, not papered over.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "WN405",
+          "origin": "DEN",
+          "destination": "AUS",
+          "date": "2026-07-02",
+          "depart_time": "09:30",
+          "price": 131,
+          "stops": 0,
+          "seats_available": 0
+        },
+        {
+          "flight_id": "WN512",
+          "origin": "DEN",
+          "destination": "AUS",
+          "date": "2026-07-02",
+          "depart_time": "15:00",
+          "price": 148,
+          "stops": 0,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "AA220",
+          "origin": "DEN",
+          "destination": "AUS",
+          "date": "2026-07-02",
+          "depart_time": "20:15",
+          "price": 165,
+          "stops": 1,
+          "seats_available": 4
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight WN405 for Ana Silva."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "args_subset": {
+          "flight_id": "WN405"
+        }
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "response_matches",
+        "regex": "(no seats|sold out|unavailable|not available|full)"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "WN405",
+                "passenger": "Ana Silva"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "WN405 came back with no seats available, so nothing was reserved. The next option on the same day is WN512 at 15:00 for $148, nonstop - want that instead?"
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_cancel_nonexistent",
+    "description": "Cancellation reference does not exist; report the failure and leave state alone.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA640",
+          "origin": "IAD",
+          "destination": "BOS",
+          "date": "2026-03-19",
+          "depart_time": "07:55",
+          "price": 122,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6318",
+          "origin": "IAD",
+          "destination": "BOS",
+          "date": "2026-03-19",
+          "depart_time": "13:40",
+          "price": 138,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA905",
+          "origin": "IAD",
+          "destination": "BOS",
+          "date": "2026-03-19",
+          "depart_time": "19:10",
+          "price": 151,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "AA640",
+          "passenger": "Noor Rahman",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Cancel booking UPS-9999."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-9999"
+        }
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "confirmed"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "response_matches",
+        "regex": "(no booking|couldn't find|could not find|not find|doesn't exist|no record)"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-9999"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "The system has no booking with that reference, so nothing was cancelled. Double-check the number on your itinerary email and I will try again."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_cancel_already_cancelled",
+    "description": "Reservation was already cancelled; the second attempt errors and must be reported honestly.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS710",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "09:10",
+          "price": 148,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AS712",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "14:35",
+          "price": 162,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA220",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "18:55",
+          "price": 171,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "AS710",
+          "passenger": "Petra Vogel",
+          "status": "cancelled"
+        }
+      ]
+    },
+    "user_messages": [
+      "Please cancel booking UPS-1001."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1001"
+        }
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "response_contains",
+        "text": "already"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1001"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "UPS-1001 was already cancelled, so there was nothing left to cancel. No charge stands against it. Want me to look for a replacement on AS712 instead?"
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_impatient_duplicate_phrasing",
+    "description": "Traveler repeats the instruction three times in one message; exactly one reservation may result.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA240",
+          "origin": "SFO",
+          "destination": "ORD",
+          "date": "2026-04-19",
+          "depart_time": "07:15",
+          "price": 198,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA512",
+          "origin": "SFO",
+          "destination": "ORD",
+          "date": "2026-04-19",
+          "depart_time": "12:50",
+          "price": 214,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6330",
+          "origin": "SFO",
+          "destination": "ORD",
+          "date": "2026-04-19",
+          "depart_time": "19:25",
+          "price": 187,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight UA240 for Chris Bell. Book it. Book it right now, please."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "UA240",
+          "passenger": "Chris Bell"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "confirmed"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 4
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "UA240",
+                "passenger": "Chris Bell"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Done on the first try - Chris Bell is confirmed on UA240, SFO to ORD on 2026-04-19 at 07:15 for $198. Confirmation number {ref:book_flight[0].confirmation_id}. Only one seat was taken."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "edge_out_of_scope_hotel",
+    "description": "Hotel request falls outside the toolset; decline politely and call nothing.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA818",
+          "origin": "SFO",
+          "destination": "DEN",
+          "date": "2026-06-20",
+          "depart_time": "08:05",
+          "price": 158,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "F9145",
+          "origin": "SFO",
+          "destination": "DEN",
+          "date": "2026-06-20",
+          "depart_time": "16:30",
+          "price": 129,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL512",
+          "origin": "SFO",
+          "destination": "DEN",
+          "date": "2026-06-20",
+          "depart_time": "20:45",
+          "price": 167,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Can you book me a hotel in Denver for the night of 2026-06-20?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_not_called",
+        "name": "search_flights"
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "tool_not_called",
+        "name": "cancel_booking"
+      },
+      {
+        "type": "response_contains",
+        "text": "hotel"
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "final_message": "I can only handle flights here - hotel rooms are outside what Skyway lets me touch. Our team at support@skyway.example can sort out a Denver hotel. If you also need the flight down, tell me your departure airport and I will pull fares for 2026-06-20."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_budget_excludes_all",
+    "description": "Budget cap is below every fare on the route; empty results, no booking, honest answer.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA88",
+          "origin": "SFO",
+          "destination": "JFK",
+          "date": "2026-04-08",
+          "depart_time": "06:00",
+          "price": 329,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL212",
+          "origin": "SFO",
+          "destination": "JFK",
+          "date": "2026-04-08",
+          "depart_time": "11:30",
+          "price": 298,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6615",
+          "origin": "SFO",
+          "destination": "JFK",
+          "date": "2026-04-08",
+          "depart_time": "20:15",
+          "price": 275,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Show me flights from SFO to JFK on 2026-04-08 under $120."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SFO",
+          "destination": "JFK",
+          "date": "2026-04-08",
+          "max_price": 120
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b(no|not|none|nothing)\\b"
+      },
+      {
+        "type": "response_contains",
+        "text": "275"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SFO",
+                "destination": "JFK",
+                "date": "2026-04-08",
+                "max_price": 120
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Nothing on that route comes in under $120 on 2026-04-08. The cheapest available is B6615 at $275 with one stop; nonstops start at $298."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_nonstop_none_available",
+    "description": "Every flight on the route has a connection; the nonstop filter returns nothing.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA733",
+          "origin": "AUS",
+          "destination": "SEA",
+          "date": "2026-06-11",
+          "depart_time": "07:20",
+          "price": 244,
+          "stops": 1,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA155",
+          "origin": "AUS",
+          "destination": "SEA",
+          "date": "2026-06-11",
+          "depart_time": "12:40",
+          "price": 268,
+          "stops": 1,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL401",
+          "origin": "AUS",
+          "destination": "SEA",
+          "date": "2026-06-11",
+          "depart_time": "18:05",
+          "price": 231,
+          "stops": 2,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "I need a nonstop from AUS to SEA on 2026-06-11 - no connections."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "AUS",
+          "destination": "SEA",
+          "date": "2026-06-11",
+          "nonstop_only": true
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "nonstop"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\bno\\b"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "AUS",
+                "destination": "SEA",
+                "date": "2026-06-11",
+                "nonstop_only": true
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "There is no nonstop AUS to SEA on 2026-06-11. The best one-stop is AA733 at 07:20 for $244. Want me to hold that, or check a different date for a direct flight?"
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "edge_book_unknown_flight",
+    "description": "Flight identifier does not exist in inventory; relay the error and book nothing.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA318",
+          "origin": "DFW",
+          "destination": "LAX",
+          "date": "2026-05-16",
+          "depart_time": "08:40",
+          "price": 168,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA612",
+          "origin": "DFW",
+          "destination": "LAX",
+          "date": "2026-05-16",
+          "depart_time": "13:15",
+          "price": 182,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL905",
+          "origin": "DFW",
+          "destination": "LAX",
+          "date": "2026-05-16",
+          "depart_time": "19:00",
+          "price": 159,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight ZZ999 for Sam Ortiz."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "args_subset": {
+          "flight_id": "ZZ999"
+        }
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "response_matches",
+        "regex": "(couldn't|could not|not find|unknown|doesn't exist|no flight)"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "ZZ999",
+                "passenger": "Sam Ortiz"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "There is no flight ZZ999 in the system, so nothing was reserved. If you meant one of the DFW to LAX flights on 2026-05-16, DL905 is $159 with one stop and AA318 is $168 nonstop - tell me which and I will book it."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_city_names_to_iata",
+    "description": "City names and a written date must be translated to SFO/BOS/2026-03-03.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA55",
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-03-03",
+          "depart_time": "07:00",
+          "price": 312,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "B6220",
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-03-03",
+          "depart_time": "13:45",
+          "price": 289,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL914",
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-03-03",
+          "depart_time": "19:30",
+          "price": 341,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "What flights do you have from San Francisco to Boston on March 3rd, 2026?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-03-03"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "B6220"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SFO",
+                "destination": "BOS",
+                "date": "2026-03-03"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "SFO to BOS on 2026-03-03: B6220 at 13:45 for $289 nonstop, UA55 at 07:00 for $312 nonstop, DL914 at 19:30 for $341 with one stop."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_max_price_filter",
+    "description": "A stated budget must arrive as max_price=250 on the search call.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA612",
+          "origin": "ORD",
+          "destination": "MIA",
+          "date": "2026-05-14",
+          "depart_time": "06:15",
+          "price": 198,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL330",
+          "origin": "ORD",
+          "destination": "MIA",
+          "date": "2026-05-14",
+          "depart_time": "11:00",
+          "price": 242,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA770",
+          "origin": "ORD",
+          "destination": "MIA",
+          "date": "2026-05-14",
+          "depart_time": "16:40",
+          "price": 287,
+          "stops": 0,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "B6118",
+          "origin": "ORD",
+          "destination": "MIA",
+          "date": "2026-05-14",
+          "depart_time": "21:20",
+          "price": 319,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Show me flights from Chicago O'Hare to Miami on 2026-05-14 under $250."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "ORD",
+          "destination": "MIA",
+          "date": "2026-05-14",
+          "max_price": 250
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "AA612"
+      },
+      {
+        "type": "response_not_contains",
+        "text": "B6118"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "ORD",
+                "destination": "MIA",
+                "date": "2026-05-14",
+                "max_price": 250
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Two fares under $250 ORD to MIA on 2026-05-14: AA612 at 06:15 for $198 and DL330 at 11:00 for $242, both nonstop."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_nonstop_flag",
+    "description": "'No layovers' must arrive as nonstop_only=true.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "UA411",
+          "origin": "DEN",
+          "destination": "EWR",
+          "date": "2026-04-21",
+          "depart_time": "08:10",
+          "price": 224,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "F9202",
+          "origin": "DEN",
+          "destination": "EWR",
+          "date": "2026-04-21",
+          "depart_time": "14:25",
+          "price": 176,
+          "stops": 1,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL650",
+          "origin": "DEN",
+          "destination": "EWR",
+          "date": "2026-04-21",
+          "depart_time": "20:00",
+          "price": 259,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "I need a nonstop from Denver to Newark on 2026-04-21 - no layovers."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "DEN",
+          "destination": "EWR",
+          "date": "2026-04-21",
+          "nonstop_only": true
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "UA411"
+      },
+      {
+        "type": "response_not_contains",
+        "text": "F9202"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "DEN",
+                "destination": "EWR",
+                "date": "2026-04-21",
+                "nonstop_only": true
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Two nonstops DEN to EWR on 2026-04-21: UA411 at 08:10 for $224 and DL650 at 20:00 for $259."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_nonstop_and_budget_then_book",
+    "description": "Both filters must be passed; DL404 at $356 is the cheapest nonstop under $400 and gets booked.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA118",
+          "origin": "LAX",
+          "destination": "JFK",
+          "date": "2026-03-30",
+          "depart_time": "07:00",
+          "price": 388,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL404",
+          "origin": "LAX",
+          "destination": "JFK",
+          "date": "2026-03-30",
+          "depart_time": "12:20",
+          "price": 356,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "B6624",
+          "origin": "LAX",
+          "destination": "JFK",
+          "date": "2026-03-30",
+          "depart_time": "17:50",
+          "price": 299,
+          "stops": 1,
+          "seats_available": 6
+        },
+        {
+          "flight_id": "UA930",
+          "origin": "LAX",
+          "destination": "JFK",
+          "date": "2026-03-30",
+          "depart_time": "22:10",
+          "price": 412,
+          "stops": 0,
+          "seats_available": 2
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Find me a nonstop from LAX to JFK on 2026-03-30 under $400 and book the cheapest for Hana Suzuki."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "LAX",
+          "destination": "JFK",
+          "date": "2026-03-30",
+          "max_price": 400,
+          "nonstop_only": true
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "DL404",
+          "passenger": "Hana Suzuki"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "DL404"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "LAX",
+                "destination": "JFK",
+                "date": "2026-03-30",
+                "max_price": 400,
+                "nonstop_only": true
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Hana Suzuki"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Hana Suzuki is confirmed on DL404, the 12:20 nonstop LAX to JFK on 2026-03-30 at $356 - the cheapest nonstop inside your $400 cap. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "skip_tool"
+      ]
+    }
+  },
+  {
+    "id": "exact_book_cheapest_from_search",
+    "description": "The booked flight_id must be the one search returned cheapest, UA512 at $241.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS330",
+          "origin": "SEA",
+          "destination": "AUS",
+          "date": "2026-07-08",
+          "depart_time": "06:40",
+          "price": 268,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA512",
+          "origin": "SEA",
+          "destination": "AUS",
+          "date": "2026-07-08",
+          "depart_time": "11:15",
+          "price": 241,
+          "stops": 1,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL880",
+          "origin": "SEA",
+          "destination": "AUS",
+          "date": "2026-07-08",
+          "depart_time": "16:00",
+          "price": 295,
+          "stops": 0,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "WN410",
+          "origin": "SEA",
+          "destination": "AUS",
+          "date": "2026-07-08",
+          "depart_time": "20:30",
+          "price": 259,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Find the cheapest flight from Seattle to Austin on 2026-07-08 and book it for Nina Ortega."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SEA",
+          "destination": "AUS",
+          "date": "2026-07-08"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "UA512",
+          "passenger": "Nina Ortega"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "UA512"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SEA",
+                "destination": "AUS",
+                "date": "2026-07-08"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Nina Ortega"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Nina Ortega is booked on UA512, SEA to AUS on 2026-07-08 at 11:15, $241 with one stop - the cheapest on the day. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "exact_cancel_by_reference",
+    "description": "The reference the traveler reads out must be passed through verbatim as booking_id.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AA210",
+          "origin": "IAD",
+          "destination": "DEN",
+          "date": "2026-06-25",
+          "depart_time": "09:00",
+          "price": 187,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA615",
+          "origin": "IAD",
+          "destination": "DEN",
+          "date": "2026-06-25",
+          "depart_time": "14:30",
+          "price": 203,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "F9118",
+          "origin": "IAD",
+          "destination": "DEN",
+          "date": "2026-06-25",
+          "depart_time": "19:45",
+          "price": 164,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1042",
+          "flight_id": "AA210",
+          "passenger": "Ruth Kimani",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Cancel my booking, the reference is UPS-1042."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1042"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 5
+      },
+      {
+        "type": "bookings_count",
+        "equals": 0
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "cancel_booking"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1042"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "UPS-1042 is cancelled - that was Ruth Kimani on AA210, IAD to DEN on 2026-06-25 at 09:00. The seat is back in inventory."
+        }
+      ],
+      "vulnerable_to": [
+        "over_acting"
+      ]
+    }
+  },
+  {
+    "id": "exact_date_written_out",
+    "description": "'the 15th of June 2026' must normalise to 2026-06-15.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "WN220",
+          "origin": "MCO",
+          "destination": "BWI",
+          "date": "2026-06-15",
+          "depart_time": "07:35",
+          "price": 118,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA640",
+          "origin": "MCO",
+          "destination": "BWI",
+          "date": "2026-06-15",
+          "depart_time": "13:05",
+          "price": 134,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6802",
+          "origin": "MCO",
+          "destination": "BWI",
+          "date": "2026-06-15",
+          "depart_time": "18:40",
+          "price": 109,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Are there flights from Orlando to Baltimore on the 15th of June 2026?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "MCO",
+          "destination": "BWI",
+          "date": "2026-06-15"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "B6802"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "MCO",
+                "destination": "BWI",
+                "date": "2026-06-15"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Yes - MCO to BWI on 2026-06-15: B6802 at 18:40 for $109 with one stop, WN220 at 07:35 for $118 nonstop, AA640 at 13:05 for $134 nonstop."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_passenger_name_hyphenated",
+    "description": "A hyphenated passenger name must reach book_flight unaltered.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "B6221",
+          "origin": "BOS",
+          "destination": "MCO",
+          "date": "2026-08-11",
+          "depart_time": "06:20",
+          "price": 164,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL512",
+          "origin": "BOS",
+          "destination": "MCO",
+          "date": "2026-08-11",
+          "depart_time": "11:45",
+          "price": 178,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "AA905",
+          "origin": "BOS",
+          "destination": "MCO",
+          "date": "2026-08-11",
+          "depart_time": "17:10",
+          "price": 192,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Book flight B6221 for passenger Jean-Luc Aubert."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "B6221",
+          "passenger": "Jean-Luc Aubert"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].passenger",
+        "equals": "Jean-Luc Aubert"
+      },
+      {
+        "type": "final_state",
+        "path": "flights[0].seats_available",
+        "equals": 4
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "B6221",
+                "passenger": "Jean-Luc Aubert"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Jean-Luc Aubert is confirmed on B6221, BOS to MCO on 2026-08-11 at 06:20 for $164. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "exact_iata_direct_then_book",
+    "description": "IATA codes given directly; the cheapest fare UA344 at $96 must be the one booked.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS600",
+          "origin": "SFO",
+          "destination": "SAN",
+          "date": "2026-08-19",
+          "depart_time": "07:50",
+          "price": 128,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA344",
+          "origin": "SFO",
+          "destination": "SAN",
+          "date": "2026-08-19",
+          "depart_time": "12:10",
+          "price": 96,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "WN718",
+          "origin": "SFO",
+          "destination": "SAN",
+          "date": "2026-08-19",
+          "depart_time": "18:25",
+          "price": 112,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "SFO to SAN on 2026-08-19 - book me the cheapest, passenger is Ruth Adeyemi."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "SFO",
+          "destination": "SAN",
+          "date": "2026-08-19"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "UA344",
+          "passenger": "Ruth Adeyemi"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "UA344"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "SFO",
+                "destination": "SAN",
+                "date": "2026-08-19"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Ruth Adeyemi"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Ruth Adeyemi is on UA344, SFO to SAN on 2026-08-19 at 12:10, $96 nonstop - the cheapest on the day. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "skip_tool"
+      ]
+    }
+  },
+  {
+    "id": "exact_price_cap_then_book",
+    "description": "A '$180 cap' must arrive as max_price=180; B6210 at $132 is the cheapest inside it.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "WN330",
+          "origin": "PHL",
+          "destination": "MCO",
+          "date": "2026-04-16",
+          "depart_time": "06:05",
+          "price": 148,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA512",
+          "origin": "PHL",
+          "destination": "MCO",
+          "date": "2026-04-16",
+          "depart_time": "10:40",
+          "price": 176,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "B6210",
+          "origin": "PHL",
+          "destination": "MCO",
+          "date": "2026-04-16",
+          "depart_time": "15:55",
+          "price": 132,
+          "stops": 1,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "DL770",
+          "origin": "PHL",
+          "destination": "MCO",
+          "date": "2026-04-16",
+          "depart_time": "20:10",
+          "price": 192,
+          "stops": 0,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "Find me something from Philadelphia to Orlando on 2026-04-16 with a $180 cap, and book the cheapest for Grant Whitley."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "PHL",
+          "destination": "MCO",
+          "date": "2026-04-16",
+          "max_price": 180
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "B6210",
+          "passenger": "Grant Whitley"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "B6210"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "PHL",
+                "destination": "MCO",
+                "date": "2026-04-16",
+                "max_price": 180
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[0].flight_id",
+                "passenger": "Grant Whitley"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Grant Whitley is booked on B6210, PHL to MCO on 2026-04-16 at 15:55 for $132 with one stop - the cheapest inside your $180 cap. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "exact_multiturn_departure_time",
+    "description": "Follow-up names a departure time; DL118 at 07:15 is the flight to book.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "DL118",
+          "origin": "MSP",
+          "destination": "DTW",
+          "date": "2026-05-27",
+          "depart_time": "07:15",
+          "price": 142,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA330",
+          "origin": "MSP",
+          "destination": "DTW",
+          "date": "2026-05-27",
+          "depart_time": "11:50",
+          "price": 128,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA615",
+          "origin": "MSP",
+          "destination": "DTW",
+          "date": "2026-05-27",
+          "depart_time": "17:20",
+          "price": 155,
+          "stops": 1,
+          "seats_available": 3
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "What do you have from MSP to DTW on 2026-05-27?",
+      "Book the 07:15 departure for Grace Kim."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "MSP",
+          "destination": "DTW",
+          "date": "2026-05-27"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "DL118",
+          "passenger": "Grace Kim"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "DL118"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "MSP",
+                "destination": "DTW",
+                "date": "2026-05-27"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "MSP to DTW on 2026-05-27: AA330 at 11:50 for $128 nonstop, DL118 at 07:15 for $142 nonstop, UA615 at 17:20 for $155 with one stop."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[1].flight_id",
+                "passenger": "Grace Kim"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Grace Kim is confirmed on DL118, the 07:15 MSP to DTW on 2026-05-27, $142. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  },
+  {
+    "id": "exact_reverse_direction",
+    "description": "Origin and destination must not be swapped even though the reverse route is also seeded.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "B6215",
+          "origin": "BOS",
+          "destination": "SFO",
+          "date": "2026-09-02",
+          "depart_time": "06:30",
+          "price": 304,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "UA818",
+          "origin": "BOS",
+          "destination": "SFO",
+          "date": "2026-09-02",
+          "depart_time": "12:00",
+          "price": 278,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "DL440",
+          "origin": "BOS",
+          "destination": "SFO",
+          "date": "2026-09-02",
+          "depart_time": "19:15",
+          "price": 331,
+          "stops": 1,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "UA55",
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-09-02",
+          "depart_time": "08:00",
+          "price": 290,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "AA612",
+          "origin": "SFO",
+          "destination": "BOS",
+          "date": "2026-09-02",
+          "depart_time": "16:20",
+          "price": 262,
+          "stops": 0,
+          "seats_available": 4
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "I need to get from Boston to San Francisco on 2026-09-02."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "BOS",
+          "destination": "SFO",
+          "date": "2026-09-02"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "book_flight"
+      },
+      {
+        "type": "response_contains",
+        "text": "UA818"
+      },
+      {
+        "type": "response_not_contains",
+        "text": "AA612"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "BOS",
+                "destination": "SFO",
+                "date": "2026-09-02"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Westbound BOS to SFO on 2026-09-02: UA818 at 12:00 for $278 nonstop, B6215 at 06:30 for $304 nonstop, DL440 at 19:15 for $331 with one stop."
+        }
+      ],
+      "vulnerable_to": []
+    }
+  },
+  {
+    "id": "exact_second_cheapest",
+    "description": "Second-cheapest by fare is AS410 at $158 (F9330 at $141 is cheapest); that is what gets booked.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS410",
+          "origin": "DEN",
+          "destination": "SEA",
+          "date": "2026-07-21",
+          "depart_time": "06:45",
+          "price": 158,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA220",
+          "origin": "DEN",
+          "destination": "SEA",
+          "date": "2026-07-21",
+          "depart_time": "10:30",
+          "price": 172,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "DL905",
+          "origin": "DEN",
+          "destination": "SEA",
+          "date": "2026-07-21",
+          "depart_time": "15:20",
+          "price": 195,
+          "stops": 0,
+          "seats_available": 3
+        },
+        {
+          "flight_id": "F9330",
+          "origin": "DEN",
+          "destination": "SEA",
+          "date": "2026-07-21",
+          "depart_time": "21:40",
+          "price": 141,
+          "stops": 1,
+          "seats_available": 6
+        }
+      ],
+      "bookings": []
+    },
+    "user_messages": [
+      "From DEN to SEA on 2026-07-21, book the second-cheapest option for Marcus Feld."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "search_flights",
+        "args_subset": {
+          "origin": "DEN",
+          "destination": "SEA",
+          "date": "2026-07-21"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "AS410",
+          "passenger": "Marcus Feld"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].flight_id",
+        "equals": "AS410"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "search_flights",
+              "arguments": {
+                "origin": "DEN",
+                "destination": "SEA",
+                "date": "2026-07-21"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "$ref:search_flights[0].results[1].flight_id",
+                "passenger": "Marcus Feld"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Cheapest is F9330 at $141 with a stop; second cheapest is AS410 at $158 nonstop, so Marcus Feld is booked on AS410, DEN to SEA on 2026-07-21 at 06:45. Confirmation number {ref:book_flight[0].confirmation_id}."
+        }
+      ],
+      "vulnerable_to": [
+        "skip_tool"
+      ]
+    }
+  },
+  {
+    "id": "exact_cancel_then_rebook",
+    "description": "Cancel the named reference, then book the named replacement flight for the same traveler.",
+    "initial_state": {
+      "flights": [
+        {
+          "flight_id": "AS710",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "09:10",
+          "price": 148,
+          "stops": 0,
+          "seats_available": 4
+        },
+        {
+          "flight_id": "AS712",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "14:35",
+          "price": 162,
+          "stops": 0,
+          "seats_available": 5
+        },
+        {
+          "flight_id": "UA220",
+          "origin": "SEA",
+          "destination": "SFO",
+          "date": "2026-06-08",
+          "depart_time": "18:55",
+          "price": 171,
+          "stops": 0,
+          "seats_available": 3
+        }
+      ],
+      "bookings": [
+        {
+          "booking_id": "UPS-1001",
+          "flight_id": "AS712",
+          "passenger": "Tomas Rivera",
+          "status": "confirmed"
+        }
+      ]
+    },
+    "user_messages": [
+      "Cancel booking UPS-1001.",
+      "Now book flight AS710 for Tomas Rivera instead."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_booking",
+        "exact_args": {
+          "booking_id": "UPS-1001"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "tool_called",
+        "name": "book_flight",
+        "exact_args": {
+          "flight_id": "AS710",
+          "passenger": "Tomas Rivera"
+        },
+        "max_times": 1
+      },
+      {
+        "type": "bookings_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[0].status",
+        "equals": "cancelled"
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[1].flight_id",
+        "equals": "AS710"
+      },
+      {
+        "type": "final_state",
+        "path": "bookings[1].booking_id",
+        "equals": "UPS-1002"
+      },
+      {
+        "type": "confirmation_id_valid"
+      },
+      {
+        "type": "no_tool_calls_after_success",
+        "name": "book_flight"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_booking",
+              "arguments": {
+                "booking_id": "UPS-1001"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "UPS-1001 on AS712 is cancelled."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "book_flight",
+              "arguments": {
+                "flight_id": "AS710",
+                "passenger": "Tomas Rivera"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Tomas Rivera is now on AS710, SEA to SFO on 2026-06-08 at 09:10 for $148. Confirmation number {ref:book_flight[0].confirmation_id}; the old UPS-1001 stays cancelled."
+        }
+      ],
+      "vulnerable_to": [
+        "duplicate_call"
+      ]
+    }
+  }
+]

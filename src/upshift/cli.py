@@ -1,5 +1,6 @@
 """upshift CLI.
 
+  upshift init     — scaffold an agent directory from the packaged example
   upshift run      — execute the eval suite against one model/config, record everything
   upshift diff     — compare two recorded runs, print the behavioral diff report
   upshift upgrade  — full pipeline: baseline run, candidate run, diff, repair, verdict, patch
@@ -11,21 +12,42 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
+from importlib import resources
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 
 from upshift import recorder
 from upshift.differ import diff_runs, load_diff, save_diff
 from upshift.patch import make_patch
 from upshift.providers import get_provider
+from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
-from upshift.schemas import LABEL_REGRESSED
+from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case
 from upshift.verdict import SAFE_WITH_PATCH, decide
 
 console = Console()
+
+# Directory the repo checkout ships its experiment agent in; still auto-detected so the
+# commands recorded in CLAUDE.md / DESIGN.md keep working without --agent.
+LEGACY_AGENT_DIR = Path("victim/booking_agent")
+
+# The two models the bundled simulator knows about (providers/sim.py).
+SIM_BASELINE_MODEL = "sim-5.5"
+SIM_CANDIDATE_MODEL = "sim-5.6-sol"
+_SIM_MODEL_PREFIXES = ("sim-5.5", "sim-5.6")
+
+AGENT_FILE_BLURBS = {
+    "agent.json": "model, endpoint, params — the config a repair may patch",
+    "system_prompt.txt": "system prompt (patchable)",
+    "tools.json": "tool schemas sent to the model (patchable)",
+    "backend.py": "executes the tool calls; swap in your own",
+    "cases/cases.json": "the eval suite",
+}
 
 
 def _progress(record) -> None:
@@ -34,7 +56,12 @@ def _progress(record) -> None:
 
 
 def _add_common_run_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--agent", default="victim/booking_agent", help="victim agent directory")
+    p.add_argument(
+        "--agent",
+        default=None,
+        help="agent directory (default: auto-detected in the current directory; "
+        "`upshift init <dir>` creates one)",
+    )
     p.add_argument("--provider", default="openai", choices=["openai", "sim"])
     tier = p.add_mutually_exclusive_group()
     tier.add_argument(
@@ -60,6 +87,12 @@ def _make_provider(args):
     batch, flex = getattr(args, "batch", False), getattr(args, "flex", False)
     if (batch or flex) and args.provider != "openai":
         raise ValueError("--batch/--flex are only valid with --provider openai")
+    if args.provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
+        # Without this the run would "succeed" with every rep recording an auth error.
+        raise ValueError(
+            "OPENAI_API_KEY is not set — export it (upshift also reads a .env file in the "
+            "current directory), or use --provider sim for a free, deterministic run"
+        )
     if batch:
         return get_provider("openai-batch")
     if flex:
@@ -67,12 +100,268 @@ def _make_provider(args):
     return get_provider(args.provider)
 
 
+# ---------------------------------------------------------------------------
+# The packaged example agent (src/upshift/example_agent), source for `upshift init`
+# ---------------------------------------------------------------------------
+
+
+def example_agent_root():
+    """Traversable for the packaged example agent directory."""
+    root = resources.files("upshift") / "example_agent"
+    if not root.is_dir():
+        raise ValueError(
+            "the packaged example agent is missing from this upshift installation "
+            "(expected upshift/example_agent/); reinstall upshift"
+        )
+    return root
+
+
+def example_agent_files() -> list[str]:
+    """Relative posix paths of every file in the packaged example agent."""
+    found: list[str] = []
+
+    def walk(node, prefix: str) -> None:
+        for child in sorted(node.iterdir(), key=lambda c: c.name):
+            if child.name == "__pycache__":
+                continue
+            rel = prefix + child.name
+            if child.is_dir():
+                walk(child, rel + "/")
+            else:
+                found.append(rel)
+
+    walk(example_agent_root(), "")
+    return sorted(found)
+
+
+def read_example_agent_file(rel: str) -> bytes:
+    node = example_agent_root()
+    for part in rel.split("/"):
+        node = node / part
+    return node.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Agent directory resolution + validation (every failure here is a clean one-liner)
+# ---------------------------------------------------------------------------
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path}: malformed JSON ({e.msg} at line {e.lineno})") from e
+    except OSError as e:
+        raise ValueError(f"{path}: cannot be read ({e.strerror})") from e
+
+
+def validate_agent_dir(agent_dir: Path) -> dict:
+    """Fail fast, before any model call, with a message that names the file and the problem.
+
+    Returns the parsed agent.json.
+    """
+    if not agent_dir.is_dir():
+        raise ValueError(f"{agent_dir} is not a directory")
+    config_path = agent_dir / "agent.json"
+    if not config_path.is_file():
+        raise ValueError(
+            f"{config_path} not found — {agent_dir} is not an upshift agent directory "
+            f"(needs agent.json, system_prompt.txt, tools.json, backend.py, cases/cases.json; "
+            f"see ADAPTER.md). Run `upshift init <dir>` to create one."
+        )
+    raw = _read_json(config_path)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{config_path}: expected a JSON object")  # noqa: TRY004
+    for key in ("name", "endpoint", "model", "system_prompt_file", "tools_file"):
+        if key not in raw:
+            raise ValueError(f"{config_path}: missing required key {key!r}")
+    if raw["endpoint"] not in ENDPOINTS:
+        raise ValueError(
+            f"{config_path}: endpoint {raw['endpoint']!r} is not one of {list(ENDPOINTS)}"
+        )
+    for key in ("system_prompt_file", "tools_file"):
+        if not (agent_dir / str(raw[key])).is_file():
+            raise ValueError(
+                f"{config_path}: {key} points at {raw[key]!r}, which does not exist in {agent_dir}"
+            )
+    tools = _read_json(agent_dir / str(raw["tools_file"]))
+    if not isinstance(tools, list) or not tools:
+        raise ValueError(
+            f"{agent_dir / str(raw['tools_file'])}: expected a non-empty JSON list of tool schemas"
+        )
+
+    cases_path = agent_dir / "cases" / "cases.json"
+    if not cases_path.is_file():
+        raise ValueError(
+            f"{cases_path} not found — an agent directory needs its eval suite at cases/cases.json"
+        )
+    try:
+        cases = Case.load_all(cases_path)
+    except TypeError as e:
+        raise ValueError(
+            f"{cases_path}: every case needs id, description, initial_state, user_messages "
+            f"and checks ({e})"
+        ) from e
+    except (KeyError, ValueError) as e:
+        raise ValueError(f"{cases_path}: malformed eval suite ({e})") from e
+    if not cases:
+        raise ValueError(f"{cases_path}: the eval suite is empty")
+
+    from upshift.runner import load_backend_factory
+
+    try:
+        load_backend_factory(agent_dir)
+    except ValueError:
+        raise  # runner's own message already names the file and the missing piece
+    except Exception as e:  # any import-time failure must still read as one line
+        raise ValueError(
+            f"{agent_dir / 'backend.py'}: failed to import ({type(e).__name__}: {e})"
+        ) from e
+    return raw
+
+
+def _detect_agent_dir() -> Path:
+    if (LEGACY_AGENT_DIR / "agent.json").is_file():
+        return LEGACY_AGENT_DIR
+    try:
+        candidates = sorted(
+            d for d in Path().iterdir() if d.is_dir() and (d / "agent.json").is_file()
+        )
+    except OSError:
+        candidates = []
+    if len(candidates) == 1:
+        console.print(f"[dim]agent directory: {escape(str(candidates[0]))}[/dim]", highlight=False)
+        return candidates[0]
+    if len(candidates) > 1:
+        listed = ", ".join(str(c) for c in candidates[:6])
+        raise ValueError(f"several agent directories here ({listed}); pick one with --agent <dir>")
+    raise ValueError(
+        "no agent directory: pass --agent <dir>, or run `upshift init my-agent` to create one "
+        "from the packaged example"
+    )
+
+
+def resolve_agent_dir(
+    explicit: str | None, runs_root: str | Path | None = None
+) -> tuple[Path, dict]:
+    """(agent directory, parsed agent.json) — validated, or a clean ValueError."""
+    if explicit is None:
+        agent_dir = _detect_agent_dir()
+    else:
+        agent_dir = Path(explicit)
+        if not agent_dir.exists():
+            raise ValueError(
+                f"agent directory {explicit!r} does not exist — "
+                f"`upshift init {explicit}` creates one from the packaged example"
+            )
+    raw_config = validate_agent_dir(agent_dir)
+    if runs_root is not None:
+        runs = Path(runs_root).resolve()
+        agent = agent_dir.resolve()
+        if runs == agent or agent in runs.parents:
+            raise ValueError(
+                f"the runs directory ({runs}) sits inside the agent directory ({agent}); "
+                f"upshift copies the agent directory during repair, so keep them apart "
+                f"(pass --runs-root <dir> outside the agent directory)"
+            )
+    return agent_dir, raw_config
+
+
+def _check_models(provider_name: str, models: list[str]) -> None:
+    """Catch the sim/real model mix-ups that would otherwise fail 190 times in a row."""
+    for model in models:
+        if not model:
+            continue
+        if provider_name == "sim" and not model.startswith(_SIM_MODEL_PREFIXES):
+            raise ValueError(
+                f"provider 'sim' only simulates {SIM_BASELINE_MODEL!r} (baseline) and "
+                f"{SIM_CANDIDATE_MODEL!r} (candidate); got {model!r}. Pass those model names, "
+                f"or use --provider openai for a real model."
+            )
+        if provider_name != "sim" and model.startswith("sim-"):
+            raise ValueError(
+                f"model {model!r} exists only in the local simulator; add --provider sim"
+            )
+
+
+def _positive(value: int, flag: str) -> int:
+    if value < 1:
+        raise ValueError(f"{flag} must be at least 1 (got {value})")
+    return value
+
+
+def _patch_prefix(agent_dir: Path) -> str:
+    """Path the emitted patch is rooted at, so `git apply` works from the repo root."""
+    try:
+        return str(agent_dir.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return agent_dir.name
+
+
+def cmd_init(args) -> int:
+    dest = Path(args.directory)
+    if dest.exists():
+        if not dest.is_dir():
+            raise ValueError(f"{dest} already exists and is not a directory")
+        if any(dest.iterdir()):
+            raise ValueError(
+                f"{dest}/ already exists and is not empty — nothing was written. "
+                f"Pick a new directory name."
+            )
+    files = example_agent_files()
+    for rel in files:
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(read_example_agent_file(rel))
+
+    n_cases = len(json.loads(read_example_agent_file("cases/cases.json")))
+    console.print(f"created [bold]{escape(str(dest))}/[/bold] from the packaged example agent:")
+    listed = [rel for rel in AGENT_FILE_BLURBS if rel in files]
+    listed += [rel for rel in files if rel not in AGENT_FILE_BLURBS]
+    width = max(len(rel) for rel in listed)
+    for rel in listed:
+        blurb = AGENT_FILE_BLURBS.get(rel, "")
+        if rel == "cases/cases.json":
+            blurb = f"{n_cases} eval cases, deterministic checks"
+        console.print(f"  {rel:<{width}}  [dim]{blurb}[/dim]", highlight=False)
+    console.print("\nnext — a full behavioral diff with no API key, free and deterministic:")
+    console.print(
+        f"  [bold]upshift upgrade --agent {escape(str(dest))} --provider sim "
+        f"--baseline-model {SIM_BASELINE_MODEL} --candidate-model {SIM_CANDIDATE_MODEL} "
+        f"--tag demo[/bold]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print("\nthen the same thing against real models (needs OPENAI_API_KEY, costs money):")
+    console.print(
+        f"  [bold]upshift upgrade --agent {escape(str(dest))} --provider openai --flex "
+        f"--baseline-model gpt-5.5 --candidate-model gpt-5.6-sol --tag real[/bold]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print(
+        f"\n[dim]both write run records, the diff, the verdict and the patch under "
+        f"{Path('runs').resolve()}/[/dim]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print(
+        "[dim]to point upshift at your own agent, rebuild these five files for it — "
+        "ADAPTER.md has the contract.[/dim]"
+    )
+    return 0
+
+
 def cmd_run(args) -> int:
     from upshift.runner import run_suite
 
+    _positive(args.n, "--n")
+    _positive(args.workers, "--workers")
     provider = _make_provider(args)
+    agent_dir, raw_config = resolve_agent_dir(args.agent, args.runs_root)
+    _check_models(args.provider, [args.model or str(raw_config["model"])])
     run_directory = run_suite(
-        args.agent,
+        agent_dir,
         provider,
         args.run_id,
         n_reps=args.n,
@@ -87,8 +376,8 @@ def cmd_run(args) -> int:
     summary = json.loads((run_directory / "summary.json").read_text())
     passes = sum(1 for s in summary.values() if s["n"] and s["passes"] / s["n"] >= 0.8)
     console.print(
-        f"run [bold]{args.run_id}[/bold] complete: {passes}/{len(summary)} cases at "
-        f"pass-rate ≥ 0.8 · records in {run_directory}"
+        f"run [bold]{escape(args.run_id)}[/bold] complete: {passes}/{len(summary)} cases "
+        f"at pass-rate ≥ 0.8 · records in {escape(str(run_directory.resolve()))}"
     )
     return 0
 
@@ -104,14 +393,18 @@ def cmd_diff(args) -> int:
     diff_path = out / f"{args.baseline}__{args.candidate}.json"
     save_diff(result, diff_path)
     (out / f"{args.baseline}__{args.candidate}.md").write_text(diff_to_markdown(result))
-    console.print(f"\nsaved: {diff_path}")
+    console.print(f"\nsaved: {escape(str(diff_path.resolve()))}")
     return 0
 
 
 def cmd_upgrade(args) -> int:
     from upshift.runner import run_suite
 
+    _positive(args.n, "--n")
+    _positive(args.workers, "--workers")
     provider = _make_provider(args)
+    agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
+    _check_models(args.provider, [args.baseline_model, args.candidate_model])
     tag = args.tag
     runs_root = args.runs_root
     baseline_id = f"{tag}-baseline"
@@ -119,14 +412,14 @@ def cmd_upgrade(args) -> int:
 
     console.rule(f"[bold]1/4 baseline run: {args.baseline_model}")
     run_suite(
-        args.agent, provider, baseline_id, n_reps=args.n,
+        agent_dir, provider, baseline_id, n_reps=args.n,
         model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
         notes="upgrade pipeline baseline",
         on_rep_done=None if args.quiet else _progress,
     )
     console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
     run_suite(
-        args.agent, provider, candidate_id, n_reps=args.n,
+        agent_dir, provider, candidate_id, n_reps=args.n,
         model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
         notes="upgrade pipeline candidate (unpatched)",
         on_rep_done=None if args.quiet else _progress,
@@ -143,7 +436,7 @@ def cmd_upgrade(args) -> int:
         console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
         work_dir = recorder.run_dir(runs_root, tag) / "patched_agent"
         repair_outcome = repair(
-            original_agent_dir=args.agent,
+            original_agent_dir=agent_dir,
             work_dir=work_dir,
             provider=provider,
             candidate_model=args.candidate_model,
@@ -155,9 +448,10 @@ def cmd_upgrade(args) -> int:
             workers=args.workers,
         )
         for line in repair_outcome.log:
-            console.print(f"[dim]{line}[/dim]", highlight=False)
+            # Log lines carry [repair_type] tags and ['case', 'lists'] — rich would eat them.
+            console.print(f"[dim]{escape(line)}[/dim]", highlight=False)
         if repair_outcome.accepted_patches:
-            patch_text = make_patch(args.agent, work_dir, rel_prefix=str(args.agent).rstrip("/"))
+            patch_text = make_patch(agent_dir, work_dir, rel_prefix=_patch_prefix(agent_dir))
             patch_file = recorder.run_dir(runs_root, tag) / "upgrade.patch"
             patch_file.parent.mkdir(parents=True, exist_ok=True)
             patch_file.write_text(patch_text)
@@ -172,10 +466,20 @@ def cmd_upgrade(args) -> int:
     save_diff(diff, out_dir / "diff.json")
     (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=1, sort_keys=True))
     (out_dir / "REPORT.md").write_text(diff_to_markdown(diff, verdict=verdict))
-    console.print(f"\nartifacts: {out_dir}/diff.json · verdict.json · REPORT.md"
-                  + (f" · {patch_path}" if patch_path else ""))
+    console.print(
+        f"\nartifacts in {escape(str(out_dir.resolve()))}/ : diff.json · verdict.json · REPORT.md"
+        + (" · upgrade.patch" if patch_path else ""),
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print(
+        f"[dim]every run record (both models, every repair candidate) is under "
+        f"{escape(str(Path(runs_root).resolve()))}/[/dim]",
+        highlight=False,
+        soft_wrap=True,
+    )
     if verdict["verdict"] == SAFE_WITH_PATCH:
-        console.print(f"apply the repair with: [bold]git apply {patch_path}[/bold]")
+        console.print(f"apply the repair with: [bold]git apply {escape(str(patch_path))}[/bold]")
     return 0 if verdict["verdict"] in ("SAFE", SAFE_WITH_PATCH) else 1
 
 
@@ -183,11 +487,17 @@ def cmd_cost(args) -> int:
     from upshift.pricing import run_cost
 
     root = Path(args.runs_root)
-    run_dirs = (
-        [root / rid for rid in args.run_ids]
-        if args.run_ids
-        else sorted(d for d in root.iterdir() if (d / "manifest.json").exists())
-    )
+    if not root.is_dir():
+        raise ValueError(f"no runs directory at {root.resolve()} — nothing has been recorded yet")
+    if args.run_ids:
+        run_dirs = [root / rid for rid in args.run_ids]
+        missing = [str(d) for d in run_dirs if not (d / "manifest.json").is_file()]
+        if missing:
+            raise ValueError(f"no run recorded at: {', '.join(missing)}")
+    else:
+        run_dirs = sorted(d for d in root.iterdir() if (d / "manifest.json").exists())
+        if not run_dirs:
+            raise ValueError(f"no runs recorded under {root.resolve()}")
     total_usd = 0.0
     total_in = total_out = 0
     any_unknown = False
@@ -218,6 +528,11 @@ def cmd_cost(args) -> int:
 
 
 def cmd_report(args) -> int:
+    if not Path(args.diff_json).is_file():
+        raise ValueError(
+            f"{args.diff_json} not found — pass the diff.json written by `upshift upgrade` "
+            f"(runs/<tag>/diff.json) or by `upshift diff` (runs/diffs/<a>__<b>.json)"
+        )
     result = load_diff(args.diff_json)
     verdict = None
     verdict_path = Path(args.diff_json).parent / "verdict.json"
@@ -225,6 +540,31 @@ def cmd_report(args) -> int:
         verdict = json.loads(verdict_path.read_text())
     render_diff(result, console=console, verdict=verdict)
     return 0
+
+
+INTERRUPT_MESSAGE = (
+    "\n[yellow]interrupted.[/yellow] Completed reps are already on disk — rerun the same "
+    "command to resume; finished reps are skipped."
+)
+
+
+def _install_interrupt_handler() -> None:
+    """Ctrl-C exits now.
+
+    Without this the KeyboardInterrupt only surfaces once the worker pool has drained every
+    already-queued rep — minutes of API calls the user just asked to stop. Every finished rep
+    is already on disk (recorder writes atomically), so exiting hard loses nothing.
+    """
+
+    def handler(signum, frame) -> None:
+        console.print(INTERRUPT_MESSAGE)
+        console.file.flush()
+        os._exit(130)
+
+    try:
+        signal.signal(signal.SIGINT, handler)
+    except ValueError:  # not the main thread; main()'s except clause still covers it
+        pass
 
 
 def _load_dotenv(path: str | Path = ".env") -> None:
@@ -244,8 +584,18 @@ def _load_dotenv(path: str | Path = ".env") -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
-    parser = argparse.ArgumentParser(prog="upshift", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="upshift",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_init = sub.add_parser(
+        "init", help="scaffold an agent directory from the packaged example"
+    )
+    p_init.add_argument("directory", help="directory to create (must not exist, or be empty)")
+    p_init.set_defaults(func=cmd_init)
 
     p_run = sub.add_parser("run", help="run the eval suite against one model/config")
     _add_common_run_args(p_run)
@@ -281,11 +631,34 @@ def main(argv: list[str] | None = None) -> int:
     p_rep.set_defaults(func=cmd_report)
 
     args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        console.print(
+            "\nstart here: [bold]upshift init my-agent[/bold] — scaffolds an example agent "
+            "and prints the free, no-API-key demo command."
+        )
+        return 0
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    _install_interrupt_handler()
     try:
         return args.func(args)
     except ValueError as e:
-        console.print(f"[red]error:[/red] {e}")
+        console.print(f"[red]error:[/red] {escape(str(e))}")
         return 2
+    except ProviderAPIError as e:
+        console.print(f"[red]api error:[/red] {escape(e.message)}")
+        return 2
+    except KeyboardInterrupt:
+        console.print(INTERRUPT_MESSAGE)
+        return 130
+    except OSError as e:
+        console.print(f"[red]error:[/red] {escape(str(e))}")
+        return 2
+    finally:
+        try:
+            signal.signal(signal.SIGINT, previous_sigint)
+        except ValueError:
+            pass
 
 
 if __name__ == "__main__":

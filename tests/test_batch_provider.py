@@ -32,7 +32,7 @@ class FakeBatchClient:
         )
 
     def _file_create(self, file, purpose):
-        name, buf = file
+        _name, buf = file
         fid = f"file-{len(self._files)}"
         self._files[fid] = buf.read()
         return SimpleNamespace(id=fid)
