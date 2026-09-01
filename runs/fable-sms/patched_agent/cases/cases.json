@@ -1,0 +1,212 @@
+[
+  {
+    "id": "greeting_texts_back",
+    "description": "The notebook's first example input (cell 35: sms_chatbot(\"Hey there! How are you?\")). No username has been given, so the only legal tool is send_text_to_user — the notebook's narration says Claude responds by calling it. Under the notebook's one-call-per-message semantics (agent.json max_turns: 1) the episode ends after this single assistant turn; tool results are never sent back, so the oracle plan is one step and needs no final text turn.",
+    "initial_state": {},
+    "user_messages": [
+      "Hey there! How are you?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      },
+      {
+        "type": "state_count",
+        "path": "texts_sent",
+        "equals": 1
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Hey! I'm doing well, thanks for asking. How can I help you today?"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "order_help_asks_for_username",
+    "description": "The notebook's second example input (cell 37: 'I need help looking up an order'). The system prompt forbids get_customer_info until a username is given, so the agent must text back asking for one. Under the notebook's one-call-per-message semantics (agent.json max_turns: 1) the episode ends after this single assistant turn; tool results are never sent back, so the oracle plan is one step and needs no final text turn.",
+    "initial_state": {},
+    "user_messages": [
+      "I need help looking up an order"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.email",
+        "equals": false
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Happy to help with that order. What's your username?"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "order_help_with_username",
+    "description": "The notebook's third example input (cell 39: 'I need help looking up an order.  My username is jenny76'), verbatim including its double space. The notebook's stored output for this cell shows exactly one thing happening: Claude calls get_customer_info. That is all a single API call can do — the record it returns is never sent back, so nothing is texted this episode, and this case asserts only the lookup. Under the notebook's one-call-per-message semantics (agent.json max_turns: 1) the episode ends after this single assistant turn; tool results are never sent back, so the oracle plan is one step and needs no final text turn.",
+    "initial_state": {},
+    "user_messages": [
+      "I need help looking up an order.  My username is jenny76"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "args_subset": {
+          "username": "jenny76"
+        }
+      },
+      {
+        "type": "final_state",
+        "path": "lookups[0]",
+        "equals": "jenny76"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "username": "jenny76"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "email_on_file_requested",
+    "description": "Written here, not from the notebook: a username supplied up front together with an explicit request for a field. The interesting behaviour under tool_choice any is which single tool the one call picks — the agent must look the customer up rather than text back an answer it does not have yet. turns_at_most 2 is the one-call contract expressed in the check vocabulary: assistant_turns() counts tool-calling turns PLUS ONE for a final text turn, and here that final turn never happens, so a single tool-calling call scores 2. Under the notebook's one-call-per-message semantics (agent.json max_turns: 1) the episode ends after this single assistant turn; tool results are never sent back, so the oracle plan is one step and needs no final text turn.",
+    "initial_state": {},
+    "user_messages": [
+      "Hi, this is jenny76. Can you text me the email address you have on file for me?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "args_subset": {
+          "username": "jenny76"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "send_text_to_user"
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.email",
+        "equals": false
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "username": "jenny76"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "gibberish_still_calls_a_tool",
+    "description": "The notebook's last example input (cell 41), verbatim. Its point is that with tool_choice any Claude still calls a tool rather than replying in text; with no username on record, send_text_to_user is the only one it may call. Under the notebook's one-call-per-message semantics (agent.json max_turns: 1) the episode ends after this single assistant turn; tool results are never sent back, so the oracle plan is one step and needs no final text turn.",
+    "initial_state": {},
+    "user_messages": [
+      "askdj aksjdh asjkdbhas kjdhas 1+1 ajsdh"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Sorry, I didn't catch that — could you rephrase?"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
