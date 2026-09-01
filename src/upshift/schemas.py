@@ -16,7 +16,8 @@ from typing import Any
 # Agent config: the patchable surface of the victim agent
 # ---------------------------------------------------------------------------
 
-ENDPOINTS = ("chat_completions", "responses")
+#: `messages` is Anthropic's Messages API (DESIGN.md, "Anthropic provider").
+ENDPOINTS = ("chat_completions", "responses", "messages")
 
 
 @dataclass

@@ -64,7 +64,7 @@ the sim provider — never by checks.
 | check | semantics |
 | --- | --- |
 | `no_api_error` | The episode completed without an API error. An errored episode reports this single failed check and nothing else is evaluated. |
-| `tool_called {name, min_times=1, max_times?, args_subset?, exact_args?}` | The named tool ran within the count bounds, and (if given) at least one call's arguments contained `args_subset` / equalled `exact_args`. |
+| `tool_called {name, min_times=1, max_times?, args_subset?, exact_args?, retrieval?}` | The named tool ran within the count bounds, and (if given) at least one call's arguments contained `args_subset` / equalled `exact_args`. `retrieval: true` marks the tool as a retrieval tool; it changes **nothing** about pass/fail and is read only by the differ, which uses it to report a dropped retrieval call as `reduced_retrieval_calls` instead of a generic missing call. |
 | `tool_not_called {name}` | The named tool never ran. |
 | `state_count {path, equals, where?}` | Entries at `path` in the final state (a list, or an object's values) matching every key/value in `where` number exactly `equals`. |
 | `bookings_count {equals}` | Victim-flavored alias of `state_count {path: "bookings", where: {"status": "confirmed"}}`. Kept for the committed booking suite; write `state_count` instead. |
@@ -73,9 +73,33 @@ the sim provider — never by checks.
 | `confirmation_id_valid {pattern?, state_path?, id_field?, known_from?}` | Id-fabrication detector: every identifier matching `pattern` in the final assistant message must be real. Defaults `pattern` `UPS-\d+`, `state_path` `bookings`, `id_field` `booking_id`, `known_from` `state`. Known ids are an object's keys plus each entry's `id_field`; `known_from` may be `state`, `tool_results` (ids some tool actually returned this episode) or `both`. Pass your own `pattern` — the default is the victim's format. |
 | `response_contains {text}` / `response_not_contains {text}` | Case-insensitive substring of the final assistant message. |
 | `response_matches {regex}` | `DOTALL`+`IGNORECASE` regex search on the final assistant message. |
+| `turns_at_most {n}` | Efficiency contract: the episode used at most `n` assistant turns. Turns are counted as the number of **distinct `turn` values across the episode's tool executions** (every assistant turn that issued at least one tool call) **plus one** for the final assistant turn, which answers and calls nothing — so an episode with no tool calls is 1 turn. In a multi-segment case an intermediate answer turn is counted only when it also called a tool. Wall time is never asserted. |
 
 An unknown check type or a malformed check is reported as a failed check with a reason; it
 never crashes a run. Checks are deterministic by design — there is no LLM judge in v1.
+
+## Failure signatures the repair loop understands
+
+The differ classifies each failing case into signatures that drive candidate generation.
+Besides the OpenAI-era ones, it recognizes the documented Claude Fable 5 → 5.1 changes
+(DESIGN.md): `api_error_forced_tool_choice` (the 400 for `tool_choice` type `tool`/`any`) →
+drop the param and state the requirement in the prompt; `api_error_unsupported_sampling_params`
+(a 400 naming `temperature`/`top_p`/`top_k`) → drop those params; `serialized_tool_calls` (the
+candidate stopped batching tool calls the baseline batched, or blew a `turns_at_most` budget the
+baseline met) → append the documented batching instruction, and raise effort; and
+`reduced_retrieval_calls` (a `tool_called` check fails for a retrieval-marked or
+retrieval-named tool that the baseline actually called) → raise reasoning effort one rung on
+the endpoint's ladder (`messages`: low<medium<high<xhigh<max, unset = high; `chat_completions`
+/ `responses`: none<low<medium<high, unset = medium), then append the documented verification
+nudge. Effort is only ever raised, never lowered. The two comparative signatures need the
+baseline run's reps for the same case; without them they simply do not fire.
+
+The one signature the loop **refuses**: `thinking_block_invalid` (the 400 ``Invalid `signature`
+in `thinking` block``). No edit to the three patchable files can fix it — the fix is runtime
+history handling (strip the invalidated run's thinking blocks, or set
+`thinking.block_binding.prefix_mismatch_behavior: "drop_block"` under the
+`thinking-binding-controls-2026-08-01` beta) — so the loop logs a REFUSAL line with that
+pointer and generates no candidate rather than spending budget on repairs that cannot work.
 
 ## What the sim provider can and cannot do for a foreign agent
 

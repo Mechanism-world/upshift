@@ -38,10 +38,17 @@ console = Console()
 # commands recorded in CLAUDE.md / DESIGN.md keep working without --agent.
 LEGACY_AGENT_DIR = Path("victim/booking_agent")
 
-# The two models the bundled simulator knows about (providers/sim.py).
+# The models the bundled simulator knows about (providers/sim.py): one OpenAI pair on
+# chat_completions/responses, one Anthropic pair on messages.
 SIM_BASELINE_MODEL = "sim-5.5"
 SIM_CANDIDATE_MODEL = "sim-5.6-sol"
-_SIM_MODEL_PREFIXES = ("sim-5.5", "sim-5.6")
+SIM_FABLE_BASELINE_MODEL = "sim-fable-5"
+SIM_FABLE_CANDIDATE_MODEL = "sim-fable-5-1"
+_SIM_MODEL_PREFIXES = ("sim-5.5", "sim-5.6", "sim-fable-5")
+
+PROVIDERS = ["openai", "anthropic", "sim"]
+#: model-id prefix -> the only provider that serves it
+_MODEL_PROVIDER_PREFIXES = {"gpt-": "openai", "claude-": "anthropic"}
 
 AGENT_FILE_BLURBS = {
     "agent.json": "model, endpoint, params — the config a repair may patch",
@@ -64,7 +71,7 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="agent directory (default: auto-detected in the current directory; "
         "`upshift init <dir>` creates one)",
     )
-    p.add_argument("--provider", default="openai", choices=["openai", "sim"])
+    p.add_argument("--provider", default="openai", choices=list(PROVIDERS))
     tier = p.add_mutually_exclusive_group()
     tier.add_argument(
         "--batch",
@@ -88,11 +95,19 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
 def _make_provider(args):
     batch, flex = getattr(args, "batch", False), getattr(args, "flex", False)
     if (batch or flex) and args.provider != "openai":
-        raise ValueError("--batch/--flex are only valid with --provider openai")
+        raise ValueError(
+            f"--batch/--flex are only valid with --provider openai (got "
+            f"--provider {args.provider}); Anthropic has no batch or flex tier here"
+        )
     if args.provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
         # Without this the run would "succeed" with every rep recording an auth error.
         raise ValueError(
             "OPENAI_API_KEY is not set — export it (upshift also reads a .env file in the "
+            "current directory), or use --provider sim for a free, deterministic run"
+        )
+    if args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise ValueError(
+            "ANTHROPIC_API_KEY is not set — export it (upshift also reads a .env file in the "
             "current directory), or use --provider sim for a free, deterministic run"
         )
     if batch:
@@ -270,20 +285,71 @@ def resolve_agent_dir(
 
 
 def _check_models(provider_name: str, models: list[str]) -> None:
-    """Catch the sim/real model mix-ups that would otherwise fail 190 times in a row."""
+    """Catch the provider/model mix-ups that would otherwise fail 190 times in a row."""
     for model in models:
         if not model:
             continue
         if provider_name == "sim" and not model.startswith(_SIM_MODEL_PREFIXES):
             raise ValueError(
                 f"provider 'sim' only simulates {SIM_BASELINE_MODEL!r} (baseline) and "
-                f"{SIM_CANDIDATE_MODEL!r} (candidate); got {model!r}. Pass those model names, "
-                f"or use --provider openai for a real model."
+                f"{SIM_CANDIDATE_MODEL!r} (candidate), plus {SIM_FABLE_BASELINE_MODEL!r} -> "
+                f"{SIM_FABLE_CANDIDATE_MODEL!r} on the messages endpoint; got {model!r}. "
+                f"Pass those model names, or use --provider openai/anthropic for a real model."
             )
         if provider_name != "sim" and model.startswith("sim-"):
             raise ValueError(
                 f"model {model!r} exists only in the local simulator; add --provider sim"
             )
+        for prefix, owner in _MODEL_PROVIDER_PREFIXES.items():
+            if model.startswith(prefix) and provider_name not in ("sim", owner):
+                raise ValueError(
+                    f"model {model!r} is served by provider {owner!r}, not "
+                    f"{provider_name!r}; use --provider {owner}"
+                )
+
+
+def _effort_levels(capabilities: dict | None) -> list[str]:
+    """Effort levels out of a /v1/models capabilities block, tolerating shape drift."""
+    effort = (capabilities or {}).get("effort")
+    if isinstance(effort, dict):
+        for key in ("levels", "values", "supported", "supported_values"):
+            value = effort.get(key)
+            if isinstance(value, list):
+                return [str(v) for v in value]
+        return []
+    if isinstance(effort, list):
+        return [str(v) for v in effort]
+    return []
+
+
+def anthropic_preflight(provider, models: list[str]) -> str:
+    """Free GET /v1/models/{id} for each model before any paid call. Prints one line per
+    model and returns a notes string for the run manifest."""
+    if getattr(provider, "name", "") != "anthropic":
+        return ""
+    ids = [m for m in dict.fromkeys(models) if m]
+    if not ids:
+        return ""
+    try:
+        capabilities = provider.preflight_models(ids)
+    except ProviderAPIError as exc:
+        if exc.status_code == 404:
+            raise ValueError(
+                f"model id not found for this ANTHROPIC_API_KEY ({', '.join(ids)}): "
+                f"{exc.message}"
+            ) from exc
+        raise
+    notes = []
+    for model_id, capability in capabilities.items():
+        levels = _effort_levels(capability)
+        detail = f"effort levels {levels[0]}…{levels[-1]}" if levels else "no effort levels"
+        console.print(f"  {escape(model_id)}: ok, {escape(detail)}", highlight=False)
+        notes.append(f"{model_id}: {','.join(levels) if levels else 'effort levels unreported'}")
+    return "preflight " + "; ".join(notes)
+
+
+def _with_notes(notes: str, extra: str) -> str:
+    return f"{notes} · {extra}" if notes and extra else (notes or extra)
 
 
 def _positive(value: int, flag: str) -> int:
@@ -560,7 +626,9 @@ def cmd_run(args) -> int:
     _positive(args.workers, "--workers")
     provider = _make_provider(args)
     agent_dir, raw_config = resolve_agent_dir(args.agent, args.runs_root)
-    _check_models(args.provider, [args.model or str(raw_config["model"])])
+    model = args.model or str(raw_config["model"])
+    _check_models(args.provider, [model])
+    notes = _with_notes(args.notes, anthropic_preflight(provider, [model]))
     run_directory = run_suite(
         agent_dir,
         provider,
@@ -571,7 +639,7 @@ def cmd_run(args) -> int:
         runs_root=args.runs_root,
         case_ids=args.case or None,
         workers=args.workers,
-        notes=args.notes,
+        notes=notes,
         on_rep_done=None if args.quiet else _progress,
     )
     summary = json.loads((run_directory / "summary.json").read_text())
@@ -606,6 +674,7 @@ def cmd_upgrade(args) -> int:
     provider = _make_provider(args)
     agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
     _check_models(args.provider, [args.baseline_model, args.candidate_model])
+    preflight = anthropic_preflight(provider, [args.baseline_model, args.candidate_model])
     tag = args.tag
     runs_root = args.runs_root
     baseline_id = f"{tag}-baseline"
@@ -615,14 +684,14 @@ def cmd_upgrade(args) -> int:
     run_suite(
         agent_dir, provider, baseline_id, n_reps=args.n,
         model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
-        notes="upgrade pipeline baseline",
+        notes=_with_notes("upgrade pipeline baseline", preflight),
         on_rep_done=None if args.quiet else _progress,
     )
     console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
     run_suite(
         agent_dir, provider, candidate_id, n_reps=args.n,
         model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
-        notes="upgrade pipeline candidate (unpatched)",
+        notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
         on_rep_done=None if args.quiet else _progress,
     )
 
@@ -843,7 +912,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_run_args(p_run)
     p_run.add_argument("--run-id", required=True)
     p_run.add_argument("--model", default=None, help="override agent.json model")
-    p_run.add_argument("--endpoint", default=None, choices=["chat_completions", "responses"])
+    p_run.add_argument("--endpoint", default=None, choices=list(ENDPOINTS))
     p_run.add_argument("--case", action="append", help="run only these case ids (repeatable)")
     p_run.add_argument("--notes", default="")
     p_run.set_defaults(func=cmd_run)

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from upshift import recorder
-from upshift.differ import DiffResult, failure_signatures
+from upshift.differ import SIG_THINKING_BLOCK_INVALID, DiffResult, failure_signatures
 from upshift.providers import Provider
 from upshift.repair.playbook import generate_candidates
 from upshift.schemas import (
@@ -31,14 +31,46 @@ from upshift.schemas import (
 
 # Priority order for signature-driven candidate generation (hard API breaks first).
 _SIGNATURE_PRIORITY = [
+    "api_error_forced_tool_choice",
+    "api_error_unsupported_sampling_params",
     "api_error_tools_reasoning",
     "api_error_other",
     "duplicate_tool_calls",
     "acting_past_goal",
     "skipped_tool_hallucination",
+    "serialized_tool_calls",
+    "reduced_retrieval_calls",
     "wrong_or_missing_tool_call",
     "other_behavioral",
 ]
+# thinking_block_invalid is deliberately ABSENT from that list: no repair of an allowed type
+# fixes it, so the loop refuses instead of burning budget on candidates that cannot work.
+THINKING_REFUSAL = (
+    "no repair candidate exists within the allowed repair types for thinking_block_invalid "
+    "(400 'Invalid `signature` in `thinking` block'). The fix is runtime history handling, "
+    "not an agent-file edit: strip the invalidated run of its thinking blocks before "
+    "replaying it, or set thinking.block_binding.prefix_mismatch_behavior: \"drop_block\" "
+    "under the thinking-binding-controls-2026-08-01 beta. See DESIGN.md, "
+    "\"Documented 5 -> 5.1 changes as detectors + repairs\" item 2."
+)
+
+
+def thinking_refusal_lines(
+    per_case_sigs: dict[str, list[str]], unrestored: set[str], already_logged: set[str]
+) -> list[str]:
+    """REFUSAL log lines for still-unrestored cases carrying ``thinking_block_invalid``.
+
+    Mutates ``already_logged`` so a case is refused once per repair run, not once per
+    iteration. Pure otherwise: it decides nothing about acceptance.
+    """
+    lines = []
+    for case_id in sorted(unrestored):
+        if case_id in already_logged:
+            continue
+        if SIG_THINKING_BLOCK_INVALID in (per_case_sigs.get(case_id) or []):
+            already_logged.add(case_id)
+            lines.append(f"REFUSAL {case_id}: {THINKING_REFUSAL}")
+    return lines
 
 
 @dataclass
@@ -84,6 +116,14 @@ def _config_hash(agent_dir: Path) -> str:
     for rel in ("agent.json", raw["system_prompt_file"], raw["tools_file"]):
         h.update((agent_dir / rel).read_bytes())
     return h.hexdigest()[:8]
+
+
+def _baseline_reps(runs_root: str | Path, baseline_run_id: str, case_id: str):
+    """The baseline run's reps for one case, or None when that run dir is not on disk."""
+    directory = recorder.run_dir(runs_root, baseline_run_id)
+    if not (directory / "cases" / case_id).is_dir():
+        return None
+    return recorder.load_case_reps(directory, case_id) or None
 
 
 def _ordered_signatures(per_case: dict[str, list[str]]) -> list[str]:
@@ -133,6 +173,8 @@ def repair(
     ]
     tried_ids: set[str] = set()
     final_verify_run_id: str | None = None
+    refused: set[str] = set()
+    log.extend(thinking_refusal_lines(per_case_sigs, unrestored, refused))
 
     while unrestored and tried < budget:
         candidates = [
@@ -276,9 +318,13 @@ def repair(
                         reps = recorder.load_case_reps(
                             recorder.run_dir(runs_root, verify_id), case_id
                         )
+                        # Behavioral signatures compare against the BASELINE run, so the
+                        # refreshed classification needs the same case's baseline reps.
                         per_case_sigs[case_id] = failure_signatures(
-                            [r for r in reps if not r.passed]
+                            [r for r in reps if not r.passed],
+                            _baseline_reps(runs_root, baseline_diff.baseline_run_id, case_id),
                         )
+                    log.extend(thinking_refusal_lines(per_case_sigs, unrestored, refused))
                     progressed = True
                     break
                 reasons = []

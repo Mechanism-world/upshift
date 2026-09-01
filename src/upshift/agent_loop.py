@@ -1,7 +1,8 @@
 """Generic tool-calling executor for one episode (one rep of one case).
 
-Owns message building, request shaping and tool-call parsing for both supported endpoints
-(`chat_completions` and `responses`); the provider only performs the transport. See DESIGN.md.
+Owns message building, request shaping and tool-call parsing for all three supported endpoints
+(`chat_completions`, `responses` and Anthropic's `messages`); the provider only performs the
+transport. See DESIGN.md.
 
 Wire formats handled here are the exact shapes the sim provider emits and the OpenAI SDK
 returns, so a transcript recorded against the sim is structurally identical to a real one.
@@ -20,8 +21,14 @@ from upshift.schemas import AgentConfig, APICall, Case, ToolExecution
 
 CHAT = "chat_completions"
 RESPONSES = "responses"
+MESSAGES = "messages"
+
+#: Anthropic requires max_tokens; thinking counts against it, so the default is generous.
+DEFAULT_MAX_TOKENS = 8192
 
 INVALID_ARGS_ERROR = {"error": "invalid JSON in tool call arguments"}
+
+_MISSING = object()
 
 
 @dataclass
@@ -39,6 +46,8 @@ class EpisodeResult:
         default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0}
     )
     latency_s: float = 0.0
+    #: stop_reason of the last successful response (Anthropic `messages` only; None elsewhere).
+    stop_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +58,41 @@ class EpisodeResult:
 def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """Canonical params -> endpoint-specific request fields. Unknown keys pass through."""
     out: dict[str, Any] = {}
+    effort = _MISSING
     for key, value in (params or {}).items():
         if endpoint == RESPONSES and key == "reasoning_effort":
             out["reasoning"] = {"effort": value}
+        elif endpoint == MESSAGES and key == "reasoning_effort":
+            effort = value  # folded into output_config below, after explicit values land
+        elif endpoint == MESSAGES and key == "tool_choice":
+            out["tool_choice"] = _messages_tool_choice(value)
         else:
-            out[key] = value
+            out[key] = copy.deepcopy(value)
+    if effort is not _MISSING:
+        # Canonical reasoning_effort -> output_config.effort. An explicit output_config.effort
+        # in the agent's params is more specific, so it wins.
+        config = dict(out.get("output_config") or {})
+        config.setdefault("effort", effort)
+        out["output_config"] = config
     return out
+
+
+def _messages_tool_choice(value: Any) -> Any:
+    """Anthropic-shaped tool_choice, translating an OpenAI-shaped value on the way.
+
+    `"required"` -> `{"type": "any"}`, `"auto"`/`"none"` -> `{"type": ...}`,
+    `{"type": "function", "function": {"name": X}}` -> `{"type": "tool", "name": X}`.
+    Anything already Anthropic-shaped (or unrecognised) passes through untouched, so a bad
+    value produces the API's own 400 rather than a silent rewrite here.
+    """
+    if isinstance(value, str):
+        mapped = {"required": "any", "auto": "auto", "none": "none", "any": "any"}.get(value)
+        return {"type": mapped} if mapped else value
+    if isinstance(value, dict) and value.get("type") == "function":
+        function = value.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            return {"type": "tool", "name": function["name"]}
+    return copy.deepcopy(value)
 
 
 def convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -76,13 +114,35 @@ def convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
+def convert_tools_messages(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """chat-style nested tool defs -> Anthropic `{name, description, input_schema}`."""
+    converted: list[dict[str, Any]] = []
+    for tool in tools or []:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(fn, dict):
+            converted.append(
+                {
+                    "name": fn.get("name"),
+                    "description": fn.get("description", ""),
+                    "input_schema": copy.deepcopy(fn.get("parameters", {})),
+                }
+            )
+        else:
+            converted.append(copy.deepcopy(tool))
+    return converted
+
+
 def build_request(
     endpoint: str,
     model: str,
     params: dict[str, Any],
     tools: list[dict[str, Any]],
     items: list[dict[str, Any]],
+    *,
+    system: str | None = None,
 ) -> dict[str, Any]:
+    """`system` is only used by the `messages` endpoint, where the system prompt is a
+    top-level request field instead of a conversation item."""
     if endpoint == CHAT:
         request: dict[str, Any] = {
             "model": model,
@@ -96,10 +156,23 @@ def build_request(
             "tools": convert_tools(tools or []),
             "store": False,
         }
+    elif endpoint == MESSAGES:
+        request = {
+            "model": model,
+            "max_tokens": _max_tokens(params),
+            "system": system or "",
+            "messages": copy.deepcopy(items),
+            "tools": convert_tools_messages(tools or []),
+        }
     else:
         raise ValueError(f"unknown endpoint {endpoint!r}")
     request.update(map_params(endpoint, params))
     return request
+
+
+def _max_tokens(params: dict[str, Any]) -> int:
+    value = (params or {}).get("max_tokens")
+    return value if isinstance(value, int) and value > 0 else DEFAULT_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +182,21 @@ def build_request(
 
 @dataclass
 class _ParsedTurn:
-    tool_calls: list[dict[str, Any]]  # [{"id", "name", "arguments": <json str>}]
+    tool_calls: list[dict[str, Any]]  # [{"id", "name", "arguments": <json str>|dict}]
     text: str
     assistant_items: list[dict[str, Any]]  # conversation items to append for a tool turn
+    #: conversation items for a TEXT turn, when the wire format needs more than the plain
+    #: text back (Anthropic: the full content block list, thinking blocks included). Empty
+    #: for chat_completions/responses, where the loop appends {"role": "assistant", ...}.
+    text_items: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str | None = None
 
 
 def parse_response(endpoint: str, response: dict[str, Any]) -> _ParsedTurn:
     if endpoint == CHAT:
         return _parse_chat_response(response)
+    if endpoint == MESSAGES:
+        return _parse_messages_response(response)
     return _parse_responses_response(response)
 
 
@@ -175,15 +255,83 @@ def _parse_responses_response(response: dict[str, Any]) -> _ParsedTurn:
     return _ParsedTurn(tool_calls=[], text="".join(chunks), assistant_items=[])
 
 
+def _parse_messages_response(response: dict[str, Any]) -> _ParsedTurn:
+    """Anthropic content blocks -> calls/text. The assistant turn is replayed with its FULL
+    block list (thinking, redacted_thinking, text, tool_use) exactly as received: signatures
+    on thinking blocks are only valid against the unmodified sequence."""
+    blocks = response.get("content") or []
+    stop_reason = response.get("stop_reason")
+    calls: list[dict[str, Any]] = []
+    chunks: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "tool_use":
+            calls.append(
+                {"id": block.get("id"), "name": block.get("name"), "arguments": block.get("input")}
+            )
+        elif kind == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+        # thinking / redacted_thinking / anything else: replayed verbatim, never interpreted
+    assistant_turn = {"role": "assistant", "content": copy.deepcopy(blocks)}
+    if calls:
+        return _ParsedTurn(
+            tool_calls=calls, text="", assistant_items=[assistant_turn], stop_reason=stop_reason
+        )
+    return _ParsedTurn(
+        tool_calls=[],
+        text="".join(chunks),
+        assistant_items=[],
+        text_items=[assistant_turn],
+        stop_reason=stop_reason,
+    )
+
+
 def _tool_result_item(endpoint: str, call_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(result)
     if endpoint == CHAT:
         return {"role": "tool", "tool_call_id": call_id, "content": payload}
+    if endpoint == MESSAGES:
+        block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "content": payload,
+        }
+        if isinstance(result, dict) and "error" in result:
+            block["is_error"] = True
+        return block
     return {"type": "function_call_output", "call_id": call_id, "output": payload}
+
+
+def _append_tool_results(
+    endpoint: str, items: list[dict[str, Any]], results: list[tuple[Any, dict[str, Any]]]
+) -> None:
+    """Anthropic wants every tool_result of a turn in ONE user message, blocks first; the
+    OpenAI endpoints want one conversation item per call."""
+    if endpoint == MESSAGES:
+        blocks = [_tool_result_item(endpoint, call_id, result) for call_id, result in results]
+        if blocks:
+            items.append({"role": "user", "content": blocks})
+        return
+    for call_id, result in results:
+        items.append(_tool_result_item(endpoint, call_id, result))
 
 
 def _accumulate_usage(total: dict[str, int], endpoint: str, response: dict[str, Any]) -> None:
     usage = response.get("usage") or {}
+    if endpoint == MESSAGES:
+        total["input_tokens"] += _as_int(usage.get("input_tokens"))
+        total["output_tokens"] += _as_int(usage.get("output_tokens"))
+        total["cached_input_tokens"] += _as_int(usage.get("cache_read_input_tokens"))
+        # Cache writes are billed at their own rate, so they are kept as a separate field
+        # rather than folded into either of the two above.
+        total["cache_creation_input_tokens"] = total.get(
+            "cache_creation_input_tokens", 0
+        ) + _as_int(usage.get("cache_creation_input_tokens"))
+        return
     if endpoint == CHAT:
         in_key, out_key, details_key = "prompt_tokens", "completion_tokens", "prompt_tokens_details"
     else:
@@ -224,13 +372,16 @@ def run_episode(
     endpoint = endpoint_override if endpoint_override is not None else config.endpoint
     model = model_override if model_override is not None else config.model
     params = params_override if params_override is not None else config.params
-    if endpoint not in (CHAT, RESPONSES):
+    if endpoint not in (CHAT, RESPONSES, MESSAGES):
         raise ValueError(f"unknown endpoint {endpoint!r}")
 
     result = EpisodeResult()
     started = time.monotonic()
 
-    items: list[dict[str, Any]] = [{"role": "system", "content": config.system_prompt}]
+    # `messages` carries the system prompt as a top-level request field, not as a turn.
+    items: list[dict[str, Any]] = (
+        [] if endpoint == MESSAGES else [{"role": "system", "content": config.system_prompt}]
+    )
     segments = list(case.user_messages or [])
     if not segments:
         result.final_state = backend.state()
@@ -243,7 +394,9 @@ def run_episode(
     sim_context = {"case_id": case.id, "rep": rep, "sim": case.sim}
 
     while call_idx < config.max_turns:
-        request = build_request(endpoint, model, params, config.tools, items)
+        request = build_request(
+            endpoint, model, params, config.tools, items, system=config.system_prompt
+        )
         seed_key = f"{case.id}:{rep}:{call_idx}"
         try:
             response = provider.call(endpoint, request, seed_key, sim_context)
@@ -262,9 +415,12 @@ def run_episode(
         result.resolved_model = response.get("model")
 
         turn = parse_response(endpoint, response)
+        if turn.stop_reason is not None:
+            result.stop_reason = turn.stop_reason
 
         if turn.tool_calls:
             items.extend(copy.deepcopy(turn.assistant_items))
+            pending: list[tuple[Any, dict[str, Any]]] = []
             for call in turn.tool_calls:
                 name = call.get("name")
                 raw_args = call.get("arguments")
@@ -278,7 +434,8 @@ def run_episode(
                         result=tool_result,
                     )
                 )
-                items.append(_tool_result_item(endpoint, call.get("id"), tool_result))
+                pending.append((call.get("id"), tool_result))
+            _append_tool_results(endpoint, items, pending)
             call_idx += 1
             continue
 
@@ -286,7 +443,10 @@ def run_episode(
         result.final_message = turn.text
         call_idx += 1
         if segment + 1 < len(segments):
-            items.append({"role": "assistant", "content": turn.text})
+            if turn.text_items:
+                items.extend(copy.deepcopy(turn.text_items))
+            else:
+                items.append({"role": "assistant", "content": turn.text})
             segment += 1
             items.append({"role": "user", "content": segments[segment]})
             continue

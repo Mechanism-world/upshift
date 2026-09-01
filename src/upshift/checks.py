@@ -34,6 +34,7 @@ CHECK_TYPES = (
     "response_contains",
     "response_not_contains",
     "response_matches",
+    "turns_at_most",
 )
 
 
@@ -95,6 +96,12 @@ def _check_no_api_error(check, executions, state, message) -> tuple[bool, str]:
 
 
 def _check_tool_called(check, executions, state, message) -> tuple[bool, str]:
+    """Count/argument assertion on one named tool.
+
+    Optional ``retrieval: true`` marks the tool as a retrieval tool. It changes NOTHING about
+    pass/fail here; it is read only by differ.py, which uses it to tell a dropped retrieval
+    call (``reduced_retrieval_calls``) apart from a generic missing tool call.
+    """
     name = check["name"]
     min_times = check.get("min_times", 1)
     max_times = check.get("max_times")
@@ -123,6 +130,33 @@ def _check_tool_called(check, executions, state, message) -> tuple[bool, str]:
 
     bounds = f"min_times={min_times}" + (f", max_times={max_times}" if max_times is not None else "")
     return True, f"{name} called {_times(count)} with the expected arguments ({bounds})."
+
+
+def assistant_turns(executions: list[ToolExecution]) -> int:
+    """Number of assistant turns in an episode.
+
+    Exact definition (contract with ``turns_at_most`` and differ.py's
+    ``serialized_tool_calls``): the number of DISTINCT ``ToolExecution.turn`` values in the
+    episode — every assistant turn that issued at least one tool call — PLUS ONE for the final
+    assistant turn, which produces the final message and issues no tool call. An episode with
+    no tool calls at all is therefore 1 turn.
+
+    Consequence worth knowing before writing the check: in a multi-segment case (several
+    ``user_messages``) the intermediate answer turns are counted only when they also called a
+    tool, so ``turns_at_most`` counts tool-calling turns plus one, not wall-clock replies.
+    """
+    return len({e.turn for e in executions}) + 1
+
+
+def _check_turns_at_most(check, executions, state, message) -> tuple[bool, str]:
+    limit = check["n"]
+    turns = assistant_turns(executions)
+    if turns > limit:
+        return False, (
+            f"episode used {turns} assistant turn(s) (distinct tool-calling turns plus the "
+            f"final answer), more than n={limit}."
+        )
+    return True, f"episode used {turns} assistant turn(s), within n={limit}."
 
 
 def _check_tool_not_called(check, executions, state, message) -> tuple[bool, str]:
@@ -284,6 +318,7 @@ _HANDLERS = {
     "response_contains": _check_response_contains,
     "response_not_contains": _check_response_not_contains,
     "response_matches": _check_response_matches,
+    "turns_at_most": _check_turns_at_most,
 }
 
 

@@ -22,6 +22,18 @@ ENDPOINT_MARKERS = {
     "chat_completions": ("chat.completions.create", "litellm.completion", "litellm.acompletion",
                          "completion(", "ChatCompletion"),
     "responses": ("responses.create", "client.responses", "responses.parse"),
+    # The Anthropic Messages API. Deliberately disjoint from the chat_completions markers:
+    # `messages.create` is evidence for "messages" and for nothing else, so an Anthropic
+    # call site can never be used to confirm a claimed chat_completions endpoint.
+    "messages": ("messages.create", "client.messages", "beta.messages.create"),
+}
+
+#: Canonical parameter -> the spellings that count as evidence for it in the source, per
+#: endpoint. A canonical name upshift invented (`reasoning_effort` on the Messages API, where
+#: the wire spelling is `output_config={"effort": ...}`) is not in the file it comes from, so
+#: the gate looks for the wire name instead of dropping a parameter that is really there.
+PARAM_SOURCE_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "messages": {"reasoning_effort": ("reasoning_effort", "output_config", "effort")},
 }
 
 CITATION_RE = re.compile(r"^(?P<path>[^\s:][^:]*):(?P<start>\d+)(?:-(?P<end>\d+))?$")
@@ -342,9 +354,14 @@ def _verify_agent_config(data: dict[str, Any], cache: FileCache, result: Verific
     kept: dict[str, Any] = {}
     if isinstance(params, dict):
         citation = str((data.get("params") or {}).get("citation") or "")
+        aliases = PARAM_SOURCE_ALIASES.get(str((data.get("endpoint") or {}).get("value")), {})
         for key, value in params.items():
             result.checked += 1
-            verdict, detail = literal_in_file(cache, citation, str(key))
+            verdict, detail = "absent", ""
+            for spelling in aliases.get(str(key), (str(key),)):
+                verdict, detail = literal_in_file(cache, citation, spelling)
+                if verdict in ("at_citation", "in_file"):
+                    break
             if verdict in ("at_citation", "in_file"):
                 kept[key] = value
             else:

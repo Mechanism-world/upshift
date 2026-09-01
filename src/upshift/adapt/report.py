@@ -18,6 +18,14 @@ from upshift.adapt.generate import GenerationResult
 from upshift.adapt.inventory import Inventory
 from upshift.adapt.verify import ERROR, Verification
 
+#: How the endpoint reads in the report. The wire name alone ("messages") does not tell an
+#: operator which vendor's API the generated agent.json will talk to.
+ENDPOINT_LABELS = {
+    "messages": "messages (Anthropic Messages API)",
+    "chat_completions": "chat_completions (OpenAI Chat Completions API)",
+    "responses": "responses (OpenAI Responses API)",
+}
+
 CONFIDENCE_MEANING = {
     "high": "verbatim-verified against the cited source",
     "medium": "assembled from cited parts (templated, or citation resolved but text did not)",
@@ -157,6 +165,9 @@ def render_report(
         add("")
         for name in ("endpoint", "model", "params", "max_turns"):
             claim = data.get(name) or {}
+            if name == "endpoint":
+                claim = {**claim,
+                         "value": ENDPOINT_LABELS.get(claim.get("value"), claim.get("value"))}
             add(_claim_line(name, claim))
         prompt = data.get("system_prompt") or {}
         chunks = prompt.get("chunks") or []
@@ -299,16 +310,30 @@ def render_report(
         add("")
 
     # -- next steps ---------------------------------------------------------
+    # The migration under test follows the endpoint the generated agent.json actually uses.
+    endpoint_value = ((verification.data if verification else {}).get("endpoint") or {}).get(
+        "value"
+    )
+    if endpoint_value == "messages":
+        sim_baseline, sim_candidate = "sim-fable-5", "sim-fable-5-1"
+        real_provider, real_flags = "anthropic", ""
+        real_baseline, real_candidate = "claude-fable-5", "claude-fable-5-1"
+    else:
+        sim_baseline, sim_candidate = "sim-5.5", "sim-5.6-sol"
+        real_provider, real_flags = "openai", " --flex"
+        real_baseline, real_candidate = "gpt-5.5", "gpt-5.6-sol"
+
     add("## Next")
     add("")
     add("```shell")
     add(f"# 1. read the must-review lines above, then edit {out_dir.name}/ by hand")
     add("# 2. free, deterministic pipeline check (no API key, no cost):")
     add(f"upshift upgrade --agent {out_dir} --provider sim \\")
-    add("    --baseline-model sim-5.5 --candidate-model sim-5.6-sol --tag adapt-smoke")
+    add(f"    --baseline-model {sim_baseline} --candidate-model {sim_candidate} "
+        f"--tag adapt-smoke")
     add("# 3. only then, the real thing (costs money):")
-    add(f"upshift upgrade --agent {out_dir} --provider openai --flex \\")
-    add("    --baseline-model gpt-5.5 --candidate-model gpt-5.6-sol --tag real")
+    add(f"upshift upgrade --agent {out_dir} --provider {real_provider}{real_flags} \\")
+    add(f"    --baseline-model {real_baseline} --candidate-model {real_candidate} --tag real")
     add("```")
     add("")
     return "\n".join(lines) + "\n"

@@ -25,9 +25,9 @@ Output schema (strict JSON, one object)::
 
     {
       "agent_name": str,
-      "endpoint":  Claim(value: "chat_completions"|"responses"),
+      "endpoint":  Claim(value: "chat_completions"|"responses"|"messages"),
       "model":     Claim(value: str|null),
-      "params":    Claim(value: {str: scalar}),
+      "params":    Claim(value: {str: scalar}),   # plus dict values for tool_choice/thinking
       "max_turns": Claim(value: int|null),
       "system_prompt": {
          "status": "found"|"inferred"|"undetermined",
@@ -78,7 +78,12 @@ from upshift.adapt.inventory import (
 
 CallModel = Callable[[dict[str, Any]], dict[str, Any]]
 
-ENDPOINT_VALUES = ("chat_completions", "responses")
+ENDPOINT_VALUES = ("chat_completions", "responses", "messages")
+
+#: Request parameters whose value is legitimately an object rather than a scalar. The list is
+#: closed on purpose: everything else in `params` is a scalar, so a dict anywhere else is the
+#: model handing us a nested request body instead of a parameter.
+DICT_PARAMS = ("tool_choice", "thinking")
 CLAIM_STATUSES = ("found", "inferred", "undetermined")
 CHUNK_KINDS = ("verbatim", "templated", "inferred")
 BACKEND_KINDS = ("lookup", "list", "create", "update", "file_read", "file_write", "unclear")
@@ -129,10 +134,21 @@ function tools, a loop over /v1/chat/completions or /v1/responses):
 
 Field notes:
 - endpoint: which API the agent's model call uses. `client.chat.completions.create` and
-  `litellm.completion` are "chat_completions"; `client.responses.create` is "responses".
+  `litellm.completion` are "chat_completions"; `client.responses.create` is "responses";
+  `client.messages.create` / `client.beta.messages.create` (the Anthropic Messages API,
+  `anthropic.Anthropic(...)` or `@anthropic-ai/sdk`) is "messages".
 - model / params: what the call site passes (model string, temperature, reasoning_effort,
   tool_choice, ...). Report only request parameters, never SDK/client construction args,
-  never `stream`, `messages`, `input` or `tools`.
+  never `stream`, `messages`, `input`, `system` or `tools`.
+- Anthropic ("messages") specifics — report the CANONICAL upshift name, not the wire name:
+    * `output_config={{"effort": "low"}}` -> params.reasoning_effort = "low"
+    * `max_tokens=2048` -> params.max_tokens = 2048 (a normal request parameter)
+    * `tool_choice=...` -> params.tool_choice, in the Anthropic shape, verbatim
+      (e.g. {{"type": "tool", "name": "search_docs"}} or {{"type": "any"}})
+    * `thinking=...` -> params.thinking, verbatim, as the object the call site passes
+    * `system=` is the system prompt, not a parameter: report it under system_prompt.
+      It may be a plain string or a list of text blocks; when it is a list, report one
+      chunk per block (they are joined with a single newline) and cite each block.
 - system_prompt.chunks: the pieces that make up the system message, in the order they are
   concatenated; they are joined with a single newline. Prefer one chunk per source literal —
   a chunk is only "verbatim" if its exact characters are in one file, so a prompt built by
@@ -141,7 +157,10 @@ Field notes:
   "templated" and explain the substitution in "note".
 - tools: OpenAI function schemas. If the code builds them from decorators, pydantic models
   or dicts, reconstruct the resulting schema and mark kind "templated" with the citation of
-  the definition. `parameters` must be a JSON Schema object.
+  the definition. `parameters` must be a JSON Schema object. Anthropic tools are
+  `{{name, description, input_schema}}`: report `input_schema` as `parameters` unchanged
+  (upshift's tools.json is chat-style whatever the endpoint is, and the loop converts it
+  back). A schema the code assembles rather than writes out is kind "templated".
 - tools[].backend: how the tool's effect could be re-implemented deterministically in
   memory. Use kind "unclear" unless the semantics are mechanical from the code:
     lookup   - reads entries from state[state_key] filtered by match_fields
@@ -169,7 +188,7 @@ Field notes:
 SCHEMA_SKELETON = """\
 {
   "agent_name": "string, a slug",
-  "endpoint": {"value": "chat_completions|responses", "citation": "path:line",
+  "endpoint": {"value": "chat_completions|responses|messages", "citation": "path:line",
                "status": "found|inferred|undetermined", "note": ""},
   "model": {"value": "string|null", "citation": "", "status": "", "note": ""},
   "params": {"value": {"temperature": 0.7}, "citation": "", "status": "", "note": ""},
@@ -424,6 +443,31 @@ def _claim_errors(data: dict[str, Any], key: str, kinds: tuple[type, ...]) -> li
     return errors
 
 
+def _param_value_errors(data: dict[str, Any]) -> list[str]:
+    """`params` values are scalars, with exactly two documented exceptions.
+
+    `tool_choice` and `thinking` are objects on the Anthropic Messages API
+    (`{"type": "tool", "name": ...}`, `{"type": "enabled", ...}`) and are passed through in
+    that shape (DESIGN.md v0.3). Every other parameter is a scalar: a dict elsewhere means
+    the model handed us a slice of the request body instead of one request parameter.
+    """
+    claim = data.get("params")
+    params = claim.get("value") if isinstance(claim, dict) else None
+    if not isinstance(params, dict):
+        return []
+    errors: list[str] = []
+    for key, value in params.items():
+        if isinstance(value, str | int | float | bool | type(None)):
+            continue
+        if key in DICT_PARAMS and isinstance(value, dict):
+            continue
+        errors.append(
+            f"params.value.{key}: expected a scalar (only {'/'.join(DICT_PARAMS)} may be an "
+            f"object), got {type(value).__name__}"
+        )
+    return errors
+
+
 def validate_extraction(data: dict[str, Any]) -> list[str]:
     """Every schema violation, as human sentences. Empty list means the reply is usable."""
     errors: list[str] = []
@@ -437,6 +481,7 @@ def validate_extraction(data: dict[str, Any]) -> list[str]:
         errors.append(f"endpoint.value: expected one of {list(ENDPOINT_VALUES)}, got {endpoint!r}")
     errors += _claim_errors(data, "model", (str,))
     errors += _claim_errors(data, "params", (dict,))
+    errors += _param_value_errors(data)
     errors += _claim_errors(data, "max_turns", (int,))
 
     prompt = data.get("system_prompt")

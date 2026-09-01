@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from upshift.adapt.extract import ALLOWED_CHECK_TYPES
+from upshift.adapt.extract import ALLOWED_CHECK_TYPES, DICT_PARAMS, ENDPOINT_VALUES
 from upshift.adapt.verify import Verification
 
 DEFAULT_MODEL = "gpt-5.5"
@@ -31,10 +31,17 @@ DEFAULT_MAX_TURNS = 12
 DEFAULT_ENDPOINT = "chat_completions"
 
 #: Request parameters that would break the eval loop or the recorder if passed through.
+#: `system` joins `instructions`/`messages`/`input` here: on the Messages API the system
+#: prompt is a request field, and upshift owns it (it lives in system_prompt.txt).
 BLOCKED_PARAMS = frozenset(
     {"stream", "stream_options", "messages", "input", "model", "tools", "functions",
-     "function_call", "n", "response_format", "store", "instructions"}
+     "function_call", "n", "response_format", "store", "instructions", "system"}
 )
+
+#: Tool names that look like retrieval. The generated `tool_called` check for such a tool
+#: carries `"retrieval": true` — inert for pass/fail (checks.py ignores unknown keys), read
+#: by the differ's `reduced_retrieval_calls` signature (DESIGN.md v0.3).
+RETRIEVAL_NAME_RE = re.compile(r"search|retriev|lookup|query|fetch|find", re.IGNORECASE)
 
 MECHANICAL_KINDS = frozenset({"lookup", "list", "create", "update", "file_read", "file_write"})
 
@@ -158,7 +165,15 @@ def build_tools(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[s
             continue
         parameters = tool.get("parameters")
         if not isinstance(parameters, dict):
-            parameters = {"type": "object", "properties": {}, "required": []}
+            # Anthropic tools are {name, description, input_schema}. tools.json is chat-style
+            # whatever the endpoint is (DESIGN.md: the loop converts parameters ->
+            # input_schema on the wire), so an extraction that reported the wire name is
+            # normalised here rather than written out in a shape upshift cannot load.
+            raw_schema = tool.get("input_schema")
+            parameters = (
+                raw_schema if isinstance(raw_schema, dict)
+                else {"type": "object", "properties": {}, "required": []}
+            )
         tools.append(
             {
                 "type": "function",
@@ -431,7 +446,8 @@ _CHECK_PARAM_SYNONYMS: dict[str, dict[str, str]] = {
 }
 _CHECK_ALLOWED_PARAMS: dict[str, set[str]] = {
     "no_api_error": set(),
-    "tool_called": {"name", "args_subset", "exact_args", "min_times", "max_times"},
+    "tool_called": {"name", "args_subset", "exact_args", "min_times", "max_times",
+                    "retrieval"},
     "tool_not_called": {"name"},
     "no_tool_calls_after_success": {"name"},
     "final_state": {"path", "equals"},
@@ -507,6 +523,11 @@ def _clean_checks(
         if name in tool_names and name not in named:
             checks.append({"type": "tool_called", "name": name})
             named.add(name)
+    for check in checks:
+        if check.get("type") == "tool_called" and RETRIEVAL_NAME_RE.search(
+            str(check.get("name") or "")
+        ):
+            check["retrieval"] = True
     return checks, dropped
 
 
@@ -614,6 +635,76 @@ def build_cases(
             }
         )
     return cases, provenance, dropped, notes
+
+
+# ---------------------------------------------------------------------------
+# agent.json params
+# ---------------------------------------------------------------------------
+
+
+def build_params(
+    raw: Any, endpoint: str, notes: list[str]
+) -> dict[str, Any]:
+    """The canonical `params` block of agent.json.
+
+    Two jobs, in order:
+
+    * **canonicalise the Anthropic wire shape.** upshift's config is provider-neutral: the
+      agent loop maps `reasoning_effort` onto `output_config.effort` on its way out
+      (DESIGN.md v0.3). An extraction that reported the wire name anyway is translated here
+      rather than written into agent.json, where nothing downstream would understand it.
+      `max_tokens`, `tool_choice` (Anthropic shape) and `thinking` are already canonical and
+      pass straight through.
+    * **keep the blocklist.** Anything upshift owns — transport, messages, tools, the system
+      prompt — is dropped with a note, and so is any non-scalar value outside the two
+      documented object parameters.
+    """
+    params: dict[str, Any] = {}
+    if not isinstance(raw, dict):
+        return params
+    source = dict(raw)
+
+    if endpoint == "messages":
+        output_config = source.pop("output_config", None)
+        if isinstance(output_config, dict):
+            effort = output_config.get("effort")
+            if isinstance(effort, str) and effort:
+                if "reasoning_effort" in source:
+                    notes.append(
+                        f"output_config.effort was {effort!r} and reasoning_effort was already "
+                        f"reported: kept reasoning_effort={source['reasoning_effort']!r}"
+                    )
+                else:
+                    source["reasoning_effort"] = effort
+                    notes.append(
+                        "mapped output_config.effort -> the canonical reasoning_effort "
+                        "parameter (the messages loop writes it back to output_config)"
+                    )
+            else:
+                notes.append(
+                    "dropped output_config: it carried no 'effort' value to canonicalise"
+                )
+        elif output_config is not None:
+            notes.append(f"dropped output_config: expected an object, got {output_config!r}")
+
+    for key, value in source.items():
+        if key in BLOCKED_PARAMS:
+            notes.append(
+                f"dropped request parameter {key!r}: upshift owns it (transport, messages, "
+                f"the system prompt or tools)"
+            )
+            continue
+        if isinstance(value, dict) and key not in DICT_PARAMS:
+            notes.append(
+                f"dropped request parameter {key!r}: only {'/'.join(DICT_PARAMS)} may be an "
+                f"object, and this one is a {type(value).__name__}"
+            )
+            continue
+        if isinstance(value, list):
+            notes.append(f"dropped request parameter {key!r}: a list is not a request parameter")
+            continue
+        params[key] = value
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +821,7 @@ def generate(
     # -- agent.json ---------------------------------------------------------
     endpoint_claim = data.get("endpoint") or {}
     endpoint = endpoint_claim.get("value")
-    if endpoint not in ("chat_completions", "responses"):
+    if endpoint not in ENDPOINT_VALUES:
         endpoint = DEFAULT_ENDPOINT
         result.notes.append(
             "endpoint was undetermined; defaulted to chat_completions (the endpoint the "
@@ -742,13 +833,7 @@ def generate(
         model = DEFAULT_MODEL
         result.notes.append(f"model was undetermined; wrote the upshift default {DEFAULT_MODEL!r}")
     params_value = (data.get("params") or {}).get("value")
-    params = {} if not isinstance(params_value, dict) else {
-        k: v for k, v in params_value.items() if k not in BLOCKED_PARAMS
-    }
-    for key in sorted(set(params_value or {}) & BLOCKED_PARAMS):
-        result.notes.append(
-            f"dropped request parameter {key!r}: upshift owns it (transport, messages or tools)"
-        )
+    params = build_params(params_value, endpoint, result.notes)
     max_turns = (data.get("max_turns") or {}).get("value")
     config = {
         "name": slugify(data.get("agent_name")),

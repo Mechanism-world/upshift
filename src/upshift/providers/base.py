@@ -1,6 +1,6 @@
 """Provider interface. Both the real OpenAI client and the local simulator implement this.
 
-A provider takes a fully-built request dict for one of the two supported endpoints and
+A provider takes a fully-built request dict for one of the supported endpoints and
 returns the verbatim response as a plain dict. It never interprets the conversation; the
 agent loop owns message building and tool-call parsing.
 """
@@ -39,7 +39,7 @@ class Provider(ABC):
     ) -> dict[str, Any]:
         """Execute one API call.
 
-        endpoint: "chat_completions" or "responses".
+        endpoint: "chat_completions", "responses" or "messages" (Anthropic).
         request: verbatim request body (model, messages/input, tools, params).
         seed_key: stable string "<case_id>:<rep>:<call_idx>"; the sim uses it for
             deterministic behavior, the OpenAI provider ignores it.
@@ -63,6 +63,10 @@ def get_provider(name: str) -> Provider:
         from upshift.providers.openai_provider import OpenAIProvider
 
         return OpenAIProvider(service_tier="flex")
+    if name == "anthropic":
+        from upshift.providers.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider()
     if name == "sim":
         from upshift.providers.sim import SimProvider
 

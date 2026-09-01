@@ -325,8 +325,14 @@ placement fails to restore.
    for a tool the case marks `retrieval: true` (or whose name matches
    search|retriev|lookup|query|fetch|find) while it passed on baseline. Repairs, in order:
    (a) raise effort one rung on the endpoint's ladder (messages: low<medium<high<xhigh<max;
-   chat/responses: none<low<medium<high), (b) append the documented verification nudge
-   (the "When a query centers on a name you do not confidently recognize…" paragraph).
+   chat/responses: none<low<medium<high), (b) append the documented verification nudge, verbatim from the prompting guide:
+   `When a query centers on a name you do not confidently recognize, or recognize from a
+   fast-moving area like AI models and developer tools where the landscape shifts within
+   months, the name itself is the thing to verify: search before answering, and include the
+   name as the user wrote it in at least one query alongside any reformulations. This holds
+   even when you have some background on it — partial background is exactly what makes an
+   out-of-date answer sound authoritative, so familiarity is not a reason to skip the
+   search.`
 5. `api_error_unsupported_sampling_params` — 400 mentioning temperature/top_p/top_k.
    Repair: drop those params (both Fables reject non-defaults; this catches agents
    migrating from OpenAI-style configs).

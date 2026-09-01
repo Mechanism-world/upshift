@@ -73,6 +73,21 @@ SIGNALS: list[tuple[str, float, str]] = [
     (r"\bacompletion\s*\(|\bcompletion\s*\(", 3.0, "completion() call"),
     (r"^\s*(from|import)\s+openai\b|^\s*from\s+openai\b", 5.0, "openai import"),
     (r"^\s*(from|import)\s+litellm\b", 5.0, "litellm import"),
+    # --- Anthropic Messages API (DESIGN.md "Anthropic provider (v0.3)") ---------------
+    # Weighted to match the OpenAI signals rung for rung: the dedicated call site scores
+    # like chat.completions.create, the bare attribute like responses.create, the import
+    # like the openai import, so an Anthropic repo ranks the way an OpenAI one does.
+    (r"\bclient\.messages\.create\b|\.beta\.messages\.create\b", 10.0, "messages.create call"),
+    (r"\bmessages\.create\b", 6.0, "messages.create call"),
+    (r"^\s*(from|import)\s+anthropic\b|^\s*from\s+anthropic\b", 5.0, "anthropic import"),
+    (r"@anthropic-ai/sdk", 5.0, "@anthropic-ai/sdk import"),
+    (r"\bAsyncAnthropic\s*\(|\bAnthropic\s*\(", 6.0, "Anthropic client construction"),
+    (r"\binput_schema\b", 7.0, "Anthropic tool schema literal"),
+    (r"\boutput_config\b", 4.0, "output_config (effort)"),
+    (r"\bthinking\s*=|[\"']thinking[\"']\s*:", 3.0, "thinking param"),
+    (r"\bsystem\s*=", 4.0, "system= kwarg"),
+    (r"\bmax_tokens\b", 2.0, "max_tokens"),
+    (r"anthropic-version", 3.0, "anthropic-version header"),
     (r"\btools\s*=", 6.0, "tools= kwarg"),
     (r"\"type\"\s*:\s*\"function\"|'type'\s*:\s*'function'", 7.0, "function tool schema literal"),
     (r"\btool_choice\b", 4.0, "tool_choice"),
@@ -114,6 +129,8 @@ NAME_BONUS: list[tuple[str, float, str]] = [
 CALL_PATTERNS = (
     "chat.completions.create",
     "responses.create",
+    "messages.create",
+    "beta.messages.create",
     "litellm.completion",
     "litellm.acompletion",
     "completion",
@@ -451,7 +468,7 @@ def analyze_python(
 
 
 REGEX_CALL_RE = re.compile(
-    r"(?P<callee>[\w.]*(?:chat\.completions\.create|responses\.create|"
+    r"(?P<callee>[\w.]*(?:chat\.completions\.create|responses\.create|messages\.create|"
     r"litellm\.a?completion|a?completion))\s*\("
 )
 
