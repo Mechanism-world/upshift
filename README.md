@@ -98,9 +98,28 @@ it tries to fix the break, and gives you the evidence either way.
 
 Your agent is five files in a directory — an `agent.json`, the system prompt, the OpenAI
 tool schemas, a deterministic `backend.py` that executes tool calls locally, and your eval
-cases. The full contract is ~20 lines: [ADAPTER.md](ADAPTER.md). `upshift init` scaffolds a
-working example to start from. No framework integrations — plain OpenAI chat-completions
-and responses agents only, by design.
+cases. The full contract is ~20 lines: [ADAPTER.md](ADAPTER.md).
+
+`upshift adapt` generates that directory from your agent's codebase:
+
+```bash
+upshift adapt https://github.com/you/your-agent --out my-agent --flex
+```
+
+It reads the repo (statically ranked, AST-analyzed), uses the model as an extraction
+engine over cited evidence, and writes the five files plus an `ADAPT_REPORT.md` that says
+what was found, what was inferred, what it could not determine, and exactly which lines to
+review — with a `file:line` citation for everything. Confidence is earned mechanically: a
+claim marked *verbatim* must literally appear in the cited file or it is downgraded and
+flagged; text the model can't trace to source is omitted and reported, never written. On
+[shell_gpt](reports/adapt-shellgpt.md), the generated adapter ran the full upgrade
+pipeline with zero edits in under a minute for $0.09–0.15 of extraction; the honest range
+of outcomes across three real repos is in [the reports](reports/). Adapt is scaffolding,
+not magic — review the report before spending money on a run.
+
+Prefer to write the five files yourself? `upshift init` scaffolds a working example. No
+framework integrations — plain OpenAI chat-completions and responses agents only, by
+design.
 
 ## What leaves your machine: nothing
 
@@ -126,6 +145,15 @@ source — it fits in an afternoon.
   that, and we say so in the report.
 - Backends must be deterministic; upshift documents this requirement but cannot yet detect
   a nondeterministic backend — it will just surface as flakiness.
+- `upshift adapt` spans a spectrum we measured on three real repos and wrote up honestly:
+  a simple hand-rolled agent (shell_gpt) came out pipeline-ready with zero edits; a
+  framework-assembled monorepo (HolmesGPT) got runnable scaffolding but its jinja2 prompt
+  had to be flagged "write it by hand"; an agent whose tool schemas hide in function
+  docstrings across files (ChatDBG) defeated extraction — the output says so and points at
+  the right files instead of inventing schemas. Tools that touch the world (shell, network,
+  clusters) always become TODO stubs: writing their deterministic backend stays human work.
+- Adapt's extraction is itself a model call: results vary run to run, and the generated
+  eval cases are drafts to rewrite, not a suite to trust.
 - The statistics are honest but small-N: N=5 with Fisher exact tests tells you a 5/5 → 0/5
   collapse is real (p ≈ 0.004); it will not resolve subtle single-case effects. Raise N if
   you need more power and can pay for it.
