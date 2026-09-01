@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +20,26 @@ from upshift.agent_loop import run_episode
 from upshift.checks import evaluate_checks
 from upshift.providers import Provider
 from upshift.schemas import AgentConfig, Case, RepRecord
+
+# An API error that means "the account cannot pay" is not evidence about the model. A rep
+# hitting it aborts the whole run (nothing written) instead of recording N junk failures
+# that a later diff would read as a regression. Seen live on both providers.
+BILLING_ERROR_RE = re.compile(
+    r"credit balance|insufficient_quota|exceeded your current quota|billing|"
+    r"purchase credits|payment required",
+    re.IGNORECASE,
+)
+
+
+class BillingError(ValueError):
+    """Raised by run_suite when a provider reports a billing/quota failure."""
+
+
+def _billing_message(api_error: object) -> str | None:
+    if not api_error:
+        return None
+    message = api_error.get("message", "") if isinstance(api_error, dict) else str(api_error)
+    return message if BILLING_ERROR_RE.search(str(message)) else None
 
 
 def load_backend_factory(agent_dir: str | Path) -> Callable[[dict], Any]:
@@ -121,6 +142,13 @@ def run_suite(
             params_override=effective_params,
             endpoint_override=effective_endpoint,
         )
+        billing = _billing_message(episode.api_error)
+        if billing:
+            raise BillingError(
+                f"provider reports a billing problem, run aborted before recording anything "
+                f"misleading (rerun once the account is funded; completed reps are kept): "
+                f"{billing}"
+            )
         check_results, passed = evaluate_checks(
             case,
             api_error=episode.api_error,
@@ -157,10 +185,14 @@ def run_suite(
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(one, case, rep): (case.id, rep) for case, rep in todo}
-            for future in as_completed(futures):
-                record = future.result()
-                if on_rep_done:
-                    on_rep_done(record)
+            try:
+                for future in as_completed(futures):
+                    record = future.result()
+                    if on_rep_done:
+                        on_rep_done(record)
+            except BillingError:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
 
     recorder.write_summary(run_directory)
     return run_directory
