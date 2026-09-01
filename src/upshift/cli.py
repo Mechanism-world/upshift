@@ -338,6 +338,12 @@ def anthropic_preflight(provider, models: list[str]) -> str:
                 f"model id not found for this ANTHROPIC_API_KEY ({', '.join(ids)}): "
                 f"{exc.message}"
             ) from exc
+        if "anthropic-workspace-id" in (exc.message or ""):
+            raise ValueError(
+                "this ANTHROPIC_API_KEY is identity-linked and every request must name a "
+                "workspace: set ANTHROPIC_WORKSPACE_ID=<workspace id from the Anthropic "
+                f"console> (also read from .env). API said: {exc.message}"
+            ) from exc
         raise
     notes = []
     for model_id, capability in capabilities.items():
