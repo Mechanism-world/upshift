@@ -199,3 +199,45 @@ Dev-env gotcha (macOS): uv's editable-install `.pth` files under
 `.venv/lib/python3.12/site-packages/` can carry the `UF_HIDDEN` flag, and this CPython build
 skips hidden `.pth` files, breaking `import upshift`. Fix:
 `chflags nohidden .venv/lib/python3.12/site-packages/*.pth` after `uv sync`.
+
+## upshift adapt (v0.2, added 2026-08-31)
+
+One feature: `upshift adapt <path-or-git-url> [--out <dir>]` reads an agent codebase and
+emits a complete adapter directory (agent.json, system_prompt.txt, tools.json, backend.py,
+cases/cases.json) plus ADAPT_REPORT.md. It collapses the manual adaptation cost (12-15h for
+shell_gpt) to minutes of review.
+
+Pipeline (src/upshift/adapt/):
+1. inventory.py — walk the repo (git URLs cloned to a temp dir), rank candidate files by
+   static signals: openai/litellm imports, chat.completions.create / responses.create /
+   litellm.completion call sites, `tools=` kwargs, `"type": "function"` literals,
+   prompt-shaped string constants, README/tests/examples. Python files get AST analysis
+   (call sites, keyword args, string assignments); other languages fall back to regex.
+2. extract.py — the model as extraction engine over the ranked evidence. Input: bounded
+   slices (windows around signal lines, top ~15 files, hard token cap). Output:
+   schema-validated JSON naming endpoint, model, params, prompt assembly (chunks with
+   file:line citations and verbatim|templated|inferred flags), tool schemas (citations),
+   tool behavior notes for backend generation, candidate eval scenarios from
+   tests/examples/README (citations). Extraction calls go through the normal provider
+   machinery (default gpt-5.5, --flex honored) and are RECORDED under runs/adapt-<name>/
+   like any run: inputs, outputs, usage — `upshift cost` prices them.
+3. verify.py — the anti-hallucination gate, mechanical: every chunk the extraction claims
+   as `verbatim` must be a literal substring of the cited file (modulo whitespace
+   normalization); failed claims are downgraded to `inferred` and flagged in the report.
+   Nothing the model asserts about source is trusted without a citation that checks out.
+4. generate.py — write the five files. backend.py: deterministic reimplementation where
+   the tool's semantics are mechanical (pure lookups, state machines, file/dir fixtures);
+   otherwise a stub returning {"error": "TODO(adapt): not implemented — <what/why>"} that
+   satisfies the never-raises contract. Cases: drafts derived from cited usage evidence,
+   each with a sim.oracle_plan so the full pipeline runs on --provider sim unchanged.
+   Every generated artifact carries provenance comments (file:line).
+5. report.py — ADAPT_REPORT.md: found / inferred / undetermined, per-artifact confidence
+   (high = verbatim-verified, medium = assembled from cited parts, low = inferred), the
+   exact list of lines a human must review before a real run, and extraction cost.
+
+Failure-mode contract: wrong-but-confident is the bug class that kills the feature.
+Confidence is derived from the verification gate, never self-reported by the model.
+Undetermined beats guessed: a hole with a TODO and a pointer is correct output.
+
+Scope guard: no UI, no new providers, no repair-loop changes, no framework integrations
+beyond what extraction must read. No new runtime deps (AST via stdlib).
