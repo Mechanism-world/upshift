@@ -64,3 +64,15 @@ def test_clean_checks_normalizes_and_engine_evaluates(tmp_path):
     )
     assert passed, [r.detail for r in results]
     assert not any("could not be evaluated" in (r.detail or "") for r in results)
+
+
+def test_oracle_plan_terminates_every_segment():
+    from upshift.adapt.generate import _oracle_plan
+
+    plan = _oracle_plan([{"name": "t", "arguments": {}}], "4", n_segments=2)
+    terminators = [e for e in plan if "final_message" in e]
+    assert len(terminators) == 2
+    assert terminators[-1]["final_message"] == "4"
+    # tool calls all live in the last segment (after the first terminator)
+    first_term = plan.index(terminators[0])
+    assert all("tool_calls" not in e for e in plan[:first_term])

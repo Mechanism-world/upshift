@@ -510,8 +510,18 @@ def _clean_checks(
     return checks, dropped
 
 
-def _oracle_plan(expected: list[dict[str, Any]], final_message: str) -> list[dict[str, Any]]:
+def _oracle_plan(
+    expected: list[dict[str, Any]], final_message: str, n_segments: int = 1
+) -> list[dict[str, Any]]:
+    """The sim consumes plan entries per user-message segment, each segment ending at a
+    final_message entry — so a case with N user messages needs N terminators (found live:
+    a 2-message case with a 1-terminator plan replays 'Done.' as the real final message
+    and fails its own response checks). Extraction doesn't attribute tool calls to
+    segments, so earlier segments are plain acknowledgments and the last segment carries
+    every expected call plus the aligned final message."""
     plan: list[dict[str, Any]] = []
+    for _ in range(max(1, n_segments) - 1):
+        plan.append({"final_message": "Okay."})
     for call in expected:
         arguments = call.get("arguments")
         plan.append(
@@ -589,7 +599,7 @@ def build_cases(
             "initial_state": initial_state if isinstance(initial_state, dict) else {},
             "user_messages": messages,
             "checks": checks,
-            "sim": {"oracle_plan": _oracle_plan(expected, final_message)},
+            "sim": {"oracle_plan": _oracle_plan(expected, final_message, len(messages))},
         }
         if expected:
             case["sim"]["critical_tool"] = expected[-1].get("name")
