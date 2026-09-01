@@ -1,0 +1,326 @@
+[
+  {
+    "id": "greeting_texts_back",
+    "description": "The notebook's first example input (cell 35: sms_chatbot(\"Hey there! How are you?\")). No username has been given, so the only legal tool is send_text_to_user \u2014 the notebook's narration says Claude responds by calling it.",
+    "initial_state": {},
+    "user_messages": [
+      "Hey there! How are you?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      },
+      {
+        "type": "state_count",
+        "path": "texts_sent",
+        "equals": 1
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Hey! I'm doing well, thanks for asking. How can I help you today?"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  },
+  {
+    "id": "order_help_asks_for_username",
+    "description": "The notebook's second example input (cell 37: 'I need help looking up an order'). The system prompt forbids get_customer_info until a username is given, so the agent must text back asking for one.",
+    "initial_state": {},
+    "user_messages": [
+      "I need help looking up an order"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.email",
+        "equals": false
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Happy to help with that order. What's your username?"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  },
+  {
+    "id": "order_help_with_username",
+    "description": "The notebook's third example input (cell 39: 'I need help looking up an order.  My username is jenny76'), verbatim including its double space. The notebook narrates that Claude calls get_customer_info here; the agent then has to text the result back, since text is its only channel. The oracle plan's outgoing text is the bare field value: the sim substitutes `$ref:` only when it is the whole argument value, so a natural sentence around it would not resolve.",
+    "initial_state": {},
+    "user_messages": [
+      "I need help looking up an order.  My username is jenny76"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "args_subset": {
+          "username": "jenny76"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "lookups[0]",
+        "equals": "jenny76"
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.purchases",
+        "equals": true
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "username": "jenny76"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "$ref:get_customer_info[0].purchases[0].product"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  },
+  {
+    "id": "email_on_file_requested",
+    "description": "Username supplied up front and a field explicitly requested: the agent must look the customer up and then text the looked-up email back. delivered.email is true only if the value the tool returned (jenny76@email.com) appears in a sent text. The oracle plan's outgoing text is the bare field value: the sim substitutes `$ref:` only when it is the whole argument value, so a natural sentence around it would not resolve.",
+    "initial_state": {},
+    "user_messages": [
+      "Hi, this is jenny76. Can you text me the email address you have on file for me?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "args_subset": {
+          "username": "jenny76"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.email",
+        "equals": true
+      },
+      {
+        "type": "turns_at_most",
+        "n": 4
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "username": "jenny76"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "$ref:get_customer_info[0].email"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  },
+  {
+    "id": "username_given_in_second_message",
+    "description": "Two-segment version of the notebook's flow: the agent asks for a username, gets one, then looks the customer up and texts back what they bought. Exercises multi-segment episodes with tool_choice any in force on every turn. The oracle plan's outgoing text is the bare field value: the sim substitutes `$ref:` only when it is the whole argument value, so a natural sentence around it would not resolve.",
+    "initial_state": {},
+    "user_messages": [
+      "I need help looking up an order",
+      "my username is marco_p \u2014 what did I buy?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "args_subset": {
+          "username": "marco_p"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 2
+      },
+      {
+        "type": "final_state",
+        "path": "delivered.purchases",
+        "equals": true
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Sure \u2014 what's your username?"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Asked for the username."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "username": "marco_p"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "$ref:get_customer_info[0].purchases[2].product"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  },
+  {
+    "id": "gibberish_still_calls_a_tool",
+    "description": "The notebook's last example input (cell 41), verbatim. Its point is that with tool_choice any Claude still calls a tool rather than replying in text; with no username on record, send_text_to_user is the only one it may call.",
+    "initial_state": {},
+    "user_messages": [
+      "askdj aksjdh asjkdbhas kjdhas 1+1 ajsdh"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "send_text_to_user",
+        "min_times": 1
+      },
+      {
+        "type": "tool_not_called",
+        "name": "get_customer_info"
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "send_text_to_user",
+              "arguments": {
+                "text": "Sorry, I didn't catch that \u2014 could you rephrase?"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Sent."
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,141 @@
+[
+  {
+    "id": "tech_sector_companies",
+    "description": "FACT's first README usage example, verbatim (README.md:433). The five Technology companies in data/fact_demo.db are AI Dynamics, CloudFirst Inc, DataFlow Systems, InnovateTech Corp and TechCorp Inc.; only TechCorp is named anywhere in the system prompt, so the other four can only come from an actual query.",
+    "initial_state": {},
+    "user_messages": [
+      "What companies are in the technology sector?"
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_QueryReadonly", "min_times": 1, "retrieval": true},
+      {"type": "response_contains", "text": "DataFlow Systems"},
+      {"type": "response_contains", "text": "CloudFirst"},
+      {"type": "response_contains", "text": "InnovateTech"},
+      {"type": "response_contains", "text": "AI Dynamics"},
+      {"type": "turns_at_most", "n": 3}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_QueryReadonly", "arguments": {"statement": "SELECT name, symbol, market_cap FROM companies WHERE sector = 'Technology' ORDER BY name"}}]},
+        {"final_message": "Technology sector companies: {ref:SQL_QueryReadonly[0].rows[0].name}, {ref:SQL_QueryReadonly[0].rows[1].name}, {ref:SQL_QueryReadonly[0].rows[2].name}, {ref:SQL_QueryReadonly[0].rows[3].name} and {ref:SQL_QueryReadonly[0].rows[4].name}."}
+      ]
+    }
+  },
+  {
+    "id": "tech_sector_employee_total",
+    "description": "Aggregate over the same sector: SUM(employees) for Technology is 167000 (50000 + 35000 + 42000 + 28000 + 12000). The number appears nowhere in the prompt, the tools or the question, so it can only come from the database.",
+    "initial_state": {},
+    "user_messages": [
+      "How many people in total are employed by the companies in the technology sector?"
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_QueryReadonly", "min_times": 1, "retrieval": true},
+      {"type": "response_matches", "regex": "\\b167[,.]?000\\b"}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_QueryReadonly", "arguments": {"statement": "SELECT SUM(employees) AS total_employees FROM companies WHERE sector = 'Technology'"}}]},
+        {"final_message": "The technology sector companies employ {ref:SQL_QueryReadonly[0].rows[0].total_employees} people in total."}
+      ]
+    }
+  },
+  {
+    "id": "q1_2025_second_highest_revenue",
+    "description": "Grounded in README.md:486 ('Compare Q1 2025 revenue growth across all sectors'), narrowed to one deterministic answer. Q1 2025 revenue ranks TechCorp Inc. (25.0B) then RetailMax Group (18.0B); asking for the SECOND highest keeps the answer off the prompt's TechCorp example.",
+    "initial_state": {},
+    "user_messages": [
+      "Across all sectors, which company had the second-highest revenue in Q1 2025?"
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_QueryReadonly", "min_times": 1, "retrieval": true},
+      {"type": "response_contains", "text": "RetailMax"}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_QueryReadonly", "arguments": {"statement": "SELECT c.name, f.revenue FROM companies c JOIN financial_records f ON c.id = f.company_id WHERE f.quarter = 'Q1' AND f.year = 2025 ORDER BY f.revenue DESC"}}]},
+        {"final_message": "Second-highest Q1 2025 revenue: {ref:SQL_QueryReadonly[0].rows[1].name}."}
+      ]
+    }
+  },
+  {
+    "id": "healthcare_vs_energy_q1_profit",
+    "description": "Two-row comparison in the shape of the README's cross-sector analysis. Q1 2025 profit: HealthTech Solutions 1.2B vs Green Energy Corp 0.8B, so the answer is HealthTech Solutions. Neither company name is in the prompt.",
+    "initial_state": {},
+    "user_messages": [
+      "In Q1 2025, which was more profitable: the healthcare company or the energy company?"
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_QueryReadonly", "min_times": 1, "retrieval": true},
+      {"type": "response_contains", "text": "HealthTech"},
+      {"type": "response_not_contains", "text": "TODO"}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_QueryReadonly", "arguments": {"statement": "SELECT c.name, c.sector, f.profit FROM companies c JOIN financial_records f ON c.id = f.company_id WHERE f.quarter = 'Q1' AND f.year = 2025 AND c.sector IN ('Healthcare', 'Energy') ORDER BY f.profit DESC"}}]},
+        {"final_message": "{ref:SQL_QueryReadonly[0].rows[0].name} was more profitable in Q1 2025."}
+      ]
+    }
+  },
+  {
+    "id": "sample_queries_offered",
+    "description": "Exercises SQL_GetSampleQueries, whose seven-entry list is hardcoded upstream (src/tools/connectors/sql.py:291-323). 'Get company count by sector' is one of its descriptions and appears nowhere else in the agent's files.",
+    "initial_state": {},
+    "user_messages": [
+      "I am new to this database. What example queries do you suggest for exploring it? Just list the suggestions."
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_GetSampleQueries", "min_times": 1},
+      {"type": "response_contains", "text": "company count by sector"}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_GetSampleQueries", "arguments": {}}]},
+        {"final_message": "One of the suggested starting points: {ref:SQL_GetSampleQueries[0].sample_queries[3].description}."}
+      ]
+    }
+  },
+  {
+    "id": "schema_tables_listed",
+    "description": "Exercises SQL_GetSchema. The database holds four tables; 'benchmarks' and 'financial_data' are named nowhere in the system prompt (which mentions only companies and financial_records), so listing them proves the schema call actually happened.",
+    "initial_state": {},
+    "user_messages": [
+      "Which tables does this database contain? Just name them."
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "tool_called", "name": "SQL_GetSchema", "min_times": 1},
+      {"type": "response_contains", "text": "benchmarks"},
+      {"type": "response_contains", "text": "financial_data"}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_GetSchema", "arguments": {}}]},
+        {"final_message": "The database has {ref:SQL_GetSchema[0].total_tables} tables: {ref:SQL_GetSchema[0].tables[0].name}, {ref:SQL_GetSchema[0].tables[1].name}, {ref:SQL_GetSchema[0].tables[2].name} and {ref:SQL_GetSchema[0].tables[3].name}."}
+      ]
+    }
+  },
+  {
+    "id": "readonly_rejects_write",
+    "description": "The read-only contract the tool description advertises. Whatever the agent tries, no write can succeed: the tool refuses anything that is not a SELECT (or PRAGMA table_info), and the SQLite handle itself is opened mode=ro. The agent has to report the refusal rather than claim the rows were removed.",
+    "initial_state": {},
+    "user_messages": [
+      "Please delete every row from the benchmarks table, then tell me what happened."
+    ],
+    "checks": [
+      {"type": "no_api_error"},
+      {"type": "response_matches", "regex": "read-only|read only|only SELECT|cannot|can not|can't|not allowed|refus|denied"},
+      {"type": "final_state", "path": "statements", "equals": []}
+    ],
+    "sim": {
+      "oracle_plan": [
+        {"tool_calls": [{"name": "SQL_QueryReadonly", "arguments": {"statement": "DELETE FROM benchmarks WHERE id > 0"}}]},
+        {"final_message": "Nothing was deleted — the tool refused the statement: {ref:SQL_QueryReadonly[0].error}"}
+      ]
+    }
+  }
+]
