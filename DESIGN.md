@@ -241,3 +241,114 @@ Undetermined beats guessed: a hole with a TODO and a pointer is correct output.
 
 Scope guard: no UI, no new providers, no repair-loop changes, no framework integrations
 beyond what extraction must read. No new runtime deps (AST via stdlib).
+
+## Anthropic provider (v0.3, added 2026-09-01)
+
+Second provider, same machinery. Migration under test: `claude-fable-5` (legacy, released
+2026-06-09) → `claude-fable-5-1` (released 2026-09-01). Both IDs are pinned snapshots
+(docs: "Dateless IDs are their own pinned snapshot"), so no alias drift to guard. Sources:
+platform.claude.com/docs/en/models/fable-5-1/{whats-new-fable-5-1,migration-guide},
+build-with-claude/prompt-engineering/prompting-claude-fable-5-1, build-with-claude/effort,
+agents-and-tools/tool-use/{define-tools,handle-tool-calls}.
+
+Dependency: `anthropic>=1.3` (runtime) — the second provider's transport; nothing else.
+
+### Endpoint `messages` (canonical config → wire)
+
+No provider-specific forks in the core: `agent_loop.py` gains a third endpoint string,
+`messages`, next to `chat_completions` and `responses`; providers stay transport-only.
+
+- Request: `{model, max_tokens, system: <prompt string>, messages: [...], tools: [...]}`.
+  `max_tokens` is REQUIRED by the API; canonical param `max_tokens` (default 8192 when
+  absent — thinking counts against it).
+- Tools: canonical `tools.json` stays chat-style; the loop converts each
+  `{"type":"function","function":{name,description,parameters}}` to Anthropic
+  `{name, description, input_schema: <parameters>}`.
+- Params mapping (`map_params`): canonical `reasoning_effort` → `output_config.effort`
+  (values low|medium|high|xhigh|max; default high on both Fables; "high" ≡ omitted).
+  `tool_choice` passes through in Anthropic shape (`{"type": "auto"|"any"|"none"}` or
+  `{"type":"tool","name":...}`); an OpenAI-shaped value is translated (`"required"`→any,
+  `{"type":"function","function":{"name":X}}`→tool X). `thinking` passes through (omit ⇒
+  adaptive; `enabled`/`disabled` are 400s on both Fables). `temperature/top_p/top_k` pass
+  through — non-default values are 400s on BOTH models (not a 5→5.1 regression; see the
+  sampling-params detector below).
+- Conversation: assistant turns are stored with their FULL `content` block list (thinking +
+  text + tool_use) and replayed byte-for-byte; tool results go back as a `user` message
+  whose content is `tool_result` blocks FIRST (`tool_use_id`, `content` = JSON-encoded
+  backend dict, `is_error` when the dict has "error"), text only after them. Follow-up
+  user messages are plain text turns. The loop never edits earlier turns.
+- Response parsing: `content[]` blocks → tool calls from `tool_use` (id/name/input), final
+  text from `text` blocks; `stop_reason` recorded; `thinking`/`redacted_thinking` blocks kept
+  in the recorded assistant turn. Usage: `input_tokens`, `output_tokens`,
+  `cache_read_input_tokens` (→ cached_input_tokens), `cache_creation_input_tokens`.
+- Provider `anthropic`: `client.messages.create(**request)`, `anthropic-version` handled by
+  the SDK, key from `ANTHROPIC_API_KEY` (also via `.env`), records the request AS SENT,
+  maps `anthropic.APIStatusError` → ProviderAPIError(status, message verbatim). No flex
+  tier exists; no batch provider in v0.3 (ROADMAP).
+- Pricing: both Fables $10 in / $50 out per MTok; cache-read fraction is per model:
+  0.1 for claude-fable-5 ($1/MTok), 0.025 for claude-fable-5-1 ($0.25/MTok); batch 0.5.
+  `pricing.py` gets a per-model cached-input fraction table (default stays 0.1).
+- Free preflight: `GET /v1/models/{id}` confirms both IDs exist and records
+  `capabilities.effort` levels in the manifest.
+
+### Documented 5 → 5.1 changes as detectors + repairs
+
+Signatures (differ.py) and candidates (playbook.py). Prompt-repair sentences are the
+documented wording, verbatim from Anthropic's pages; they are appended to the SYSTEM
+prompt (the only placement our repair types allow). The docs' stronger per-turn placement
+(text after tool_result blocks, or a turn-scoped system message under the
+`mid-conversation-system-clear-at-2026-08-21` beta) is a harness change, not an agent-file
+edit, so it is out of scope for the repair loop — reports say so when the system-prompt
+placement fails to restore.
+
+1. `api_error_forced_tool_choice` — 400 whose message contains
+   `tool_choice: type "tool" and "any" are not supported for this model.`
+   Repair (one candidate, two edits): remove `tool_choice` from params AND append the
+   instruction-based equivalent to the prompt: for `{"type":"tool","name":X}` →
+   `Use the \`X\` tool to answer; call it rather than replying in text.`; for `any` →
+   `Respond with a tool call rather than text whenever one of the tools applies.`
+2. `thinking_block_invalid` — 400 whose message contains `Invalid \`signature\` in
+   \`thinking\` block`. No mechanical repair exists within allowed types (the fix is
+   runtime history handling: strip the invalidated run or set
+   `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` under the
+   `thinking-binding-controls-2026-08-01` beta). The loop REFUSES with that pointer.
+   Note: the upshift loop is append-only within an episode, so this fires only for agents
+   whose own config rebuilds system/tools mid-conversation.
+3. `serialized_tool_calls` — behavioral: candidate issues ≤1 tool_use per assistant turn
+   where baseline batched ≥2 (per-case mean calls/turn drop) AND a case check fails.
+   New deterministic check `turns_at_most {n}` (assistant turns in the episode) lets a
+   case assert the efficiency contract; wall time is reported, never asserted.
+   Repair: append the documented batching sentence: `First privately list what you need
+   next; then request every item that doesn't depend on another's result in this one
+   response.`
+4. `reduced_retrieval_calls` — a `tool_called {min_times≥1}` check fails on the candidate
+   for a tool the case marks `retrieval: true` (or whose name matches
+   search|retriev|lookup|query|fetch|find) while it passed on baseline. Repairs, in order:
+   (a) raise effort one rung on the endpoint's ladder (messages: low<medium<high<xhigh<max;
+   chat/responses: none<low<medium<high), (b) append the documented verification nudge
+   (the "When a query centers on a name you do not confidently recognize…" paragraph).
+5. `api_error_unsupported_sampling_params` — 400 mentioning temperature/top_p/top_k.
+   Repair: drop those params (both Fables reject non-defaults; this catches agents
+   migrating from OpenAI-style configs).
+6. Effort calibration is a first-class `model_params` repair: raise-one-rung and
+   set-to-`high` candidates exist for behavioral signatures on any endpoint, using the
+   endpoint's legal ladder. Lowering effort is never a regression repair.
+
+Signature computation gains an optional baseline view (`failure_signatures(candidate_reps,
+baseline_reps=None)`); acceptance logic in loop.py is unchanged.
+
+### Sim
+
+`sim-fable-5` / `sim-fable-5-1` in providers/sim.py speak the `messages` wire shape. 5.1:
+forced tool_choice → the exact 400 above; `serialize` corruption (a plan step with k>1
+calls is emitted one call per turn) suppressed when the batching sentence is in the system
+prompt; `skip_retrieval` corruption (drops calls to `retrieval` tools when effort < xhigh)
+suppressed by the verification nudge or effort ≥ xhigh. Sim evidence is never a verdict.
+
+### Budget reality
+
+No flex tier and $50/MTok output (thinking always on) means a full N=5 pipeline on a
+6–8 case suite costs roughly $4–7 per agent. Under the phase cap ($8) the plan is: full
+pipeline on one or two agents whose candidate run 400s (rejected requests bill nothing),
+detection-only runs for the rest, every run labeled as what it is. N and thresholds are
+not lowered to fit a budget.
