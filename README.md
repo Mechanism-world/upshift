@@ -4,7 +4,8 @@
 
 Test whether a model upgrade breaks your agent — and either fix it or prove you should stay pinned.
 
-Input: a plain OpenAI tool-calling agent, its eval cases, and a candidate model version.
+Input: a plain tool-calling agent on the OpenAI or Anthropic API, its eval cases, and a
+candidate model version.
 Output: a statistical behavioral diff, an attempted automated repair, a `git apply`-able patch,
 and one of three verdicts: **SAFE**, **SAFE WITH PATCH**, or **STAY PINNED**.
 
@@ -35,6 +36,17 @@ its config (reported upstream as [TheR1D/shell_gpt#801](https://github.com/TheR1
 14/14 with zero collateral: **SAFE WITH PATCH**, verified on 10 reps per case, for $0.56 of
 API spend. Full write-up: [reports/shellgpt-upgrade.md](reports/shellgpt-upgrade.md).
 
+On release day for Claude Fable 5.1 we ran the same pipeline on Anthropic's Messages API
+against open-source Claude agents (Fable 5 → Fable 5.1). The cookbook SMS bot that forces
+`tool_choice: any` broke 5/5 cases on the documented 400 and was fully restored — remove
+the forced choice, add the instruction, one rung of effort — **SAFE WITH PATCH, 0
+broken, $0.93**. A quickstarts agent built around parallel tool calls showed **no
+regression** at N=5 (identical calls-per-turn on both models). A third agent was already
+broken *before* the migration (forced `any` on every call means it can never stop
+calling tools). Full write-up, records, and the one we didn't run:
+[reports/fable-5-1-upgrade.md](reports/fable-5-1-upgrade.md).
+
+
 ## Quickstart
 
 Sixty seconds, no API key — the built-in deterministic simulator runs the full pipeline:
@@ -63,10 +75,26 @@ upshift upgrade --agent my-agent --flex \
 Every case runs N=5 times per model; `upshift cost` prints the exact recorded spend.
 Runs are resumable — Ctrl-C exits immediately and a rerun picks up where it stopped.
 
+For a Claude agent (Anthropic Messages API), put `ANTHROPIC_API_KEY` in your environment
+and run the same command with the provider and the model pair swapped:
+
+```bash
+upshift upgrade --agent my-agent --provider anthropic \
+  --baseline-model claude-fable-5 --candidate-model claude-fable-5-1 --tag my-upgrade
+```
+
+The keyless simulator has Claude-shaped models too (`sim-fable-5` → `sim-fable-5-1`),
+which reproduce the documented 5.1 breaks so you can rehearse the pipeline for $0.
+
 ## How it works (and why single runs lie)
 
 Detection tools tell you *that* an upgrade broke your agent. upshift is one step downstream:
 it tries to fix the break, and gives you the evidence either way.
+
+Anthropic ships an official migration skill (`/claude-api migrate` in Claude Code) that
+edits your code for a target model and "produces a checklist of items to verify manually."
+upshift is that verification: it runs your suite on both versions, proves each repair
+against it, and hands you the patch with the evidence — or tells you to stay pinned.
 
 - **N repetitions, never single runs.** Every case runs N times (default 5) against both
   model versions. A case's outcome is its pass rate against fixed thresholds (≥ 0.8 PASS,
@@ -137,8 +165,16 @@ source — it fits in an afternoon.
   the same upgrade hard-breaks and a verified one-line patch fully repairs
   (**SAFE WITH PATCH**, 14/14 restored, $0.56 of API spend:
   [the report](reports/shellgpt-upgrade.md)). That is not a benchmark suite.
-- OpenAI API agents only (chat/completions and responses). No Anthropic/Google/local models
-  yet, no framework integrations (LangChain, crewAI, etc.).
+- Two providers: OpenAI (chat/completions, responses) and Anthropic (messages). No Google,
+  no local models, no framework integrations (LangChain, crewAI, etc.) — see
+  [ROADMAP.md](ROADMAP.md).
+- What each repair type covers: **endpoint routing** (OpenAI chat→responses), **model
+  params** (effort calibration on each provider's ladder, removing forced `tool_choice`,
+  dropping unsupported sampling params), **prompt edits** (documented instruction blocks,
+  appended to the system prompt only — Anthropic's stronger per-turn placements are a
+  harness change we don't make), **tool schema edits** (one known tool shape). The
+  thinking-block invalidation break has no agent-file repair; upshift detects it and
+  refuses with the documented pointer.
 - Repairs are limited to prompt edits, model params, tool schema edits, and endpoint
   routing. The tool-schema repair currently only fires for one known tool shape; foreign
   agents effectively get three of the four repair types.
@@ -156,6 +192,8 @@ source — it fits in an afternoon.
   clusters) always become TODO stubs: writing their deterministic backend stays human work.
 - Adapt's extraction is itself a model call: results vary run to run, and the generated
   eval cases are drafts to rewrite, not a suite to trust.
+- `adapt` does not yet chase identifiers across files (schemas defined far from where they
+  are registered), and it reads notebooks as rendered cell text — cite lines accordingly.
 - The statistics are honest but small-N: N=5 with Fisher exact tests tells you a 5/5 → 0/5
   collapse is real (p ≈ 0.004); it will not resolve subtle single-case effects. Raise N if
   you need more power and can pay for it.
@@ -170,6 +208,12 @@ macOS note: uv's editable-install `.pth` file sometimes gets the `UF_HIDDEN` fla
 makes CPython skip it (`import upshift` fails from `uv run upshift`). Tests self-heal via
 `tests/conftest.py`; for the CLI entry point run
 `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
+
+## Elsewhere
+
+Project site: [mechanism.world](https://mechanism.world). The two migration reports are
+standalone pages in this repo: [gpt-5.5 → gpt-5.6-sol on shell_gpt](reports/shellgpt-upgrade.md)
+and [Claude Fable 5 → 5.1 on four open-source agents](reports/fable-5-1-upgrade.md).
 
 ## License
 

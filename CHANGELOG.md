@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0 — 2026-09-02
+
+- Second provider: Anthropic Messages API (`--provider anthropic`, endpoint `messages`),
+  same statistics and repair loop, no provider forks in the core. Prompt caching on the
+  cached prefix; cache-write pricing; identity-linked keys via `ANTHROPIC_WORKSPACE_ID`.
+- Anthropic's documented Fable 5 → 5.1 changes as detectors and repairs: forced
+  `tool_choice` 400 (remove + instruction), thinking-block invalidation (detect, refuse
+  with the documented pointer), serialized tool calls (`turns_at_most` + the documented
+  batching sentence), reduced retrieval at low effort (effort ladder + documented nudge),
+  unsupported sampling params (drop). Effort calibration is a first-class repair.
+- `sim-fable-5` / `sim-fable-5-1` for keyless rehearsal; `upshift adapt` reads Anthropic
+  call sites and Jupyter notebooks.
+- Release-day report on four open-source Claude agents (reports/fable-5-1-upgrade.md).
+- Runner aborts on billing/quota errors instead of recording junk reps.
+
 ## v0.2.1 — 2026-09-01
 
 - MVP readiness: package metadata (PyPI-ready), `upshift --version`, CI on Linux + macOS
