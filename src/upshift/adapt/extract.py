@@ -8,6 +8,19 @@ with a scripted extractor. Production wires it to the normal provider machinery 
 Everything the model returns is a *claim*. Claims carry `file:line` citations and are
 checked mechanically in `verify.py`; nothing here trusts them.
 
+Two rounds, at most. Round 1 reads the statically ranked evidence and is expected to come
+back with honest `undetermined` entries whose `pointer` says where the answer lives (tool
+schemas hidden in docstrings, a registration site whose handlers are defined elsewhere).
+Round 2 follows those pointers: it slices the source they name, hands the model its own
+previous JSON plus that new source, and takes the corrected result.
+
+Round 2 runs only when a pointer names source the model has *not read* — a file with no
+round-1 slice, or a line range in a ranked file that fell between that file's round-1
+windows, in which case only the uncovered part of the window is sent. A pointer at lines
+round 1 already showed buys nothing and triggers nothing. Round 2 spends what is left of the
+same evidence budget, goes through the same cost guard, and never loops: a failed, skipped or
+aborted round 2 leaves round 1 standing.
+
 Output schema (strict JSON, one object)::
 
     {
@@ -48,9 +61,20 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from upshift.adapt.inventory import Inventory, render_evidence
+from upshift.adapt import AdaptAborted
+from upshift.adapt.inventory import (
+    Inventory,
+    Slice,
+    estimate_tokens,
+    read_text,
+    readable_source,
+    render_evidence,
+    render_slices,
+    slice_pointer,
+)
 
 CallModel = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -168,6 +192,29 @@ SCHEMA_SKELETON = """\
   "notes": ""
 }"""
 
+ROUND2_INSTRUCTIONS = """\
+You previously returned the JSON below.
+
+{previous}
+
+The additional source below covers locations you cited as undetermined or could not see.
+Produce the complete corrected extraction JSON: resolve what the new evidence settles, keep
+prior found claims unless the new evidence contradicts them, keep honest undetermined entries
+for what remains unseen.
+
+The schema and the rules are unchanged:
+
+{schema}
+
+Checks may use only these types: {check_types}.
+
+The evidence below is NEW source only — the files you were shown before are not repeated, so
+do not drop a claim merely because you cannot see its citation this time. Line numbers are in
+the gutter; use them for citations.
+
+{evidence}
+"""
+
 RETRY_PREFIX = """\
 Your previous reply did not satisfy the schema. Problems:
 
@@ -194,11 +241,51 @@ class Attempt:
 
 
 @dataclass
+class Pointer:
+    """A claim saying "the answer is over there"."""
+
+    raw: str
+    path: str  # repo-relative, posix, resolved to a file that exists
+    line: int | None
+    source: str  # which claim produced it, for the report
+
+
+@dataclass
+class Round2:
+    """What the second extraction round did, or why it did not happen.
+
+    Exactly one of `skipped`, `aborted` and `ran` is meaningful: skipped means no call was
+    made, aborted means a call was refused or failed mid-round, ran means the model replied.
+    """
+
+    ran: bool = False
+    ok: bool = False
+    used: bool = False  # did round 2's JSON replace round 1's?
+    skipped: str = ""
+    aborted: str = ""
+    pointers: list[Pointer] = field(default_factory=list)  # every pointer that resolved
+    followed: list[Pointer] = field(default_factory=list)  # those that contributed evidence
+    files: list[str] = field(default_factory=list)
+    slices: list[Slice] = field(default_factory=list)
+    evidence_tokens: int = 0
+    dropped_slices: int = 0  # slices the remaining budget could not fit
+    first_attempt: int = 0  # index of round 2's first attempt in ExtractionResult.attempts
+    settled: list[str] = field(default_factory=list)
+    resolved_undetermined: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ExtractionResult:
     data: dict[str, Any]
     attempts: list[Attempt] = field(default_factory=list)
     ok: bool = False
     errors: list[str] = field(default_factory=list)
+    round2: Round2 | None = None
+
+    @property
+    def rounds(self) -> int:
+        return 2 if (self.round2 and self.round2.used) else 1
 
     @property
     def usage(self) -> dict[str, int]:
@@ -230,6 +317,24 @@ def build_messages(inventory: Inventory, agent_hint: str | None = None) -> list[
         check_types=", ".join(ALLOWED_CHECK_TYPES),
         hint=hint,
         evidence=render_evidence(inventory),
+    )
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_round2_messages(previous: dict[str, Any], slices: list[Slice]) -> list[dict[str, str]]:
+    """Round 2's prompt: the same rules, the previous JSON verbatim, and ONLY the new source.
+
+    Round-1 evidence is deliberately not repeated — it is the expensive half of the request
+    and the model already reported what it read there.
+    """
+    user = ROUND2_INSTRUCTIONS.format(
+        previous=json.dumps(previous, indent=1, sort_keys=True),
+        schema=SCHEMA_SKELETON,
+        check_types=", ".join(ALLOWED_CHECK_TYPES),
+        evidence=render_slices(slices),
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -494,27 +599,271 @@ EMPTY_EXTRACTION = {
 
 
 # ---------------------------------------------------------------------------
+# Round 2: follow the pointers round 1 handed us
+# ---------------------------------------------------------------------------
+
+#: Statuses that mean "the model did not settle this from what it saw".
+OPEN_STATUSES = ("undetermined", "inferred")
+
+#: `pointer` is free text in practice ("src/tools.py:88 (the docstring)"), so the first
+#: whitespace-delimited token is taken and stripped of quoting and trailing punctuation.
+_POINTER_TRIM = "`'\"(),;"
+_POINTER_RE = re.compile(r"^(?P<path>[^\s:]+):(?P<line>\d+)(?:-\d+)?$")
+
+
+def parse_pointer(pointer: str) -> tuple[str, int | None] | None:
+    """`"path:line"` or `"path"` -> (path, line|None). None when there is no path at all.
+
+    Tolerates a missing line number, a line range (the start wins), and trailing prose.
+    """
+    text = str(pointer or "").strip()
+    if not text:
+        return None
+    head = text.split()[0].strip(_POINTER_TRIM)
+    if not head:
+        return None
+    match = _POINTER_RE.match(head)
+    if match:
+        return match.group("path"), int(match.group("line"))
+    if ":" in head:  # "path:notaline" — keep the path, drop the junk
+        head = head.split(":", 1)[0]
+    return (head, None) if head else None
+
+
+def _claim_pointers(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """(raw pointer, source label) pairs, in the order the report should show them.
+
+    Two sources, exactly as the feature is specified: `undetermined[].pointer`, and the
+    citation of any claim the model left open (`status` undetermined/inferred, or a chunk /
+    tool whose `kind` is inferred).
+    """
+    out: list[tuple[str, str]] = []
+    for index, item in enumerate(data.get("undetermined") or []):
+        if not isinstance(item, dict):
+            continue
+        pointer = str(item.get("pointer") or "").strip()
+        if pointer:
+            out.append((pointer, f"undetermined[{index}] {item.get('what') or ''}".strip()))
+
+    for key in ("endpoint", "model", "params", "max_turns"):
+        claim = data.get(key)
+        if isinstance(claim, dict) and claim.get("status") in OPEN_STATUSES:
+            citation = str(claim.get("citation") or "").strip()
+            if citation:
+                out.append((citation, key))
+
+    prompt = data.get("system_prompt") if isinstance(data.get("system_prompt"), dict) else {}
+    prompt_open = prompt.get("status") in OPEN_STATUSES
+    for index, chunk in enumerate(prompt.get("chunks") or []):
+        if not isinstance(chunk, dict):
+            continue
+        if prompt_open or chunk.get("kind") == "inferred":
+            citation = str(chunk.get("citation") or "").strip()
+            if citation:
+                out.append((citation, f"system_prompt.chunks[{index}]"))
+
+    for index, tool in enumerate(data.get("tools") or []):
+        if isinstance(tool, dict) and tool.get("kind") == "inferred":
+            citation = str(tool.get("citation") or "").strip()
+            if citation:
+                out.append((citation, f"tools[{index}] {tool.get('name') or ''}".strip()))
+    return out
+
+
+def resolve_pointer_path(root: Path, path: str) -> str | None:
+    """A pointer's path -> a repo-relative posix path, or None.
+
+    None when the file does not exist, is not readable source, or resolves outside the repo:
+    a pointer is model output, so `../../etc/passwd` must not become evidence.
+    """
+    raw = str(path or "").strip().strip(_POINTER_TRIM)
+    if not raw:
+        return None
+    root = Path(root)
+    candidate = Path(raw) if Path(raw).is_absolute() else root / raw
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        return None
+    if not resolved.is_file() or not readable_source(resolved):
+        return None
+    try:
+        return resolved.relative_to(root_resolved).as_posix()
+    except ValueError:
+        return None
+
+
+def collect_pointers(data: dict[str, Any], root: Path) -> list[Pointer]:
+    """Every open claim's pointer that resolves to a real file inside the repo.
+
+    Whether a pointer is worth *following* is not decided here — that needs the file itself
+    (see `plan_round2`), because a pointer into a file round 1 ranked can still name lines no
+    slice of it contained.
+    """
+    pointers: list[Pointer] = []
+    claimed: set[tuple[str, int | None]] = set()
+    for raw, source in _claim_pointers(data):
+        parsed = parse_pointer(raw)
+        if parsed is None:
+            continue
+        rel = resolve_pointer_path(root, parsed[0])
+        if rel is None:
+            continue
+        key = (rel, parsed[1])
+        if key in claimed:
+            continue
+        claimed.add(key)
+        pointers.append(Pointer(raw=raw, path=rel, line=parsed[1], source=source))
+    return pointers
+
+
+def plan_round2(inventory: Inventory, data: dict[str, Any]) -> Round2:
+    """Decide whether there is a second round, and build its evidence. Makes no calls.
+
+    A pointer earns a round 2 when it names source the model has not actually read: either a
+    file with no round-1 slice at all, or — the common case in a big repo — a line range in a
+    ranked file that fell in the gap between that file's round-1 windows. In the second case
+    only the uncovered part of the pointed-at window is sent, so round 2 never pays to show
+    the model a page it already has. A pointer whose window round 1 fully covered contributes
+    nothing, and if no pointer contributes there is no second round.
+
+    The budget is what is LEFT of the run's evidence cap after round 1, so following a
+    pointer can never quietly double what an operator agreed to send.
+    """
+    root = Path(inventory.repo.root)
+    pointers = collect_pointers(data, root)
+    if not pointers:
+        return Round2(skipped="no open claim pointed at a readable file in the source repo")
+
+    covered = inventory.slice_ranges
+    by_path: dict[str, list[Pointer]] = {}
+    for pointer in pointers:
+        by_path.setdefault(pointer.path, []).append(pointer)
+
+    budget = max(0, inventory.max_tokens - inventory.evidence_tokens)
+    slices: list[Slice] = []
+    files: list[str] = []
+    followed: list[Pointer] = []
+    used = 0
+    dropped = 0
+    unread_source = False
+    for rel, group in by_path.items():
+        text = read_text(root / rel)
+        if text is None:
+            dropped += 1
+            continue
+        pieces = slice_pointer(
+            rel,
+            text,
+            [p.line for p in group if p.line is not None],
+            covered=covered.get(rel, ()),
+        )
+        if not pieces:
+            continue  # round 1 already showed every line this pointer is about
+        unread_source = True
+        kept_any = False
+        for piece in pieces:
+            cost = estimate_tokens(piece.text) + 16  # the citation header line
+            if used + cost > budget:
+                dropped += 1
+                continue
+            slices.append(piece)
+            used += cost
+            kept_any = True
+        if kept_any:
+            files.append(rel)
+            followed.extend(group)
+
+    if not slices:
+        return Round2(
+            pointers=pointers,
+            dropped_slices=dropped,
+            skipped=(
+                f"{len(pointers)} pointer(s) resolved, but the evidence budget had "
+                f"{budget:,} token(s) left and none of the pointed-at source fit"
+                if unread_source
+                else f"all {len(pointers)} pointer(s) named source the round-1 evidence "
+                f"already contained"
+            ),
+        )
+    return Round2(
+        pointers=pointers, followed=followed, files=files, slices=slices, evidence_tokens=used,
+        dropped_slices=dropped,
+    )
+
+
+def _status(entry: Any) -> str:
+    return entry.get("status") if isinstance(entry, dict) else ""
+
+
+def settled_claims(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Claims round 2 moved out of undetermined/inferred, named for the report.
+
+    Reported, never acted on: this is a description of a diff, not a confidence signal —
+    verify.py still re-checks every citation in the round-2 JSON from scratch.
+    """
+    moved: list[str] = []
+    for key in ("endpoint", "model", "params", "max_turns"):
+        if _status(before.get(key)) in OPEN_STATUSES and _status(after.get(key)) == "found":
+            moved.append(key)
+    if (
+        _status(before.get("system_prompt")) in OPEN_STATUSES
+        and _status(after.get("system_prompt")) == "found"
+    ):
+        moved.append("system_prompt")
+
+    before_tools = {
+        str(t.get("name")): t.get("kind")
+        for t in (before.get("tools") or [])
+        if isinstance(t, dict)
+    }
+    for tool in after.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "")
+        if name and name not in before_tools:
+            moved.append(f"tool:{name} (new)")
+        elif before_tools.get(name) == "inferred" and tool.get("kind") in ("verbatim", "templated"):
+            moved.append(f"tool:{name}")
+    return moved
+
+
+def resolved_undetermined(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """`undetermined` entries round 1 raised that round 2 no longer lists."""
+    still_open = {
+        str(item.get("what") or "")
+        for item in (after.get("undetermined") or [])
+        if isinstance(item, dict)
+    }
+    return [
+        str(item.get("what") or "")
+        for item in (before.get("undetermined") or [])
+        if isinstance(item, dict) and str(item.get("what") or "") not in still_open
+    ]
+
+
+# ---------------------------------------------------------------------------
 # The stage
 # ---------------------------------------------------------------------------
 
 
-def extract(
-    inventory: Inventory,
+def _run_round(
+    messages: list[dict[str, str]],
     *,
     call_model: CallModel,
-    model: str = "gpt-5.5",
-    agent_hint: str | None = None,
-    params: dict[str, Any] | None = None,
-) -> ExtractionResult:
-    """One extraction pass, plus exactly one retry on a schema violation.
+    model: str,
+    params: dict[str, Any] | None,
+    attempts: list[Attempt],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """One call plus exactly one retry on a schema violation.
 
-    Both attempts go through `call_model`, so both end up in the run record.
+    Attempts are appended to the shared list and numbered globally, so round 2's attempts are
+    reps 3 and 4 of the same recorded run and `RecordingExtractor.finalize` matches them up.
+    Returns (validated reply, errors); a None reply means both attempts were rejected.
     """
-    messages = build_messages(inventory, agent_hint)
-    attempts: list[Attempt] = []
     last_errors: list[str] = []
-
-    for index in (1, 2):
+    for step in (1, 2):
         request = build_request(messages, model, params)
         response = call_model(request)
         text = response_text(response)
@@ -522,14 +871,14 @@ def extract(
         errors = [parse_error] if parse_error else validate_extraction(data or {})
         attempts.append(
             Attempt(
-                index=index, request=request, response=response, text=text,
+                index=len(attempts) + 1, request=request, response=response, text=text,
                 errors=errors, ok=not errors,
             )
         )
         if not errors:
-            return ExtractionResult(data=normalize(data or {}), attempts=attempts, ok=True)
+            return data or {}, []
         last_errors = errors
-        if index == 2:
+        if step == 2:
             break
         # Retry carries the model's own reply plus the exact violations.
         messages = [
@@ -539,17 +888,92 @@ def extract(
                 errors="\n".join(f"- {e}" for e in errors[:20])
             )},
         ]
+    return None, last_errors
 
-    # Two schema violations: keep whatever parsed, downstream treats it as low confidence.
-    salvage = None
+
+def _salvage(attempts: list[Attempt]) -> dict[str, Any] | None:
+    """The most recent reply that was at least JSON. Downstream treats it as low confidence."""
     for attempt in reversed(attempts):
         parsed, _ = parse_json_object(attempt.text)
         if parsed is not None:
-            salvage = parsed
-            break
-    return ExtractionResult(
-        data=normalize(salvage) if salvage else copy.deepcopy(EMPTY_EXTRACTION),
-        attempts=attempts,
-        ok=False,
-        errors=last_errors,
+            return parsed
+    return None
+
+
+def extract(
+    inventory: Inventory,
+    *,
+    call_model: CallModel,
+    model: str = "gpt-5.5",
+    agent_hint: str | None = None,
+    params: dict[str, Any] | None = None,
+    second_round: bool = True,
+) -> ExtractionResult:
+    """Round 1 over the ranked evidence, then at most one round following its pointers.
+
+    Every attempt of every round goes through `call_model`, so all of them end up in the run
+    record and `upshift cost` prices the whole thing. Round 2 is best-effort by construction:
+    if it is skipped, refused by the cost guard, rejected by the validator twice or fails
+    outright, round 1's result stands and the report says which.
+    """
+    attempts: list[Attempt] = []
+    raw, errors = _run_round(
+        build_messages(inventory, agent_hint),
+        call_model=call_model, model=model, params=params, attempts=attempts,
     )
+    if raw is not None:
+        result = ExtractionResult(data=normalize(raw), attempts=attempts, ok=True)
+    else:
+        salvaged = _salvage(attempts)
+        result = ExtractionResult(
+            data=normalize(salvaged) if salvaged else copy.deepcopy(EMPTY_EXTRACTION),
+            attempts=attempts, ok=False, errors=errors,
+        )
+    if second_round:
+        _second_round(inventory, result, call_model=call_model, model=model, params=params)
+    return result
+
+
+def _second_round(
+    inventory: Inventory,
+    result: ExtractionResult,
+    *,
+    call_model: CallModel,
+    model: str,
+    params: dict[str, Any] | None,
+) -> None:
+    """Follow round 1's pointers, in place. Never raises, never loops."""
+    round2 = plan_round2(inventory, result.data)
+    result.round2 = round2
+    if not round2.slices:
+        return
+
+    round1_data = copy.deepcopy(result.data)
+    messages = build_round2_messages(round1_data, round2.slices)
+    round2.ran = True
+    round2.first_attempt = len(result.attempts) + 1
+    try:
+        raw, errors = _run_round(
+            messages, call_model=call_model, model=model, params=params,
+            attempts=result.attempts,
+        )
+    except AdaptAborted as exc:
+        # The cost guard refused the call. Round 1 already paid for itself; keep it.
+        round2.ran = len(result.attempts) >= round2.first_attempt
+        round2.aborted = exc.message
+        return
+    except Exception as exc:  # noqa: BLE001 - a bonus round must never destroy round 1
+        round2.ran = len(result.attempts) >= round2.first_attempt
+        round2.aborted = f"{type(exc).__name__}: {exc}"
+        return
+
+    if raw is None:
+        round2.errors = errors
+        return
+    round2.ok = True
+    round2.used = True
+    result.data = normalize(raw)
+    result.ok = True
+    result.errors = []
+    round2.settled = settled_claims(round1_data, result.data)
+    round2.resolved_undetermined = resolved_undetermined(round1_data, result.data)

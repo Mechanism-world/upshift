@@ -201,6 +201,28 @@ class Inventory:
     scanned_files: int
     candidate_files: int = 0  # files that carried any signal at all
     truncated: bool = False  # the token budget dropped at least one slice
+    #: The cap `take_inventory` was given. Kept so a later stage (extraction round 2) can
+    #: append evidence to the SAME budget instead of inventing a second one.
+    max_tokens: int = DEFAULT_MAX_EVIDENCE_TOKENS
+
+    @property
+    def slice_paths(self) -> set[str]:
+        """Files the extraction actually saw. A file with a signal that lost the ranking, or
+        whose slices the budget dropped, is NOT in here — which is the point."""
+        return {piece.path for piece in self.slices}
+
+    @property
+    def slice_ranges(self) -> dict[str, list[tuple[int, int]]]:
+        """Line ranges the extraction actually saw, per file.
+
+        Ranking a file is not the same as showing all of it: a big file goes in as windows
+        around its signal lines, so the gaps between those windows are unread. Round 2 needs
+        this to tell "you already read that" from "you never saw those lines".
+        """
+        ranges: dict[str, list[tuple[int, int]]] = {}
+        for piece in self.slices:
+            ranges.setdefault(piece.path, []).append((piece.start, piece.end))
+        return ranges
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +303,9 @@ def resolve_source(
 # ---------------------------------------------------------------------------
 
 
-def _readable(path: Path) -> bool:
+def readable_source(path: Path) -> bool:
+    """A text file small enough to be worth reading. Also the gate on any file a pointer
+    names in extraction round 2, so a pointer cannot pull in a 40MB blob."""
     suffix = path.suffix.lower()
     if suffix not in TEXT_SUFFIXES:
         return False
@@ -300,7 +324,7 @@ def walk_repo(root: Path) -> list[Path]:
             continue
         if any(part in SKIP_DIRS for part in path.relative_to(root).parts[:-1]):
             continue
-        if _readable(path):
+        if readable_source(path):
             found.append(path)
     return found
 
@@ -452,6 +476,12 @@ WINDOW_AFTER = 24
 SMALL_FILE_LINES = 160  # files this short go in whole; windowing them saves nothing
 README_LINES = 220
 
+#: Round-2 slicing is deliberately more generous than round 1: a pointer is the model saying
+#: "the answer is over there", so the window has to be wide enough to contain a whole
+#: docstring, class body or schema literal rather than one call site.
+POINTER_WINDOW = 80
+POINTER_WHOLE_FILE_LINES = 400
+
 
 def estimate_tokens(text: str) -> int:
     """len/4. Deliberately crude and deliberately documented as crude."""
@@ -466,6 +496,32 @@ def _merge(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
         else:
             merged.append((start, end))
     return merged
+
+
+def subtract_ranges(
+    windows: list[tuple[int, int]], covered: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """`windows` minus `covered`: the line ranges left over once what was already read is
+    taken out. Both sides are inclusive, 1-based.
+
+    `covered` is merged with the same 3-line slack `_merge` uses, so a two-line hole between
+    two round-1 windows counts as read rather than becoming a slice of its own.
+    """
+    blocked = _merge(list(covered))
+    out: list[tuple[int, int]] = []
+    for start, end in _merge(list(windows)):
+        cursor = start
+        for low, high in blocked:
+            if high < cursor or low > end:
+                continue
+            if low > cursor:
+                out.append((cursor, low - 1))
+            cursor = max(cursor, high + 1)
+            if cursor > end:
+                break
+        if cursor <= end:
+            out.append((cursor, end))
+    return out
 
 
 def slice_file(rel_path: str, text: str, signal_lines: list[int]) -> list[Slice]:
@@ -492,6 +548,61 @@ def slice_file(rel_path: str, text: str, signal_lines: list[int]) -> list[Slice]
         body = "\n".join(lines[start - 1 : end])
         out.append(Slice(path=rel_path, start=start, end=end, text=body))
     return out
+
+
+def slice_pointer(
+    rel_path: str,
+    text: str,
+    lines_of_interest: list[int],
+    *,
+    covered: list[tuple[int, int]] | tuple[()] = (),
+    radius: int = POINTER_WINDOW,
+    whole_below: int = POINTER_WHOLE_FILE_LINES,
+) -> list[Slice]:
+    """Evidence for a file some claim pointed at, minus whatever round 1 already showed.
+
+    `covered` is the line ranges of that file already in the evidence, and it decides the
+    shape of the answer:
+
+    * **unseen file** (`covered` empty) — the whole file when it is small, otherwise a
+      generous window around each pointed line (merged when they overlap). A pointer with no
+      line number gets the head of the file: that is what "look in this file" can mean
+      without guessing.
+    * **seen file** — only the pointed-at window (± `radius`), and only the part of it no
+      round-1 slice contained. Ranking a file does not mean the model read all of it; the
+      gaps between its windows are exactly what a pointer into it can still be about. A
+      window that is wholly covered yields nothing, which is how "you already read that"
+      turns into "no second round".
+    """
+    lines = text.splitlines()
+    n = len(lines)
+    if n == 0:
+        return []
+    if covered:
+        windows = (
+            [
+                (max(1, line - radius), min(n, line + radius))
+                for line in sorted(set(lines_of_interest))
+            ]
+            if lines_of_interest
+            else [(1, min(whole_below, n))]
+        )
+        windows = subtract_ranges(windows, list(covered))
+    elif n <= whole_below:
+        windows = [(1, n)]
+    elif not lines_of_interest:
+        windows = [(1, min(whole_below, n))]
+    else:
+        windows = _merge(
+            [
+                (max(1, line - radius), min(n, line + radius))
+                for line in sorted(set(lines_of_interest))
+            ]
+        )
+    return [
+        Slice(path=rel_path, start=start, end=end, text="\n".join(lines[start - 1 : end]))
+        for start, end in windows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -580,16 +691,22 @@ def take_inventory(
         scanned_files=scanned,
         candidate_files=len(scored),
         truncated=truncated,
+        max_tokens=max_tokens,
     )
 
 
-def render_evidence(inventory: Inventory) -> str:
-    """The evidence bundle as the extraction prompt sees it: cited, ordered, line-numbered."""
+def render_slices(slices: list[Slice]) -> str:
+    """Slices as the extraction prompt sees them: cited, ordered, line-numbered."""
     blocks: list[str] = []
-    for piece in inventory.slices:
+    for piece in slices:
         numbered = "\n".join(
             f"{piece.start + offset:>5}| {line}"
             for offset, line in enumerate(piece.text.splitlines())
         )
         blocks.append(f"===== FILE {piece.path} lines {piece.start}-{piece.end} =====\n{numbered}")
     return "\n\n".join(blocks)
+
+
+def render_evidence(inventory: Inventory) -> str:
+    """The round-1 evidence bundle."""
+    return render_slices(inventory.slices)

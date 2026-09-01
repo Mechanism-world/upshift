@@ -372,6 +372,37 @@ def _adapt_out_dir(raw: str) -> Path:
     return out_dir
 
 
+def _print_extraction_rounds(extraction) -> None:
+    """What the pointer-following round did, in one console line."""
+    round2 = getattr(extraction, "round2", None)
+    if round2 is None:
+        return
+    if round2.used:
+        console.print(
+            f"  round 2 followed {len(round2.followed)} of {len(round2.pointers)} pointer(s) "
+            f"into unread source in {escape(', '.join(round2.files))} · "
+            f"{len(round2.settled)} claim(s) settled",
+            highlight=False,
+            soft_wrap=True,
+        )
+    elif round2.aborted:
+        console.print(
+            f"[yellow]  round 2 stopped ({escape(round2.aborted)}) — round 1's extraction "
+            f"is what was used[/yellow]",
+            highlight=False,
+            soft_wrap=True,
+        )
+    elif round2.ran:
+        console.print(
+            "[yellow]  round 2 never satisfied the schema — round 1's extraction is what "
+            "was used[/yellow]",
+            soft_wrap=True,
+        )
+    else:
+        console.print(f"  [dim]one round: {escape(round2.skipped)}[/dim]", highlight=False,
+                      soft_wrap=True)
+
+
 def cmd_adapt(args) -> int:
     """Read an agent codebase, emit an agent directory plus ADAPT_REPORT.md."""
     from upshift.adapt import AdaptAborted
@@ -453,6 +484,7 @@ def cmd_adapt(args) -> int:
             for attempt in extraction.attempts:
                 state = "schema-valid" if attempt.ok else "rejected"
                 console.print(f"  attempt {attempt.index}: {state}", highlight=False)
+            _print_extraction_rounds(extraction)
             console.rule("[bold]3/4 verification gate")
             verification = verify(extraction.data, repo.root)
             console.print(

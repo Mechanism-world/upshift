@@ -44,6 +44,51 @@ def _table(rows: list[tuple[str, ...]], headers: tuple[str, ...]) -> str:
     return "\n".join(lines)
 
 
+def rounds_line(extraction: ExtractionResult) -> str:
+    """One line saying how many extraction rounds ran, what round 2 read, and what it settled.
+
+    A skipped or aborted round 2 is stated just as plainly as a successful one: the operator
+    has to be able to tell "the tool followed the pointers and found nothing" from "the tool
+    never looked".
+    """
+    round2 = extraction.round2
+    if round2 is None:
+        return "- **Extraction rounds**: 1 (pointer-following round not attempted)"
+    if not round2.used:
+        why = (
+            f"round 2 was aborted: {round2.aborted}"
+            if round2.aborted
+            else (
+                f"round 2 replied but never satisfied the schema "
+                f"({'; '.join(round2.errors[:3])})"
+                if round2.ran
+                else f"no second round — {round2.skipped}"
+            )
+        )
+        return f"- **Extraction rounds**: 1 ({why}; round 1's extraction was used)"
+
+    files = ", ".join(f"`{path}`" for path in round2.files) or "(none)"
+    ranges = ", ".join(
+        f"`{piece.path}:{piece.start}-{piece.end}`" for piece in round2.slices[:6]
+    )
+    settled = (
+        f"{len(round2.settled)} claim(s) settled: {', '.join(round2.settled)}"
+        if round2.settled
+        else "0 claims moved out of undetermined/inferred"
+    )
+    resolved = (
+        f" · closed {len(round2.resolved_undetermined)} open question(s)"
+        if round2.resolved_undetermined
+        else ""
+    )
+    return (
+        f"- **Extraction rounds**: 2 — round 2 followed {len(round2.followed)} of "
+        f"{len(round2.pointers)} pointer(s) into {files}, reading only source round 1 had not "
+        f"seen ({ranges}; ~{round2.evidence_tokens:,} extra evidence tokens, attempts "
+        f"{round2.first_attempt}+), and its JSON replaced round 1's: {settled}{resolved}"
+    )
+
+
 def _claim_line(name: str, claim: dict[str, Any]) -> str:
     value = claim.get("value")
     mark = "verified" if claim.get("verified") else claim.get("status", "?")
@@ -235,6 +280,7 @@ def render_report(
     if extraction:
         add("## Extraction")
         add("")
+        add(rounds_line(extraction))
         for attempt in extraction.attempts:
             status = "schema-valid" if attempt.ok else "REJECTED"
             add(f"- attempt {attempt.index}: {status}"

@@ -6,6 +6,11 @@ with no changes to pricing.py: one "case" (`extraction`) whose reps are the atte
 
 The cost guard runs *before* each call: the request is priced at its estimated token count
 plus an output allowance, and the run aborts rather than exceed `--max-cost-usd`.
+
+This is per *call*, not per round: extraction round 2 (the pointer-following round) is the
+same callable, so its attempts are priced the same way, land in the same run as subsequent
+rep files, and can be refused by the same budget. `extract.extract` catches that refusal and
+keeps round 1's result — the guard's job is to stop spending, not to lose work.
 """
 
 from __future__ import annotations
