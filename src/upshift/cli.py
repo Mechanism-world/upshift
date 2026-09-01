@@ -782,9 +782,13 @@ def cmd_cost(args) -> int:
         usd = "$0 (sim)" if c["provider"] == "sim" else (
             f"${c['usd']:.4f}" if c["usd"] is not None else "unknown rate"
         )
+        written = c.get("cache_creation_input_tokens", 0)
+        cache_note = f"cached {c['cached_input_tokens']:,}" + (
+            f", wrote {written:,}" if written else ""
+        )
         console.print(
             f"{c['run_id']:<28} {c['provider']:<13} {c['model']:<24} "
-            f"in {c['input_tokens']:>9,} (cached {c['cached_input_tokens']:,})  "
+            f"in {c['input_tokens']:>9,} ({cache_note})  "
             f"out {c['output_tokens']:>8,}  {usd}",
             highlight=False,
         )

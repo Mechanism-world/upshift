@@ -56,17 +56,22 @@ notebook on Fable 5.
   `TEXT MESSAGE SENT: {text}` and returns `None` — it is never fed back to the model, because
   the notebook makes exactly one API call and stops. A tool result here must be a JSON dict, so
   the backend returns `{"result": "TEXT MESSAGE SENT: <text>"}`: the printed line, wrapped.
-- **A loop where the notebook has none.** `sms_chatbot` (cell 33) calls the API once, executes
-  at most one tool, and prints. upshift runs a real tool-calling loop, so the agent can look a
-  customer up *and then* text the answer — the behaviour the notebook narrates in prose ("Claude
-  calls the `get_customer_info` tool, just as we hoped!") but never actually completes. Every
-  multi-step case here depends on that loop.
+- **One API call per user message — matched, not extended (corrected 2026-09-01).** `sms_chatbot`
+  (cell 33) calls `client.messages.create` exactly ONCE per incoming message, executes the tool
+  call it gets back, and stops. It never sends tool results back for a follow-up call: the tool
+  call *is* the reply. This directory originally ran upshift's full tool-calling loop on top of
+  that agent (`max_turns: 6`), which is a harness we invented, not the agent under test — and
+  with `tool_choice: any` forcing a tool on every turn it produced six outgoing texts for one
+  greeting where the notebook produces one. `agent.json` now sets **`max_turns: 1`**.
+  `max_turns` counts API calls per episode in `agent_loop.run_episode`, so `1` means: one
+  request, every tool call in the response executed, no follow-up call — the notebook's own
+  control flow. The cost is that a case cannot span two user messages under these semantics;
+  the one case that did (`username_given_in_second_message`) was dropped rather than kept by
+  loosening the harness.
 - **Only the last content block, upstream.** The notebook inspects `response.content[-1]` and
-  ignores any earlier tool_use block. upshift executes every tool call in a turn.
-- **`max_turns: 6`.** The notebook has no cap because it has no loop. With `tool_choice: any`
-  in force on every turn the model must call a tool every time, so an episode ends at the cap
-  rather than on a text reply; six is enough for the longest oracle plan here (four tool turns)
-  with headroom.
+  ignores any earlier tool_use block. upshift executes every tool call in the turn. This is the
+  one remaining behavioural delta from the notebook, and it only matters if the model emits two
+  tool_use blocks in a single response.
 - **`initial_state` is unused.** The notebook has no session state; every case starts empty.
 - **`Backend.state()` is upshift's, not the notebook's.** It exposes `texts_sent`,
   `text_count`, `lookups` and `delivered`.
@@ -86,9 +91,15 @@ backend, deterministically, over data the tools themselves produced. It is the s
 deliberate normalization as shell_gpt's whitespace-stripped `files_text`, and it is recorded
 here for the same reason: a reader must be able to see it and disagree.
 
+**Under one-call semantics it can only ever be false**, because delivering a looked-up value
+requires a second call the notebook never makes. It is kept, and two cases now assert it is
+`false`, precisely because that is the honest statement of what one call can do. The projection
+stays in `backend.py` so a future variant of this target that *does* loop can assert it true.
+
 ## Eval cases
 
-Six cases in `cases/cases.json`. Four use the notebook's example inputs verbatim:
+Five cases in `cases/cases.json`, each a single user message. Four use the notebook's example
+inputs verbatim:
 
 | case | source |
 | --- | --- |
@@ -97,17 +108,30 @@ Six cases in `cases/cases.json`. Four use the notebook's example inputs verbatim
 | `order_help_with_username` | cell 39 — `"I need help looking up an order.  My username is jenny76"` (double space preserved) |
 | `gibberish_still_calls_a_tool` | cell 41 — `"askdj aksjdh asjkdbhas kjdhas 1+1 ajsdh"` |
 | `email_on_file_requested` | written here: username up front, one named field requested back |
-| `username_given_in_second_message` | written here: two segments, the notebook's ask-then-look-up flow completed |
+
+A sixth case, `username_given_in_second_message`, was **removed on 2026-09-01**: it used two
+`user_messages`, which cannot be expressed when the agent makes one API call per episode. It
+was not replaced — a two-message case would have required keeping a loop the notebook does not
+have.
 
 Checks assert tool calls and final state, never the final assistant message — see the
 `tool_choice: any` note above. `tool_not_called: get_customer_info` on the first two encodes
 the system prompt's own rule ("Do not call the get_customer_info tool until a user has provided
 you with their username. This is important.").
 
+Two cases carry `turns_at_most: 2`, which is the one-call contract written in the check
+vocabulary: `checks.assistant_turns()` counts distinct tool-calling turns **plus one** for a
+final text turn, and under `max_turns: 1` that final turn never happens, so a single
+tool-calling call scores 2. `order_help_with_username` therefore asserts only that
+`get_customer_info` was called with `jenny76` — which is exactly what the notebook's own stored
+output for cell 39 shows, and all a single call can produce.
+
 Every case carries a `sim.oracle_plan`, so `--provider sim` exercises the pipeline for free.
-In those plans the outgoing text is the bare field value (`$ref:get_customer_info[0].email`),
-because the sim substitutes `$ref:` only when it is the entire argument value. That is a
-property of the simulator, not of the agent.
+Each plan is now a single step — one tool call — and carries no `final_message` entry: with
+`max_turns: 1` the sim is asked for exactly one response per episode and a trailing text step
+would never be reached. (The sim does not require one; `_EpisodeState` handles a plan with no
+message step.) No plan needs a `$ref:` substitution any more, because no case sends a
+looked-up value back out.
 
 ### Facts we could not verify
 

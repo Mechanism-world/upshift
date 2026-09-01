@@ -361,3 +361,31 @@ def test_full_suite_on_sim_fable_5_1_with_a_forced_tool_choice_400s_everywhere(t
     records = recorder.load_case_reps(run_directory, next(iter(summary)))
     assert records[0].api_error["status_code"] == 400
     assert records[0].api_error["message"] == FORCED_TOOL_CHOICE_MESSAGE
+
+
+def test_sim_reads_system_as_a_block_list_and_as_a_plain_string():
+    """agent_loop now sends `system` as a cache-marked block list; the sim must read both
+    that and the legacy string form (older recorded requests, hand-built ones)."""
+    from upshift.providers.sim import _system_prompt
+
+    blocks = {
+        "system": [
+            {"type": "text", "text": "line one", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "line two"},
+        ]
+    }
+    assert _system_prompt("messages", blocks) == "line one\nline two"
+    assert _system_prompt("messages", {"system": "plain"}) == "plain"
+    assert _system_prompt("messages", {}) == ""
+
+
+def test_marker_detection_still_fires_through_the_cache_marked_system_block():
+    """The batching sentence lives in the system prompt, which now travels as a block list."""
+    from upshift.agent_loop import build_request
+    from upshift.providers.sim import _system_prompt
+
+    request = build_request(
+        "messages", "sim-fable-5-1", {}, [], [], system=SYSTEM_PROMPT + " " + BATCHING_SENTENCE
+    )
+    assert isinstance(request["system"], list)
+    assert BATCHING_SENTENCE.lower() in _system_prompt("messages", request).lower()

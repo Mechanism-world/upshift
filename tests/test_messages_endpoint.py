@@ -166,10 +166,71 @@ def test_request_shape_system_is_a_field_not_a_turn():
     request = provider.calls[0]["request"]
     assert provider.calls[0]["endpoint"] == "messages"
     assert request["model"] == "claude-fable-5"
-    assert request["system"] == "You are a booking agent."
+    assert request["system"] == [
+        {
+            "type": "text",
+            "text": "You are a booking agent.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     assert request["max_tokens"] == DEFAULT_MAX_TOKENS
     assert request["messages"] == [{"role": "user", "content": "Book me a flight."}]
-    assert request["tools"] == convert_tools_messages(TOOLS)
+
+    expected_tools = convert_tools_messages(TOOLS)
+    expected_tools[-1]["cache_control"] = {"type": "ephemeral"}
+    assert request["tools"] == expected_tools
+
+
+def test_only_the_last_tool_carries_a_cache_breakpoint():
+    provider = ScriptedProvider([msg_text("done")])
+
+    run_episode(make_config(), make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    tools = provider.calls[0]["request"]["tools"]
+    assert len(tools) == 2
+    assert "cache_control" not in tools[0]
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+    # everything else about the definition is untouched
+    assert tools[-1]["name"] == "book_flight"
+    assert tools[-1]["input_schema"] == TOOLS[1]["function"]["parameters"]
+
+
+def test_cache_control_is_never_placed_on_messages():
+    provider = ScriptedProvider(
+        [msg_tools([("search_flights", {"origin": "SFO"})]), msg_text("done")]
+    )
+
+    run_episode(make_config(), make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    for call in provider.calls:
+        for message in call["request"]["messages"]:
+            blob = json.dumps(message)
+            assert "cache_control" not in blob
+
+
+def test_empty_system_prompt_omits_the_system_key_entirely():
+    provider = ScriptedProvider([msg_text("done")])
+
+    run_episode(
+        make_config(system_prompt=""), make_case(), provider, StubBackend(), rep=0, seed=0
+    )
+
+    assert "system" not in provider.calls[0]["request"]
+
+
+def test_empty_tool_list_gets_no_cache_breakpoint():
+    provider = ScriptedProvider([msg_text("done")])
+
+    run_episode(make_config(tools=[]), make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    assert provider.calls[0]["request"]["tools"] == []
+
+
+def test_build_request_marks_a_fresh_copy_not_the_agents_own_tools():
+    tools = copy.deepcopy(TOOLS)
+    build_request("messages", "claude-fable-5", {}, tools, [], system="hi")
+
+    assert tools == TOOLS  # the config's tool list is never mutated
 
 
 def test_max_tokens_comes_from_params_when_present():
@@ -380,8 +441,11 @@ def test_usage_accumulates_with_both_cache_fields():
 
     result = run_episode(make_config(), make_case(), provider, StubBackend(), rep=0, seed=0)
 
+    # input_tokens is total billable input: Anthropic reports it excluding cache reads
+    # (100 + 50), so the 60 read-from-cache tokens are folded in to match the convention
+    # pricing.py and the OpenAI endpoints use.
     assert result.usage == {
-        "input_tokens": 150,
+        "input_tokens": 210,
         "output_tokens": 15,
         "cached_input_tokens": 60,
         "cache_creation_input_tokens": 7,
@@ -592,6 +656,28 @@ def test_cache_read_fraction_differs_between_the_two_fables():
 def test_fable_5_1_snapshot_ids_do_not_fall_back_to_fable_5():
     assert abs(price("anthropic", "claude-fable-5-1-20260901", 1_000_000, 0, 1_000_000)
                - 0.25) < 1e-9
+
+
+def test_cache_writes_bill_at_one_and_a_quarter_the_input_rate():
+    # 1M cache-write tokens on a $10/MTok model = $12.50, on top of the input total
+    assert abs(price("anthropic", "claude-fable-5", 0, 0, 0, 1_000_000) - 12.50) < 1e-9
+    assert abs(price("anthropic", "claude-fable-5-1", 0, 0, 0, 1_000_000) - 12.50) < 1e-9
+
+
+def test_a_cached_episode_prices_reads_writes_and_fresh_input_together():
+    # 1M input of which 800k came from cache, 200k written to cache, 100k output, on 5.1:
+    #   200k fresh   * $10/MTok             = $2.00
+    #   800k read    * $10 * 0.025 /MTok    = $0.20
+    #   200k written * $10 * 1.25 /MTok     = $2.50
+    #   100k output  * $50/MTok             = $5.00
+    usd = price("anthropic", "claude-fable-5-1", 1_000_000, 100_000, 800_000, 200_000)
+    assert abs(usd - 9.70) < 1e-9
+
+
+def test_cache_creation_defaults_to_zero_so_openai_pricing_is_unchanged():
+    assert price("openai", "gpt-5.5", 1_000_000, 100_000, 0) == price(
+        "openai", "gpt-5.5", 1_000_000, 100_000, 0, 0
+    )
 
 
 def test_sim_fable_models_still_cost_nothing():

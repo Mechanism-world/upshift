@@ -40,7 +40,7 @@ FACT_DIR = ROOT / "agents" / "fact"
 SMS_DIR = ROOT / "agents" / "cookbook-sms"
 AGENT_DIRS = {"fact": FACT_DIR, "cookbook-sms": SMS_DIR}
 
-EXPECTED_CASE_COUNT = {"fact": 7, "cookbook-sms": 6}
+EXPECTED_CASE_COUNT = {"fact": 7, "cookbook-sms": 5}
 
 
 def _load_module(name: str, path: Path):
@@ -478,6 +478,39 @@ def test_sim_fable_5_passes_every_case(tmp_path, name):
                     f"{cid}: {c['detail']}" for c in record["check_results"] if not c["passed"]
                 ]
         pytest.fail("\n".join(details))
+
+
+def test_sms_makes_exactly_one_api_call_per_user_message(tmp_path):
+    """Harness fidelity with the notebook: `sms_chatbot` calls messages.create ONCE per
+    incoming message and executes the returned tool call — the tool call IS the reply. It
+    never sends tool results back. max_turns counts API calls per EPISODE, so max_turns: 1
+    reproduces that exactly: one request, tools executed, no follow-up."""
+    config = AgentConfig.load(SMS_DIR)
+    assert config.max_turns == 1
+
+    run_dir = run_suite(
+        SMS_DIR,
+        SimProvider(),
+        "test-sms-one-call",
+        n_reps=1,
+        model_override="sim-fable-5",
+        runs_root=tmp_path,
+        workers=1,
+    )
+    for case in CASES["cookbook-sms"]:
+        # one message in, one message out: no case can need a second call
+        assert len(case.user_messages) == 1, case.id
+        reps = sorted((run_dir / "cases" / case.id).glob("rep_*.json"))
+        assert len(reps) == 1, case.id
+        record = json.loads(reps[0].read_text())
+        assert len(record["api_calls"]) == 1, case.id
+        # the single call did produce a tool execution (tool_choice: any is in force)
+        assert len(record["tool_executions"]) >= 1, case.id
+        assert all(e["turn"] == 0 for e in record["tool_executions"]), case.id
+        # and nothing was ever sent back: the request carries only the user's own message
+        assert record["api_calls"][0]["request"]["messages"] == [
+            {"role": "user", "content": case.user_messages[0]}
+        ], case.id
 
 
 @pytest.mark.parametrize("name", sorted(AGENT_DIRS))

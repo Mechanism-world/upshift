@@ -2,7 +2,8 @@
 API's own usage fields in the rep records; only the $/token rates are external.
 
 Anthropic rates verified 2026-09-01 (both Fables $10/$50 per MTok; cache reads are 10% of
-the input rate on claude-fable-5 and 2.5% on claude-fable-5-1; no flex tier exists).
+the input rate on claude-fable-5 and 2.5% on claude-fable-5-1; a 5-minute cache write is
+1.25x the input rate, i.e. $12.50/MTok on both; no flex tier exists).
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
 pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
@@ -33,6 +34,8 @@ TIER_MULTIPLIER = {
     "anthropic": 1.0,
 }
 CACHED_INPUT_FRACTION = 0.1
+#: A 5-minute cache WRITE bills at 1.25x the input rate ($12.50/MTok on both Fables).
+CACHE_WRITE_MULTIPLIER = 1.25
 #: Per-model cache-read fraction of the input rate; models not listed use the default above.
 MODEL_CACHED_INPUT_FRACTION: dict[str, float] = {
     "claude-fable-5": 0.1,
@@ -61,9 +64,19 @@ def cached_input_fraction(model: str) -> float:
 
 
 def price(
-    provider: str, model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+    cache_creation_tokens: int = 0,
 ) -> float | None:
-    """USD for the given recorded usage; None when the model has no known rate; 0.0 for sim."""
+    """USD for the given recorded usage; None when the model has no known rate; 0.0 for sim.
+
+    `cached_input_tokens` is the part of `input_tokens` that was served from cache (both
+    providers' records follow that convention). `cache_creation_tokens` is separate — cache
+    writes are billed on top of the input total, at `CACHE_WRITE_MULTIPLIER` x the input rate.
+    """
     if provider == "sim":
         return 0.0
     rates = _rate_for(model)
@@ -75,7 +88,10 @@ def price(
     uncached = input_tokens - cached
     cached_fraction = cached_input_fraction(model)
     return (
-        uncached * in_rate + cached * in_rate * cached_fraction + output_tokens * out_rate
+        uncached * in_rate
+        + cached * in_rate * cached_fraction
+        + cache_creation_tokens * in_rate * CACHE_WRITE_MULTIPLIER
+        + output_tokens * out_rate
     ) / 1_000_000
 
 
@@ -83,7 +99,7 @@ def run_cost(run_directory: str | Path) -> dict[str, Any]:
     """Sum recorded usage for one run and price it."""
     run_directory = Path(run_directory)
     manifest = recorder_manifest(run_directory)
-    input_tokens = output_tokens = cached_tokens = reps = 0
+    input_tokens = output_tokens = cached_tokens = cache_write_tokens = reps = 0
     cases_dir = run_directory / "cases"
     if cases_dir.exists():
         for case_dir in sorted(cases_dir.iterdir()):
@@ -93,6 +109,7 @@ def run_cost(run_directory: str | Path) -> dict[str, Any]:
                 input_tokens += record.usage.get("input_tokens", 0)
                 output_tokens += record.usage.get("output_tokens", 0)
                 cached_tokens += record.usage.get("cached_input_tokens", 0)
+                cache_write_tokens += record.usage.get("cache_creation_input_tokens", 0)
                 reps += 1
     provider = manifest.get("provider", "?")
     model = manifest.get("agent", {}).get("model_requested", "?")
@@ -104,7 +121,10 @@ def run_cost(run_directory: str | Path) -> dict[str, Any]:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cached_input_tokens": cached_tokens,
-        "usd": price(provider, model, input_tokens, output_tokens, cached_tokens),
+        "cache_creation_input_tokens": cache_write_tokens,
+        "usd": price(
+            provider, model, input_tokens, output_tokens, cached_tokens, cache_write_tokens
+        ),
     }
 
 

@@ -258,7 +258,12 @@ Dependency: `anthropic>=1.3` (runtime) — the second provider's transport; noth
 No provider-specific forks in the core: `agent_loop.py` gains a third endpoint string,
 `messages`, next to `chat_completions` and `responses`; providers stay transport-only.
 
-- Request: `{model, max_tokens, system: <prompt string>, messages: [...], tools: [...]}`.
+- Request: `{model, max_tokens, system: [{type: text, text: <prompt>, cache_control:
+  {type: ephemeral}}], messages: [...], tools: [...]}` — the last tool definition also
+  carries `cache_control` so system+tools form the cached prefix (min 512 tokens; messages
+  are never marked). Empty prompt ⇒ no `system` key. Anthropic reports `input_tokens`
+  EXCLUDING cache reads; the loop folds `cache_read_input_tokens` back in so pricing's
+  cached-subset convention holds.
   `max_tokens` is REQUIRED by the API; canonical param `max_tokens` (default 8192 when
   absent — thinking counts against it).
 - Tools: canonical `tools.json` stays chat-style; the loop converts each
@@ -286,7 +291,8 @@ No provider-specific forks in the core: `agent_loop.py` gains a third endpoint s
   maps `anthropic.APIStatusError` → ProviderAPIError(status, message verbatim). No flex
   tier exists; no batch provider in v0.3 (ROADMAP).
 - Pricing: both Fables $10 in / $50 out per MTok; cache-read fraction is per model:
-  0.1 for claude-fable-5 ($1/MTok), 0.025 for claude-fable-5-1 ($0.25/MTok); batch 0.5.
+  0.1 for claude-fable-5 ($1/MTok), 0.025 for claude-fable-5-1 ($0.25/MTok); cache writes
+  (`cache_creation_input_tokens`) bill at 1.25× input ($12.50/MTok); batch 0.5.
   `pricing.py` gets a per-model cached-input fraction table (default stays 0.1).
 - Free preflight: `GET /v1/models/{id}` confirms both IDs exist and records
   `capabilities.effort` levels in the manifest.

@@ -26,6 +26,10 @@ MESSAGES = "messages"
 #: Anthropic requires max_tokens; thinking counts against it, so the default is generous.
 DEFAULT_MAX_TOKENS = 8192
 
+#: Anthropic caches only prefixes carrying an explicit `cache_control` mark. Prefixes shorter
+#: than the model's minimum cacheable length (512 tokens) are simply not cached — no error.
+EPHEMERAL = {"type": "ephemeral"}
+
 INVALID_ARGS_ERROR = {"error": "invalid JSON in tool call arguments"}
 
 _MISSING = object()
@@ -157,17 +161,32 @@ def build_request(
             "store": False,
         }
     elif endpoint == MESSAGES:
-        request = {
-            "model": model,
-            "max_tokens": _max_tokens(params),
-            "system": system or "",
-            "messages": copy.deepcopy(items),
-            "tools": convert_tools_messages(tools or []),
-        }
+        # Anthropic caches only what is marked, and marks are placed on the LAST element of
+        # the prefix they close over. Two breakpoints: one on the final tool definition (so
+        # the tools array is cached) and one on the system block (tools + system). Nothing is
+        # ever marked on `messages`, so the cached prefix is the part that never changes
+        # within an episode and the marks never move.
+        request = {"model": model, "max_tokens": _max_tokens(params)}
+        if system:
+            request["system"] = [
+                {"type": "text", "text": system, "cache_control": dict(EPHEMERAL)}
+            ]
+        # An empty system prompt is omitted entirely rather than sent as "" — the claudette
+        # adapter has a 0-byte prompt, and an empty block list is not a valid `system`.
+        request["messages"] = copy.deepcopy(items)
+        request["tools"] = _mark_last_tool_cacheable(convert_tools_messages(tools or []))
     else:
         raise ValueError(f"unknown endpoint {endpoint!r}")
     request.update(map_params(endpoint, params))
     return request
+
+
+def _mark_last_tool_cacheable(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put a cache breakpoint on the last tool definition, so the whole tools array joins the
+    cached prefix. No-op for an empty tools list."""
+    if tools:
+        tools[-1]["cache_control"] = dict(EPHEMERAL)
+    return tools
 
 
 def _max_tokens(params: dict[str, Any]) -> int:
@@ -323,11 +342,17 @@ def _append_tool_results(
 def _accumulate_usage(total: dict[str, int], endpoint: str, response: dict[str, Any]) -> None:
     usage = response.get("usage") or {}
     if endpoint == MESSAGES:
-        total["input_tokens"] += _as_int(usage.get("input_tokens"))
+        # Anthropic reports `input_tokens` EXCLUDING cache reads, while OpenAI's prompt_tokens
+        # includes them and pricing.py treats cached_input_tokens as a subset of input_tokens.
+        # Fold cache reads in so both providers record the same thing: total billable input,
+        # of which `cached_input_tokens` were served from cache. (Before cache_control was
+        # sent, cache_read was always 0, so no previously recorded number changes.)
+        cache_read = _as_int(usage.get("cache_read_input_tokens"))
+        total["input_tokens"] += _as_int(usage.get("input_tokens")) + cache_read
         total["output_tokens"] += _as_int(usage.get("output_tokens"))
-        total["cached_input_tokens"] += _as_int(usage.get("cache_read_input_tokens"))
-        # Cache writes are billed at their own rate, so they are kept as a separate field
-        # rather than folded into either of the two above.
+        total["cached_input_tokens"] += cache_read
+        # Cache WRITES are billed at their own rate (1.25x input) and are not part of the
+        # input total, so they are kept as a separate field.
         total["cache_creation_input_tokens"] = total.get(
             "cache_creation_input_tokens", 0
         ) + _as_int(usage.get("cache_creation_input_tokens"))

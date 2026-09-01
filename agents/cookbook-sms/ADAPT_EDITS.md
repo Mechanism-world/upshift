@@ -13,7 +13,7 @@ generated baseline to diff against, so there is no per-file edit count; the hone
 | `system_prompt.txt` | extracted verbatim from notebook cell 33 by script |
 | `tools.json` | extracted verbatim from notebook cell 33 by script (`ast.literal_eval`), re-wrapped chat-style |
 | `backend.py` | hand-written from cell 33's two mock functions |
-| `cases/cases.json` | hand-written; 4 of 6 user messages copied verbatim from cells 35/37/39/41 |
+| `cases/cases.json` | hand-written; 4 of 5 user messages copied verbatim from cells 35/37/39/41 |
 | `ATTRIBUTION.md`, `ADAPT_EDITS.md` | hand-written |
 | **edits relative to an adapt output** | **n/a — adapt output discarded in full** |
 
@@ -61,17 +61,45 @@ surface upshift is aimed at, and today adapt is blind to all of them.
   question. "` survive because nothing retyped them.
 - Every delta from the notebook runtime is listed in ATTRIBUTION.md — including the one
   invented piece of state (`delivered`) and why the check vocabulary made it necessary.
-- Four of six cases use the notebook's own example inputs verbatim; the two written here are
+- Four of five cases use the notebook's own example inputs verbatim; the one written here is
   marked as such in the table.
 
 ## Verification
 
 `upshift`'s own machinery, no API calls: `validate_agent_dir` passes; `run_suite` on
-`sim-fable-5` passes 6/6 cases; `sim-fable-5-1` fails 6/6 with the documented
+`sim-fable-5` passes 5/5 cases; `sim-fable-5-1` fails 5/5 with the documented
 `tool_choice: type "tool" and "any" are not supported for this model.` 400. Covered by
 `tests/test_agents_claude_a.py`.
 
 A full `upshift upgrade --provider sim` (N=5, run records written outside the repo) ends
-SAFE WITH PATCH on a single accepted candidate — `remove-forced-tool-choice` restores 6/6 with
-0 broken. Neither tool name matches the sim's retrieval heuristic, so no second repair step is
-needed. Sim results validate the machinery, never the thesis.
+SAFE WITH PATCH on a single accepted candidate — `remove-forced-tool-choice` restores 5/5 with
+0 broken (re-run 2026-09-01 after the harness-fidelity edit below). Neither tool name matches
+the sim's retrieval heuristic, so no second repair step is needed. Sim results validate the
+machinery, never the thesis.
+
+## Human edits after the first pass — counted
+
+### 2026-09-01 — harness fidelity: one API call per user message (3 files)
+
+Found by a live pilot: `state_count texts_sent` expected 1 and got **6** on
+`greeting_texts_back`. Cause was ours, not the model's. The upstream notebook's `sms_chatbot`
+(cell 33) makes exactly one `messages.create` call per incoming message and executes the tool
+call it gets back — the tool call *is* the reply, and tool results are never sent back. This
+directory had wrapped that agent in upshift's full tool-calling loop (`max_turns: 6`), and with
+`tool_choice: {"type": "any"}` forcing a tool on every turn the loop ran to the cap, sending six
+texts for one greeting. We were measuring a loop we invented.
+
+| file | edit |
+| --- | --- |
+| `agent.json` | `max_turns` 6 → **1**. `max_turns` counts API calls per episode in `agent_loop.run_episode`, so `1` is exactly the notebook's control flow: one request, every tool call in the response executed, no follow-up. |
+| `cases/cases.json` | dropped `username_given_in_second_message` (2 user messages — inexpressible under one-call semantics, and not replaced); `order_help_with_username` and `email_on_file_requested` lost their second-turn assertions (`send_text_to_user`, `delivered.*` true) because a single call cannot both look a customer up and text the result; each oracle plan reduced to its single tool step with no `final_message` (never reached, and the sim does not require one); `turns_at_most: 2` added to those two cases as the explicit one-call contract. |
+| `ATTRIBUTION.md` | the "a loop where the notebook has none" delta replaced by the one-call-per-message statement; case table 6 → 5 with the removal recorded; `delivered` section states that it can only be `false` under these semantics, and why it is kept anyway. |
+
+**Edit count for this pass: 3 files, 1 case removed, 0 cases added.** Nothing in
+`system_prompt.txt`, `tools.json` or `backend.py` changed — the extracted-verbatim artifacts are
+untouched.
+
+Cost of the edit, stated plainly: the suite no longer covers a multi-turn conversation with this
+agent. That coverage was never real — it exercised upshift's loop, not the notebook's. The
+alternative (keep `max_turns: 6` and assert against six texts) would have been an eval written
+around a harness bug.
