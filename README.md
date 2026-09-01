@@ -1,5 +1,7 @@
 # upshift
 
+[![ci](https://github.com/atilavahedian/upshift/actions/workflows/ci.yml/badge.svg)](https://github.com/atilavahedian/upshift/actions/workflows/ci.yml)
+
 Test whether a model upgrade breaks your agent — and either fix it or prove you should stay pinned.
 
 Input: a plain OpenAI tool-calling agent, its eval cases, and a candidate model version.
@@ -29,7 +31,7 @@ Total API cost of the experiment: $12.31 (flex tier + prompt caching).
 We then pointed the same pipeline at an agent we didn't write:
 [shell_gpt](https://github.com/TheR1D/shell_gpt) (12k stars), which the same upgrade
 hard-breaks — 14/14 cases regressed on the documented 400, with no workaround available in
-its config. One accepted repair (a one-line endpoint route to `/v1/responses`) restored
+its config (reported upstream as [TheR1D/shell_gpt#801](https://github.com/TheR1D/shell_gpt/issues/801)). One accepted repair (a one-line endpoint route to `/v1/responses`) restored
 14/14 with zero collateral: **SAFE WITH PATCH**, verified on 10 reps per case, for $0.56 of
 API spend. Full write-up: [reports/shellgpt-upgrade.md](reports/shellgpt-upgrade.md).
 

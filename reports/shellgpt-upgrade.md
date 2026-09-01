@@ -82,8 +82,9 @@ better; at this sample size it doesn't.
 **SAFE WITH PATCH.** The patch is [`runs/shellgpt-56sol/upgrade.patch`](../runs/shellgpt-56sol/upgrade.patch)
 — apply with `git apply`. In shell_gpt's own codebase the equivalent fix is moving
 `sgpt/handlers/handler.py` from `client.chat.completions.create` to the Responses API
-(its `openai >= 2.0` dependency already supports it). No issue for this exists on the
-shell_gpt tracker as of this run; these records are ready to file upstream.
+(its `openai >= 2.0` dependency already supports it). Filed upstream with these records:
+[TheR1D/shell_gpt#801](https://github.com/TheR1D/shell_gpt/issues/801) (2026-09-01); the
+literal `sgpt` reproduction against PyPI release 1.5.1 was confirmed before filing.
 
 This is the same machinery that returned **STAY PINNED** on our 38-case booking agent
 (32/36 restored, two repairs vetoed on confirmed collateral damage). The verdict is not a

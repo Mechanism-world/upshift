@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --group dev
+      - run: uv run ruff check src tests
+      # Docker-backed shell_gpt sandbox tests self-skip when the image is absent (CI has no
+      # sandbox image); everything else runs, offline, with zero API calls.
+      - run: uv run pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - run: uvx twine check dist/*
+      # The wheel must work as a tool install from a clean environment: init + sim demo.
+      - run: |
+          uv tool install dist/*.whl
+          cd "$(mktemp -d)"
+          upshift init demo-agent
+          upshift upgrade --agent demo-agent --provider sim \
+            --baseline-model sim-5.5 --candidate-model sim-5.6-sol --tag demo --quiet

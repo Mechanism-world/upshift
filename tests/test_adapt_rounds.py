@@ -449,7 +449,7 @@ def test_mixed_pointers_merge_per_path(tmp_path):
     assert len(plan.followed) == 3
 
 
-CHATDBG_REP = ROOT / "runs" / "adapt-chatdbg" / "cases" / "extraction" / "rep_01.json"
+CHATDBG_REP = ROOT / "runs" / "adapt-chatdbg-try1" / "cases" / "extraction" / "rep_01.json"
 
 
 @pytest.mark.skipif(not CHATDBG_REP.is_file(), reason="the ChatDBG evidence run is not on disk")

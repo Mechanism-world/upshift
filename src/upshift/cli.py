@@ -783,6 +783,15 @@ def _load_dotenv(path: str | Path = ".env") -> None:
             os.environ[key] = value
 
 
+def _version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("upshift")
+    except PackageNotFoundError:  # source tree without an install
+        return "0.0.0+src"
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     parser = argparse.ArgumentParser(
@@ -790,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"upshift {_version()}")
     sub = parser.add_subparsers(dest="command")
 
     p_init = sub.add_parser(
