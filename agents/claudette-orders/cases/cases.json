@@ -1,0 +1,802 @@
+[
+  {
+    "id": "customer_c1_email",
+    "description": "The notebook's first request, verbatim (nbs/01_toolloop.ipynb cells 18 and 28). One lookup, one answer.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "Can you tell me the email address for customer C1?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "exact_args": {
+          "customer_id": "C1"
+        }
+      },
+      {
+        "type": "response_contains",
+        "text": "john@example.com"
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 0,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "customer_id": "C1"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "The email address for customer C1 (John Doe) is john@example.com."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  },
+  {
+    "id": "cancel_all_orders_c1",
+    "description": "The notebook's multi-stage request, verbatim (cells 22 and 33): look the customer up, then cancel both of their orders. The two cancellations are independent of each other, so a batching model spends one turn on them - turns_at_most 3 is lookup-turn, cancel-turn, answer.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "Please cancel all orders for customer C1 for me."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "exact_args": {
+          "customer_id": "C1"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_order",
+        "min_times": 2,
+        "max_times": 2,
+        "args_subset": {
+          "order_id": "O1"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_order",
+        "min_times": 2,
+        "max_times": 2,
+        "args_subset": {
+          "order_id": "O2"
+        }
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 2,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "final_state",
+        "path": "orders.O3.status",
+        "equals": "Shipped"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 3
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "customer_id": "C1"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_order",
+              "arguments": {
+                "order_id": "O1"
+              }
+            },
+            {
+              "name": "cancel_order",
+              "arguments": {
+                "order_id": "O2"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "I cancelled both of customer C1's orders, O1 and O2."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  },
+  {
+    "id": "cancel_then_check_o2_status",
+    "description": "The notebook's follow-up turn (cell 35) in the same conversation as cell 33: cancel everything for C1, then ask what O2's status is. Two user segments; the second must go back to the tool rather than answering from the first segment's memory. turns_at_most 4 = lookup, batched cancels, the status lookup, and the final answer.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "Please cancel all orders for customer C1 for me.",
+      "What is the status of order O2?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_order",
+        "min_times": 2,
+        "max_times": 2
+      },
+      {
+        "type": "tool_called",
+        "name": "get_order_details",
+        "min_times": 1,
+        "exact_args": {
+          "order_id": "O2"
+        }
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 2,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "response_contains",
+        "text": "Cancelled"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 4
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "customer_id": "C1"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_order",
+              "arguments": {
+                "order_id": "O1"
+              }
+            },
+            {
+              "name": "cancel_order",
+              "arguments": {
+                "order_id": "O2"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Both of customer C1's orders, O1 and O2, are now cancelled."
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "get_order_details",
+              "arguments": {
+                "order_id": "O2"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Order O2 (Gadget B) now has the status Cancelled."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  },
+  {
+    "id": "parallel_order_and_customer_lookup",
+    "description": "Two lookups with nothing between them: one order, one customer. Same data as the notebook, and the natural single-turn shape for a model that batches - turns_at_most 2.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "What is the status of order O3, and what is Jane Smith's phone number?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_order_details",
+        "min_times": 1,
+        "exact_args": {
+          "order_id": "O3"
+        }
+      },
+      {
+        "type": "tool_called",
+        "name": "get_customer_info",
+        "min_times": 1,
+        "exact_args": {
+          "customer_id": "C2"
+        }
+      },
+      {
+        "type": "response_contains",
+        "text": "Shipped"
+      },
+      {
+        "type": "response_contains",
+        "text": "987-654-3210"
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 0,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_order_details",
+              "arguments": {
+                "order_id": "O3"
+              }
+            },
+            {
+              "name": "get_customer_info",
+              "arguments": {
+                "customer_id": "C2"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Order O3 is Shipped, and Jane Smith's phone number is 987-654-3210."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  },
+  {
+    "id": "cancel_unknown_order",
+    "description": "The False branch of cancel_order (cell 12: an unknown id returns False and changes nothing). The model has to report the failure instead of claiming success, and no order may end up cancelled.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "Please cancel order O9."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "cancel_order",
+        "min_times": 1,
+        "exact_args": {
+          "order_id": "O9"
+        }
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 0,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "response_matches",
+        "regex": "(could ?n.?t|can ?not|can.t|unable|not found|no such|does ?n.?t exist|not exist|failed)"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "cancel_order",
+              "arguments": {
+                "order_id": "O9"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "I could not cancel order O9 - there is no order with that ID."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  },
+  {
+    "id": "order_o1_details",
+    "description": "Single-lookup happy path over the notebook's order data, and the read-only counterweight to the cancellation cases: nothing in the store may change.",
+    "initial_state": {
+      "orders": {
+        "O1": {
+          "id": "O1",
+          "product": "Widget A",
+          "quantity": 2,
+          "price": 19.99,
+          "status": "Shipped"
+        },
+        "O2": {
+          "id": "O2",
+          "product": "Gadget B",
+          "quantity": 1,
+          "price": 49.99,
+          "status": "Processing"
+        },
+        "O3": {
+          "id": "O3",
+          "product": "Gadget B",
+          "quantity": 2,
+          "price": 49.99,
+          "status": "Shipped"
+        }
+      },
+      "customers": {
+        "C1": {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "123-456-7890",
+          "orders": [
+            {
+              "id": "O1",
+              "product": "Widget A",
+              "quantity": 2,
+              "price": 19.99,
+              "status": "Shipped"
+            },
+            {
+              "id": "O2",
+              "product": "Gadget B",
+              "quantity": 1,
+              "price": 49.99,
+              "status": "Processing"
+            }
+          ]
+        },
+        "C2": {
+          "name": "Jane Smith",
+          "email": "jane@example.com",
+          "phone": "987-654-3210",
+          "orders": [
+            {
+              "id": "O3",
+              "product": "Gadget B",
+              "quantity": 2,
+              "price": 49.99,
+              "status": "Shipped"
+            }
+          ]
+        }
+      }
+    },
+    "user_messages": [
+      "What product is order O1 for, and what did it cost?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "get_order_details",
+        "min_times": 1,
+        "exact_args": {
+          "order_id": "O1"
+        }
+      },
+      {
+        "type": "response_contains",
+        "text": "Widget A"
+      },
+      {
+        "type": "response_contains",
+        "text": "19.99"
+      },
+      {
+        "type": "final_state",
+        "path": "orders.O1.status",
+        "equals": "Shipped"
+      },
+      {
+        "type": "state_count",
+        "path": "orders",
+        "equals": 0,
+        "where": {
+          "status": "Cancelled"
+        }
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "get_order_details",
+              "arguments": {
+                "order_id": "O1"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Order O1 is for 2 x Widget A at 19.99 each; its status is Shipped."
+        }
+      ],
+      "retrieval_tools": [],
+      "critical_tool": "cancel_order"
+    }
+  }
+]

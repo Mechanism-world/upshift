@@ -1,0 +1,533 @@
+[
+  {
+    "id": "smoke_calculator_two_plus_two",
+    "description": "Smoke case from upstream's own test suite (agents/test_message_params.py:65, BasicAgent asks 'What is 2+2?'). One tool call, one answer: it exists to prove the loop and the calculator agree, not to test parallelism.",
+    "initial_state": {},
+    "user_messages": [
+      "What is 2+2?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "calculator",
+        "min_times": 1,
+        "args_subset": {
+          "operator": "+"
+        }
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b4\\b"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 2,
+                "number2": 2,
+                "operator": "+"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "2 + 2 = 4."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "smoke_calculator_ten_divided_by_two",
+    "description": "Second smoke case from upstream's tests (agents/test_message_params.py:126, MetadataAgent asks 'What is 10/2?'). Exercises the division branch of the calculator.",
+    "initial_state": {},
+    "user_messages": [
+      "What is 10/2?"
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "calculator",
+        "min_times": 1,
+        "args_subset": {
+          "operator": "/"
+        }
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b5\\b"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 10,
+                "number2": 2,
+                "operator": "/"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "10 / 2 = 5."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "parallel_three_calculations",
+    "description": "THE point of this target: three arithmetic questions with no dependency between them. Upstream executes every tool_use block of a turn concurrently (agents/utils/tool_util.py:27-35, asyncio.gather), so the intended shape is one assistant turn issuing three calculator calls. turns_at_most 2 = that turn plus the answer.",
+    "initial_state": {},
+    "user_messages": [
+      "What are 12*7, 9*9 and 15+27? Give me all three numbers."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "calculator",
+        "min_times": 3
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b84\\b"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b81\\b"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b42\\b"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 12,
+                "number2": 7,
+                "operator": "*"
+              }
+            },
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 9,
+                "number2": 9,
+                "operator": "*"
+              }
+            },
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 15,
+                "number2": 27,
+                "operator": "+"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "12*7 = 84, 9*9 = 81, and 15+27 = 42."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "parallel_read_three_files",
+    "description": "Three independent file reads that a batching model issues in one turn. No arithmetic, so the only thing turns_at_most 2 can measure is whether the reads were batched.",
+    "initial_state": {
+      "files": {
+        "data/a.txt": "12\n",
+        "data/b.txt": "30\n",
+        "data/c.txt": "5\n",
+        "notes.txt": "Release checklist: freeze the branch, tag the build, publish the notes.\n"
+      }
+    },
+    "user_messages": [
+      "Read data/a.txt, data/b.txt and data/c.txt and tell me the number in each one."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "file_read",
+        "min_times": 3,
+        "args_subset": {
+          "operation": "read",
+          "path": "data/c.txt"
+        }
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b12\\b"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b30\\b"
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b5\\b"
+      },
+      {
+        "type": "final_state",
+        "path": "write_count",
+        "equals": 0
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/a.txt"
+              }
+            },
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/b.txt"
+              }
+            },
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/c.txt"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "data/a.txt has 12, data/b.txt has 30 and data/c.txt has 5."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "parallel_read_two_then_sum",
+    "description": "The founder's canonical shape: two independent reads that belong in one turn, then one calculator call that genuinely depends on both results. turns_at_most 3 = reads-turn, calc-turn, answer — the budget a model that batches the independent half can meet and a serializing one cannot.",
+    "initial_state": {
+      "files": {
+        "data/a.txt": "12\n",
+        "data/b.txt": "30\n",
+        "data/c.txt": "5\n",
+        "notes.txt": "Release checklist: freeze the branch, tag the build, publish the notes.\n"
+      }
+    },
+    "user_messages": [
+      "Read data/a.txt and data/b.txt and report the sum of the numbers in them."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "file_read",
+        "min_times": 2
+      },
+      {
+        "type": "tool_called",
+        "name": "calculator",
+        "min_times": 1
+      },
+      {
+        "type": "response_matches",
+        "regex": "\\b42\\b"
+      },
+      {
+        "type": "final_state",
+        "path": "write_count",
+        "equals": 0
+      },
+      {
+        "type": "turns_at_most",
+        "n": 3
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/a.txt"
+              }
+            },
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/b.txt"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "calculator",
+              "arguments": {
+                "number1": 12,
+                "number2": 30,
+                "operator": "+"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "12 + 30 = 42."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "parallel_read_three_then_write_report",
+    "description": "Batched reads followed by a single dependent write. Adds the write path of file_write to the parallelism story: turns_at_most 3 = reads-turn, write-turn, answer, and write_count 1 pins that exactly one file was touched.",
+    "initial_state": {
+      "files": {
+        "data/a.txt": "12\n",
+        "data/b.txt": "30\n",
+        "data/c.txt": "5\n",
+        "notes.txt": "Release checklist: freeze the branch, tag the build, publish the notes.\n"
+      }
+    },
+    "user_messages": [
+      "Read data/a.txt, data/b.txt and data/c.txt, then write the three numbers, comma-separated, into report.txt."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "file_read",
+        "min_times": 3
+      },
+      {
+        "type": "tool_called",
+        "name": "file_write",
+        "min_times": 1,
+        "max_times": 1,
+        "args_subset": {
+          "operation": "write",
+          "path": "report.txt"
+        }
+      },
+      {
+        "type": "final_state",
+        "path": "write_count",
+        "equals": 1
+      },
+      {
+        "type": "final_state",
+        "path": "writes[0]",
+        "equals": "report.txt"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 3
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/a.txt"
+              }
+            },
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/b.txt"
+              }
+            },
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "data/c.txt"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "file_write",
+              "arguments": {
+                "operation": "write",
+                "path": "report.txt",
+                "content": "12,30,5\n"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Wrote 12,30,5 to report.txt."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "no_over_acting_read_only",
+    "description": "The over-acting guard: a read-only question over a tree the model can write to. Nothing in the final state may change — write_count 0 and file_write never called — however many turns the model takes.",
+    "initial_state": {
+      "files": {
+        "data/a.txt": "12\n",
+        "data/b.txt": "30\n",
+        "data/c.txt": "5\n",
+        "notes.txt": "Release checklist: freeze the branch, tag the build, publish the notes.\n"
+      }
+    },
+    "user_messages": [
+      "What does notes.txt say? Do not change anything on disk."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "file_read",
+        "min_times": 1,
+        "args_subset": {
+          "operation": "read",
+          "path": "notes.txt"
+        }
+      },
+      {
+        "type": "tool_not_called",
+        "name": "file_write"
+      },
+      {
+        "type": "final_state",
+        "path": "write_count",
+        "equals": 0
+      },
+      {
+        "type": "response_contains",
+        "text": "freeze the branch"
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "file_read",
+              "arguments": {
+                "operation": "read",
+                "path": "notes.txt"
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "notes.txt is a release checklist: freeze the branch, tag the build, publish the notes."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  },
+  {
+    "id": "think_before_answering",
+    "description": "The bundled ThinkTool on the README's own example question (agents/README.md:24-38 constructs an Agent with ThinkTool and asks 'What should I consider when buying a new laptop?'). The tool changes nothing; the case asserts it was actually used and that using it costs one turn, not several.",
+    "initial_state": {},
+    "user_messages": [
+      "Think it through with your think tool first, then tell me what to consider when buying a new laptop."
+    ],
+    "checks": [
+      {
+        "type": "no_api_error"
+      },
+      {
+        "type": "tool_called",
+        "name": "think",
+        "min_times": 1
+      },
+      {
+        "type": "turns_at_most",
+        "n": 2
+      }
+    ],
+    "sim": {
+      "oracle_plan": [
+        {
+          "tool_calls": [
+            {
+              "name": "think",
+              "arguments": {
+                "thought": "Buying a laptop: budget, CPU/RAM, battery life, screen, weight, ports."
+              }
+            }
+          ]
+        },
+        {
+          "final_message": "Consider budget, CPU and RAM, battery life, screen quality, weight and ports."
+        }
+      ],
+      "retrieval_tools": []
+    }
+  }
+]
