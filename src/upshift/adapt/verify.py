@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .inventory import read_text
+
 HIGH, MEDIUM, LOW = "high", "medium", "low"
 
 #: Endpoint claims are checked against the call markers that decide the endpoint.
@@ -88,7 +90,12 @@ def parse_citation(citation: str) -> tuple[str, int, int] | None:
 
 
 class FileCache:
-    """Reads each cited file once; unreadable files resolve to None forever."""
+    """Reads each cited file once; unreadable files resolve to None forever.
+
+    Reading goes through `inventory.read_text`, not `Path.read_text`, so the gate sees a
+    cited notebook as the same rendered cell document the model was shown and cited lines
+    of. Any other reader here would compare the claim against raw JSON and fail everything.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -96,11 +103,11 @@ class FileCache:
 
     def lines(self, rel: str) -> list[str] | None:
         if rel not in self._cache:
-            path = self.root / rel
             try:
-                self._cache[rel] = path.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError, ValueError):
-                self._cache[rel] = None
+                text = read_text(self.root / rel)
+            except ValueError:
+                text = None
+            self._cache[rel] = None if text is None else text.splitlines()
         return self._cache[rel]
 
     def whole(self, rel: str) -> str | None:

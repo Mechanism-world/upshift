@@ -7,11 +7,37 @@ extraction stage says can be traced back to a real line of a real file.
 Python files get an AST pass (call sites with their keyword arguments, string constants that
 look like prompts, `{"type": "function"}` dict literals). Everything else falls back to the
 same signal regexes without structure.
+
+Jupyter notebooks
+-----------------
+A `.ipynb` is never shown to the pipeline as JSON. `read_text` renders it — deterministically,
+and identically everywhere a cited file is re-read (round-1 slicing, round-2 pointer slicing,
+the verbatim gate) — into a synthetic text document: the notebook's cells in order, each
+preceded by a marker line
+
+    # --- cell <index> (code) ---
+    # --- cell <index> (markdown) ---
+
+where `<index>` is the cell's position in the notebook's own `cells` list. Code cells
+contribute their source verbatim; markdown (and raw) cells contribute their lines prefixed
+with `# `, so a README-style usage example written in a markdown cell stays citable evidence
+and the whole document still reads as valid-enough Python for the signal regexes. Outputs,
+execution counts and metadata are dropped entirely.
+
+**Line numbers in a citation `path:line` for a notebook are lines of THAT rendered document,
+not of the JSON file.** The `# --- cell N ---` markers are what let a human map a cited line
+back to a cell: count the lines since the nearest marker above it. Because every consumer
+goes through `read_text`, the model's citations and the verbatim gate agree by construction.
+
+The rendered text may not parse as Python (`%magics`, `!shell`), so the AST pass is only used
+for a notebook when it parses; otherwise it falls back to the regex call-site scan, exactly as
+a non-Python file does.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import re
 import subprocess
 from collections.abc import Callable
@@ -27,7 +53,7 @@ SKIP_DIRS = frozenset(
         ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
         ".tox", ".nox", ".mypy_cache", ".pytest_cache", ".ruff_cache", "site-packages",
         "dist", "build", ".idea", ".vscode", "vendor", "third_party", ".eggs",
-        "htmlcov", "coverage", ".next", "target",
+        "htmlcov", "coverage", ".next", "target", ".ipynb_checkpoints",
         # Recorded API traffic: request bodies in there are full of tool schemas and system
         # messages, so they outrank the source that produced them unless we skip them.
         "runs", "cassettes", "recordings", "snapshots", "__snapshots__",
@@ -39,8 +65,15 @@ TEXT_SUFFIXES = frozenset(
         ".py", ".pyi", ".md", ".txt", ".rst", ".toml", ".cfg", ".ini", ".yaml", ".yml",
         ".json", ".js", ".ts", ".tsx", ".jsx", ".go", ".rb", ".java", ".sh", ".jinja",
         ".j2", ".tmpl", ".env.example",
+        # Read through `render_notebook`, never as raw JSON (see the module docstring).
+        ".ipynb",
     }
 )
+
+#: Suffix whose bytes are notebook JSON. Not in DATA_SUFFIXES: it is source, and it is never
+#: put into the evidence as JSON, so the transcript heuristic and the small data cap that
+#: exist for .json dumps do not apply to it.
+NOTEBOOK_SUFFIX = ".ipynb"
 
 MAX_FILE_BYTES = 400_000
 #: Data files are read (an agent's tools can live in a .json) but a big one is a dump, not
@@ -346,11 +379,70 @@ def walk_repo(root: Path) -> list[Path]:
     return found
 
 
-def read_text(path: Path) -> str | None:
+def _cell_lines(cell: dict) -> list[str]:
+    source = cell.get("source")
+    if isinstance(source, str):
+        return source.splitlines()
+    if isinstance(source, list):
+        return "".join(part for part in source if isinstance(part, str)).splitlines()
+    return []
+
+
+def render_notebook(raw: str) -> str | None:
+    """Notebook JSON -> the synthetic text document the whole pipeline cites.
+
+    Cells in notebook order, each under a `# --- cell <index> (<type>) ---` marker; code cell
+    source verbatim, every other cell type commented with `# `. Outputs are ignored. None
+    when the bytes are not a notebook (malformed JSON, no `cells` list) — the caller treats
+    that exactly like an unreadable file and skips it.
+
+    Deterministic: same bytes in, same text out, so a `path:line` citation means the same
+    thing in the evidence bundle, in a round-2 slice and in the verbatim gate.
+    """
     try:
-        return path.read_text(encoding="utf-8")
+        doc = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("cells"), list):
+        return None
+    lines: list[str] = []
+    for index, cell in enumerate(doc["cells"]):
+        if not isinstance(cell, dict):
+            continue
+        kind = str(cell.get("cell_type") or "raw")
+        lines.append(f"# --- cell {index} ({kind}) ---")
+        body = _cell_lines(cell)
+        if kind == "code":
+            lines.extend(body)
+        else:
+            lines.extend(f"# {line}" if line.strip() else "#" for line in body)
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def read_text(path: Path) -> str | None:
+    """The text of a source file as every stage of adapt sees it.
+
+    The one place notebooks are decoded: for a `.ipynb` this returns the rendered cell
+    document (see `render_notebook` and the module docstring), never the raw JSON. Every
+    consumer that re-reads a cited file goes through here, which is what keeps the model's
+    line numbers and the verbatim gate talking about the same document.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    if path.suffix.lower() == NOTEBOOK_SUFFIX:
+        return render_notebook(raw)
+    return raw
+
+
+def parses_as_python(text: str) -> bool:
+    """Whether the AST pass can be used on this text at all."""
+    try:
+        ast.parse(text)
+    except (SyntaxError, ValueError):
+        return False
+    return True
 
 
 def score_text(rel_path: str, text: str) -> tuple[float, list[str], list[int]]:
@@ -652,7 +744,13 @@ def take_inventory(
             # PARSES responses, which is exactly what we want to read.
             continue
         score, reasons, lines = score_text(rel, text)
-        if path.suffix == ".py":
+        # A rendered notebook is analysed as Python when it parses (the common case: the
+        # cell markers and commented markdown are comments), and falls back to the regex
+        # call-site scan when a magic or a shell escape makes it unparseable.
+        use_ast = path.suffix == ".py" or (
+            path.suffix.lower() == NOTEBOOK_SUFFIX and parses_as_python(text)
+        )
+        if use_ast:
             calls, prompts, extra = analyze_python(rel, text)
             if calls:
                 score += 8.0 * min(len(calls), 3)
