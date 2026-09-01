@@ -131,7 +131,11 @@ Field notes:
 - cases: eval scenarios grounded in evidence you can cite — a test, an example script, a
   README usage block. 3 to 6 good cases beat a dozen invented ones; emit zero rather than
   invent. expected_tool_calls is the call sequence the agent should make; checks use only
-  these types: {check_types}.
+  these types: {check_types}. Check parameter names are exact and there are no others:
+  response_contains/response_not_contains take "text", response_matches takes "regex",
+  final_state takes "path" and "equals", state_count takes "path"/"equals"/optional
+  "where", tool_called takes "name" plus optional "args_subset"/"exact_args"/"min_times"/
+  "max_times", tool_not_called and no_tool_calls_after_success take "name".
 
 {hint}Evidence follows. Line numbers are in the gutter; use them for citations.
 

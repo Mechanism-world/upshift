@@ -414,6 +414,68 @@ def build_backend(
 # ---------------------------------------------------------------------------
 
 
+# Exact parameter vocabulary of checks.py, plus the synonyms extraction models actually
+# emit. Anything that survives normalization but is not in the allowed set drops the check:
+# a check the engine "could not evaluate" fails every rep for a reason that has nothing to
+# do with any model (found live on the first real adapt run — shell_gpt, 2026-09-01).
+_CHECK_PARAM_SYNONYMS: dict[str, dict[str, str]] = {
+    "response_contains": {"value": "text", "substring": "text", "string": "text",
+                          "contains": "text"},
+    "response_not_contains": {"value": "text", "substring": "text", "string": "text"},
+    "response_matches": {"value": "regex", "pattern": "regex"},
+    "final_state": {"key": "path", "value": "equals", "expected": "equals"},
+    "state_count": {"value": "equals", "expected": "equals", "count": "equals"},
+    "tool_called": {"tool": "name", "times": "min_times"},
+    "tool_not_called": {"tool": "name"},
+    "no_tool_calls_after_success": {"tool": "name"},
+}
+_CHECK_ALLOWED_PARAMS: dict[str, set[str]] = {
+    "no_api_error": set(),
+    "tool_called": {"name", "args_subset", "exact_args", "min_times", "max_times"},
+    "tool_not_called": {"name"},
+    "no_tool_calls_after_success": {"name"},
+    "final_state": {"path", "equals"},
+    "state_count": {"path", "equals", "where"},
+    "bookings_count": {"equals"},
+    "confirmation_id_valid": {"pattern", "state_path", "id_field", "known_from"},
+    "response_contains": {"text"},
+    "response_not_contains": {"text"},
+    "response_matches": {"regex"},
+}
+_CHECK_REQUIRED_PARAMS: dict[str, set[str]] = {
+    "tool_called": {"name"},
+    "tool_not_called": {"name"},
+    "no_tool_calls_after_success": {"name"},
+    "final_state": {"path", "equals"},
+    "state_count": {"path", "equals"},
+    "bookings_count": {"equals"},
+    "response_contains": {"text"},
+    "response_not_contains": {"text"},
+    "response_matches": {"regex"},
+}
+
+
+def _normalize_check(check: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Map synonym params onto checks.py's exact vocabulary; reject what can't map.
+
+    Returns (normalized_check, None) or (None, reason_dropped)."""
+    kind = check["type"]
+    synonyms = _CHECK_PARAM_SYNONYMS.get(kind, {})
+    allowed = _CHECK_ALLOWED_PARAMS[kind]
+    out: dict[str, Any] = {"type": kind}
+    for key, value in check.items():
+        if key == "type":
+            continue
+        key = synonyms.get(key, key)
+        if key not in allowed:
+            return None, f"{kind} has unknown parameter {key!r}"
+        out.setdefault(key, value)
+    missing = _CHECK_REQUIRED_PARAMS.get(kind, set()) - set(out)
+    if missing:
+        return None, f"{kind} missing required parameter(s) {sorted(missing)}"
+    return out, None
+
+
 def _clean_checks(
     raw: Any, tool_names: set[str], expected: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -429,12 +491,16 @@ def _clean_checks(
             continue
         if kind == "no_api_error":
             continue
+        check, drop_reason = _normalize_check(check)
+        if check is None:
+            dropped.append(drop_reason)
+            continue
         name = check.get("name")
         tool_scoped = ("tool_called", "tool_not_called", "no_tool_calls_after_success")
         if kind in tool_scoped and name not in tool_names:
             dropped.append(f"{kind} names unknown tool {name!r}")
             continue
-        checks.append(dict(check))
+        checks.append(check)
     named = {c.get("name") for c in checks if c.get("type") == "tool_called"}
     for call in expected:
         name = call.get("name")
