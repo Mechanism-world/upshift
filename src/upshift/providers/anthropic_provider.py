@@ -49,6 +49,12 @@ class AnthropicProvider(Provider):
             base_url = os.environ.get("ANTHROPIC_BASE_URL")
             if base_url:
                 kwargs["base_url"] = base_url
+            # Identity-linked API keys are rejected with 400 "anthropic-workspace-id is
+            # required ..." unless every request names the workspace it acts in. The SDK
+            # (1.3.0) has no client option for it, so it goes in as a default header.
+            workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID")
+            if workspace_id:
+                kwargs["default_headers"] = {"anthropic-workspace-id": workspace_id}
             self._client = Anthropic(**kwargs)
         return self._client
 
