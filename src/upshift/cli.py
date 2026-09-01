@@ -1,6 +1,7 @@
 """upshift CLI.
 
   upshift init     — scaffold an agent directory from the packaged example
+  upshift adapt    — generate an agent directory from an existing agent codebase
   upshift run      — execute the eval suite against one model/config, record everything
   upshift diff     — compare two recorded runs, print the behavioral diff report
   upshift upgrade  — full pipeline: baseline run, candidate run, diff, repair, verdict, patch
@@ -14,6 +15,7 @@ import json
 import os
 import signal
 import sys
+import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -347,7 +349,174 @@ def cmd_init(args) -> int:
     )
     console.print(
         "[dim]to point upshift at your own agent, rebuild these five files for it — "
-        "ADAPTER.md has the contract.[/dim]"
+        "ADAPTER.md has the contract, and `upshift adapt <repo> --out <dir>` drafts them "
+        "from an existing codebase.[/dim]"
+    )
+    return 0
+
+
+ADAPT_DEFAULT_MODEL = "gpt-5.5"
+ADAPT_DEFAULT_MAX_COST = 2.00
+
+
+def _adapt_out_dir(raw: str) -> Path:
+    out_dir = Path(raw)
+    if out_dir.exists():
+        if not out_dir.is_dir():
+            raise ValueError(f"{out_dir} already exists and is not a directory")
+        if any(out_dir.iterdir()):
+            raise ValueError(
+                f"{out_dir}/ already exists and is not empty — nothing was written. "
+                f"Pick a new directory name."
+            )
+    return out_dir
+
+
+def cmd_adapt(args) -> int:
+    """Read an agent codebase, emit an agent directory plus ADAPT_REPORT.md."""
+    from upshift.adapt import AdaptAborted
+    from upshift.adapt.extract import extract
+    from upshift.adapt.generate import generate, slugify
+    from upshift.adapt.inventory import resolve_source, take_inventory
+    from upshift.adapt.record import RecordingExtractor, run_id_for
+    from upshift.adapt.report import render_report, write_report
+    from upshift.adapt.verify import verify
+
+    out_dir = _adapt_out_dir(args.out)
+    if args.max_cost_usd is not None and args.max_cost_usd <= 0:
+        raise ValueError(f"--max-cost-usd must be positive (got {args.max_cost_usd})")
+    _positive(args.max_evidence_tokens, "--max-evidence-tokens")
+    _positive(args.max_files, "--max-files")
+    _check_models("openai", [args.model])
+    provider = _make_provider(args)
+
+    # ignore_cleanup_errors: a shallow clone contains read-only git objects, and losing a
+    # temp directory must never fail a run that already wrote its report.
+    with tempfile.TemporaryDirectory(prefix="upshift-adapt-", ignore_cleanup_errors=True) as tmp:
+        console.rule("[bold]1/4 inventory")
+        repo = resolve_source(args.source, Path(tmp))
+        inventory = take_inventory(
+            repo, max_files=args.max_files, max_tokens=args.max_evidence_tokens
+        )
+        if not inventory.files:
+            raise ValueError(
+                f"no file in {repo.origin} carries an OpenAI/LiteLLM signal — upshift adapt "
+                f"reads plain OpenAI tool-calling agents (ADAPTER.md); there is nothing here "
+                f"to extract"
+            )
+        console.print(
+            f"  {inventory.scanned_files} files scanned · {len(inventory.files)} ranked · "
+            f"{len(inventory.call_sites)} call site(s) · ~{inventory.evidence_tokens:,} "
+            f"evidence tokens",
+            highlight=False,
+        )
+        for signal in inventory.files[:8]:
+            console.print(
+                f"  [dim]{escape(signal.path)}  {signal.score:g}  "
+                f"{escape(', '.join(signal.reasons[:3]))}[/dim]",
+                highlight=False,
+            )
+
+        run_id = run_id_for(slugify(out_dir.name, fallback="agent"))
+        extractor = RecordingExtractor(
+            provider,
+            model=args.model,
+            run_id=run_id,
+            runs_root=args.runs_root,
+            max_cost_usd=args.max_cost_usd,
+            source=repo.origin,
+            commit=repo.commit,
+        )
+        extractor.start(
+            evidence_tokens=inventory.evidence_tokens, out_dir=str(out_dir.resolve())
+        )
+
+        console.rule(f"[bold]2/4 extraction ({args.model})")
+        extraction = None
+        aborted = None
+        try:
+            extraction = extract(
+                inventory,
+                call_model=extractor,
+                model=args.model,
+                agent_hint=args.agent_hint,
+            )
+        except AdaptAborted as exc:
+            aborted = exc.message
+        except ProviderAPIError as exc:
+            aborted = f"the extraction call failed: {exc.message}"
+        finally:
+            extractor.finalize(extraction)
+
+        verification = generation = None
+        if extraction is not None:
+            for attempt in extraction.attempts:
+                state = "schema-valid" if attempt.ok else "rejected"
+                console.print(f"  attempt {attempt.index}: {state}", highlight=False)
+            console.rule("[bold]3/4 verification gate")
+            verification = verify(extraction.data, repo.root)
+            console.print(
+                f"  {verification.checked} citation(s) checked · "
+                f"{verification.downgraded} claim(s) downgraded",
+                highlight=False,
+            )
+            console.rule("[bold]4/4 generate")
+            generation = generate(
+                verification, out_dir, origin=repo.origin, commit=repo.commit
+            )
+
+        report_text = render_report(
+            inventory=inventory,
+            extraction=extraction,
+            verification=verification,
+            generation=generation,
+            cost=extractor.cost_info(),
+            out_dir=out_dir,
+            aborted=aborted,
+        )
+        report_path = write_report(report_text, out_dir)
+
+    if generation is None:
+        console.print(f"[red]error:[/red] {escape(aborted or 'extraction produced nothing')}")
+        console.print(
+            f"partial report: {escape(str(report_path.resolve()))}", highlight=False
+        )
+        return 2
+
+    for rel in generation.files:
+        console.print(f"  wrote {escape(str((out_dir / rel).resolve()))}", highlight=False)
+    for artifact, level in sorted(verification.confidence.items()):
+        color = {"high": "green", "medium": "yellow", "low": "red"}[level]
+        console.print(f"  {artifact:<20} [{color}]{level}[/{color}]", highlight=False)
+
+    try:
+        validate_agent_dir(out_dir)
+        console.print("[green]the generated directory satisfies the ADAPTER.md contract[/green]")
+    except ValueError as exc:
+        console.print(
+            f"[yellow]incomplete agent directory:[/yellow] {escape(str(exc))}", highlight=False
+        )
+
+    console.print(
+        f"\n[bold]{len(generation.must_review)} line(s) need review[/bold] — "
+        f"{escape(str(report_path.resolve()))}",
+        highlight=False,
+        soft_wrap=True,
+    )
+    if aborted:
+        console.print(f"[yellow]{escape(aborted)}[/yellow]", highlight=False, soft_wrap=True)
+        return 2
+    if not extraction.ok:
+        console.print(
+            "[yellow]the extraction never satisfied the schema; everything above is "
+            "salvage — treat it as low confidence[/yellow]",
+            soft_wrap=True,
+        )
+    console.print(
+        f"[dim]extraction recorded in {escape(str(Path(args.runs_root).resolve()))}/{run_id}/ · "
+        f"price it with `upshift cost {escape(run_id)}`[/dim]",
+        highlight=False,
+        soft_wrap=True,
     )
     return 0
 
@@ -596,6 +765,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_init.add_argument("directory", help="directory to create (must not exist, or be empty)")
     p_init.set_defaults(func=cmd_init)
+
+    p_adapt = sub.add_parser(
+        "adapt", help="generate an agent directory from an existing agent codebase"
+    )
+    p_adapt.add_argument("source", help="path to an agent repo, or a git URL to clone")
+    p_adapt.add_argument(
+        "--out", required=True, help="directory to write (must not exist, or be empty)"
+    )
+    p_adapt.add_argument(
+        "--model", default=ADAPT_DEFAULT_MODEL,
+        help=f"extraction model (default {ADAPT_DEFAULT_MODEL})",
+    )
+    p_adapt.add_argument(
+        "--flex", action="store_true", help="use the flex service tier for the extraction call"
+    )
+    p_adapt.add_argument(
+        "--agent-hint", default=None,
+        help="free text about the agent (entry point, which mode to extract, ...)",
+    )
+    p_adapt.add_argument(
+        "--max-cost-usd", type=float, default=ADAPT_DEFAULT_MAX_COST,
+        help=f"abort with a partial report rather than exceed this (default "
+        f"{ADAPT_DEFAULT_MAX_COST:.2f})",
+    )
+    p_adapt.add_argument("--max-files", type=int, default=15, help="files ranked into the evidence")
+    p_adapt.add_argument(
+        "--max-evidence-tokens", type=int, default=120_000,
+        help="hard cap on evidence sent to the model (estimated as len/4)",
+    )
+    p_adapt.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
+    p_adapt.set_defaults(func=cmd_adapt, provider="openai", batch=False)
 
     p_run = sub.add_parser("run", help="run the eval suite against one model/config")
     _add_common_run_args(p_run)
