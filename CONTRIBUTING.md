@@ -4,7 +4,6 @@ Thanks for looking. upshift is small and opinionated: it decides whether a model
 breaks your agent, and if it can, fixes it. Contributions that make that verdict more
 trustworthy are the ones that land fastest.
 
-By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Dev setup
 

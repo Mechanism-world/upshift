@@ -216,7 +216,7 @@ skips it; tests self-heal via `tests/conftest.py`, and for the CLI entry point r
 - Project site: [mechanism.world](https://mechanism.world).
 
 upshift is built by [Mechanism.world](https://github.com/Mechanism-world) and released under
-the MIT License. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+the MIT License.
 
 ## Contributors
 
