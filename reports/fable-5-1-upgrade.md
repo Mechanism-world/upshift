@@ -162,6 +162,10 @@ result raises `KeyError`.
 | Quickstarts agent | none detected | — | **SAFE** on the cases run (detection-only) | $1.16 |
 | claudette | not run live | — | sim-validated only | $0 |
 
+Upstream issues filed with these records: [ruvnet/FACT#5](https://github.com/ruvnet/FACT/issues/5)
+and [anthropics/claude-cookbooks#854](https://github.com/anthropics/claude-cookbooks/issues/854)
+(2026-09-02).
+
 Total: **$4.94** of the $8 cap, plus a ~$0.05 unrecorded wire-format smoke test.
 Every number above is reproducible from the committed records with `upshift cost` and
 `upshift diff`.
