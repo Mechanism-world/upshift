@@ -1,220 +1,232 @@
-# upshift
+<p align="center">
+  <a href="https://mechanism.world"><img src="docs/assets/upshift-banner.svg" alt="upshift — test whether a model upgrade breaks your agent, then fix it or prove you should stay pinned" width="100%"></a>
+</p>
 
-[![ci](https://github.com/atilavahedian/upshift/actions/workflows/ci.yml/badge.svg)](https://github.com/atilavahedian/upshift/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/Mechanism-world/upshift/actions/workflows/ci.yml"><img src="https://github.com/Mechanism-world/upshift/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/Mechanism-world/upshift/releases"><img src="https://img.shields.io/github/v/release/Mechanism-world/upshift?display_name=tag&color=2563eb" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-16a34a" alt="MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.12%2B-3b82f6" alt="python 3.12+">
+  <img src="https://img.shields.io/badge/providers-OpenAI%20%C2%B7%20Anthropic-0ea5e9" alt="providers">
+  <img src="https://img.shields.io/badge/runs-on%20your%20machine-64748b" alt="runs locally">
+</p>
 
-Test whether a model upgrade breaks your agent — and either fix it or prove you should stay pinned.
+**upshift** takes a tool-calling agent, runs its eval cases on two model versions, tells you
+with a p-value what regressed, tries a small set of repairs, and either hands you a patch
+it has verified against your whole suite — or tells you to stay pinned, and why. It runs
+entirely on your machine with your own API keys. Every claim in this README is backed by
+run records committed in this repository.
 
-Input: a plain tool-calling agent on the OpenAI or Anthropic API, its eval cases, and a
-candidate model version.
-Output: a statistical behavioral diff, an attempted automated repair, a `git apply`-able patch,
-and one of three verdicts: **SAFE**, **SAFE WITH PATCH**, or **STAY PINNED**.
+- **Two providers**: OpenAI (chat/completions, responses) and Anthropic (messages).
+- **Statistics, not vibes**: N runs per case (default 5), pass/fail as rates, Fisher exact
+  p on every label, contested results re-tested on 2N. Deterministic checks only — no LLM
+  judge.
+- **Repairs that earn their place**: prompt edits, model params (effort included), tool
+  schemas, endpoint routing. A repair is accepted only if it restores a broken case, breaks
+  nothing, and survives a full-suite re-verification.
+- **Three verdicts**: `SAFE`, `SAFE WITH PATCH`, `STAY PINNED`. The patch is `git apply`-able.
+- **`upshift adapt`** reads your agent's codebase (Python, notebooks) and writes the adapter
+  with a `file:line` citation for everything — anything it can't trace to source is omitted
+  and reported, never invented.
 
-## The number
+## Install
 
-We ran a 38-case booking agent through the real `gpt-5.5` → `gpt-5.6-sol` upgrade
-(all artifacts committed under [`runs/`](runs/), including every API request and response):
-
-- **36 of 38 cases regressed.** Every tool-using case died on the documented hard 400
-  (`gpt-5.6` family rejects function tools on `/v1/chat/completions`), and behavioral
-  regressions followed once the 400 was routed around.
-- **The repair loop restored 32 of 36 (88.9%) with zero confirmed collateral damage** —
-  three stacked repairs, each verified on the full suite: route to `/v1/responses` (+26),
-  an execute-don't-interrogate prompt block (+5), `reasoning_effort: high` (+1).
-- **The verdict was still STAY PINNED.** That is the tool working as designed: an upgrade is
-  blessed only when *every* regression is repaired and *nothing* previously passing breaks.
-  Four cases stayed broken — one of them turned out to be a brittle eval assertion on our
-  side, one is a stubborn interrogation behavior, and two are identifier-reformatting cases
-  whose candidate fix measurably harmed an already-restored case and was rejected on that
-  evidence. The full accounting is in [`runs/real-56sol/REPORT.md`](runs/real-56sol/REPORT.md).
-
-Total API cost of the experiment: $12.31 (flex tier + prompt caching).
-
-We then pointed the same pipeline at an agent we didn't write:
-[shell_gpt](https://github.com/TheR1D/shell_gpt) (12k stars), which the same upgrade
-hard-breaks — 14/14 cases regressed on the documented 400, with no workaround available in
-its config (reported upstream as [TheR1D/shell_gpt#801](https://github.com/TheR1D/shell_gpt/issues/801)). One accepted repair (a one-line endpoint route to `/v1/responses`) restored
-14/14 with zero collateral: **SAFE WITH PATCH**, verified on 10 reps per case, for $0.56 of
-API spend. Full write-up: [reports/shellgpt-upgrade.md](reports/shellgpt-upgrade.md).
-
-On release day for Claude Fable 5.1 we ran the same pipeline on Anthropic's Messages API
-against open-source Claude agents (Fable 5 → Fable 5.1). The cookbook SMS bot that forces
-`tool_choice: any` broke 5/5 cases on the documented 400 and was fully restored — remove
-the forced choice, add the instruction, one rung of effort — **SAFE WITH PATCH, 0
-broken, $0.93**. A quickstarts agent built around parallel tool calls showed **no
-regression** at N=5 (identical calls-per-turn on both models). A third agent was already
-broken *before* the migration (forced `any` on every call means it can never stop
-calling tools). Full write-up, records, and the one we didn't run:
-[reports/fable-5-1-upgrade.md](reports/fable-5-1-upgrade.md).
-
-
-## Quickstart
-
-Sixty seconds, no API key — the built-in deterministic simulator runs the full pipeline:
+Python 3.12+ and an environment with [uv](https://docs.astral.sh/uv/) or pipx:
 
 ```bash
-uv tool install git+https://github.com/atilavahedian/upshift   # or: pipx install ...
+uv tool install git+https://github.com/Mechanism-world/upshift
+```
+
+```bash
+pipx install git+https://github.com/Mechanism-world/upshift
+```
+
+Verify: `upshift --version`. Nothing is installed globally beyond the `upshift` command; no
+daemon, no account, no telemetry.
+
+## Quick start
+
+Sixty seconds, no API key. The built-in deterministic simulator runs the whole pipeline:
+
+```bash
 upshift init my-agent
 upshift upgrade --agent my-agent --provider sim \
   --baseline-model sim-5.5 --candidate-model sim-5.6-sol --tag demo
 ```
 
 You'll watch a baseline run, a candidate run that regresses 36/38 cases, a repair loop that
-restores all of them, a **SAFE WITH PATCH** verdict, and a `git apply`-able patch — in about
-a second, for $0. (Simulator results validate the machinery, never a real model: every
-report is tagged with its provider, and sim evidence can't produce a real verdict.)
+restores all of them, a `SAFE WITH PATCH` verdict, and a patch — in about a second, for $0.
+(Simulator results validate the machinery, never a real model: every report is tagged with
+its provider, and sim evidence can never produce a real verdict.)
 
-For a real upgrade, put `OPENAI_API_KEY` in your environment (or a local `.env`), point
-upshift at your own agent directory (see [ADAPTER.md](ADAPTER.md)), and run:
+The Anthropic-shaped simulator (`sim-fable-5` → `sim-fable-5-1`) reproduces the documented
+Claude Fable 5.1 breaks the same way, for $0.
+
+### A real upgrade
+
+Point upshift at your own agent — generated by `adapt` or written by hand ([ADAPTER.md](ADAPTER.md)) —
+put the key in your environment or a local `.env`, and run:
 
 ```bash
+# OpenAI
 upshift upgrade --agent my-agent --flex \
   --baseline-model gpt-5.5 --candidate-model gpt-5.6-sol --tag my-upgrade
-```
 
-`--flex` uses OpenAI's flex service tier (~50% cheaper, stacks with prompt caching).
-Every case runs N=5 times per model; `upshift cost` prints the exact recorded spend.
-Runs are resumable — Ctrl-C exits immediately and a rerun picks up where it stopped.
-
-For a Claude agent (Anthropic Messages API), put `ANTHROPIC_API_KEY` in your environment
-and run the same command with the provider and the model pair swapped:
-
-```bash
+# Anthropic
 upshift upgrade --agent my-agent --provider anthropic \
   --baseline-model claude-fable-5 --candidate-model claude-fable-5-1 --tag my-upgrade
 ```
 
-The keyless simulator has Claude-shaped models too (`sim-fable-5` → `sim-fable-5-1`),
-which reproduce the documented 5.1 breaks so you can rehearse the pipeline for $0.
+`--flex` uses OpenAI's flex tier (~50% cheaper, stacks with prompt caching); the Anthropic
+path caches the prompt prefix automatically. `upshift cost` prints the exact recorded spend.
+Runs are resumable — Ctrl-C exits immediately and a rerun picks up where it stopped.
 
-## How it works (and why single runs lie)
-
-Detection tools tell you *that* an upgrade broke your agent. upshift is one step downstream:
-it tries to fix the break, and gives you the evidence either way.
-
-Anthropic ships an official migration skill (`/claude-api migrate` in Claude Code) that
-edits your code for a target model and "produces a checklist of items to verify manually."
-upshift is that verification: it runs your suite on both versions, proves each repair
-against it, and hands you the patch with the evidence — or tells you to stay pinned.
-
-- **N repetitions, never single runs.** Every case runs N times (default 5) against both
-  model versions. A case's outcome is its pass rate against fixed thresholds (≥ 0.8 PASS,
-  ≤ 0.4 FAIL, in between FLAKY) — because agents are stochastic and a single run of a
-  borderline case is a coin flip wearing a lab coat.
-- **Five labels, with p-values.** Each case is labeled stable-pass, stable-fail, regressed,
-  improved, or flaky, and every label ships with a one-sided Fisher exact test on the pass
-  counts so you can judge the strength of the evidence yourself. Suite-level rates carry
-  Wilson 95% intervals. Flaky is never silently promoted to regressed or improved.
-- **Deterministic checks only.** Pass/fail comes from tool-call assertions, final backend
-  state, and response content checks — no LLM judge in the loop, so the statistics mean
-  what they say.
-- **Repairs are screened, verified, and adjudicated.** A repair candidate (prompt edit,
-  model params, tool schema edit, or endpoint routing — nothing else) is first screened on
-  the broken cases, then verified on the FULL suite. It is accepted only if it restores at
-  least one broken case, breaks zero previously-passing cases, and relapses nothing an
-  earlier repair restored. Contested statuses are settled on 2N reps at unchanged
-  thresholds — symmetric for restorations and vetoes, because "never a single run" applies
-  to evidence *against* a patch too. We learned that the hard way: our first real run vetoed
-  every behavioral repair off single-sample flips of one borderline case (4/5, 3/5, 3/5,
-  4/5 across four runs, patch or no patch).
-- **No p-hacking by construction.** A candidate rejected on confirmed evidence is never
-  retried, and the playbook contains no repairs that dictate exact output phrasings —
-  restoring an eval by overfitting to its assertions would make the number a lie.
-- **Everything is recorded.** Every run writes its manifest, every API request and response
-  verbatim, every tool execution, every check result to `runs/<run_id>/`. Runs are
-  resumable; the records are the evidence behind the verdict, and this repo's own claims
-  are backed by its committed records.
-
-## Plugging in your agent
-
-Your agent is five files in a directory — an `agent.json`, the system prompt, the OpenAI
-tool schemas, a deterministic `backend.py` that executes tool calls locally, and your eval
-cases. The full contract is ~20 lines: [ADAPTER.md](ADAPTER.md).
-
-`upshift adapt` generates that directory from your agent's codebase:
+### Onboarding your agent in minutes
 
 ```bash
 upshift adapt https://github.com/you/your-agent --out my-agent --flex
 ```
 
-It reads the repo (statically ranked, AST-analyzed), uses the model as an extraction
-engine over cited evidence, and writes the five files plus an `ADAPT_REPORT.md` that says
-what was found, what was inferred, what it could not determine, and exactly which lines to
-review — with a `file:line` citation for everything. Confidence is earned mechanically: a
-claim marked *verbatim* must literally appear in the cited file or it is downgraded and
-flagged; text the model can't trace to source is omitted and reported, never written. On
-[shell_gpt](reports/adapt-shellgpt.md), the generated adapter ran the full upgrade
-pipeline with zero edits in under a minute for $0.09–0.15 of extraction; the honest range
-of outcomes across three real repos is in [the reports](reports/). Adapt is scaffolding,
-not magic — review the report before spending money on a run.
+`adapt` statically ranks the repo, uses the model as an extraction engine over cited
+evidence, verifies every *verbatim* claim against the cited file mechanically, and writes
+the five adapter files plus an `ADAPT_REPORT.md`: what it found, what it inferred, what it
+could not determine, and exactly which lines to review. Measured on real repos — from
+zero-edit on a simple agent to an honest refusal on schemas buried across files:
+[the adapt reports](reports/).
 
-Prefer to write the five files yourself? `upshift init` scaffolds a working example. No
-framework integrations — plain OpenAI chat-completions and responses agents only, by
-design.
+## What it has found so far
 
-## What leaves your machine: nothing
+Every number below is reproducible from the committed records with `upshift cost` and
+`upshift diff`.
 
-Your API key stays in your environment and is used only to call the OpenAI API directly.
-Your prompts, tool schemas, transcripts, and eval results are written to your local `runs/`
-directory and go nowhere else. There is no telemetry, no account, no server. Read the
-source — it fits in an afternoon.
+**OpenAI, gpt-5.5 → gpt-5.6-sol.** Our 38-case booking agent regressed 36/38 (the
+documented function-tools 400 on chat/completions, then behavioral regressions once that
+was routed around). Three stacked, full-suite-verified repairs restored 32/36 with zero
+confirmed collateral — and the verdict was still `STAY PINNED`, because the bar is *every*
+regression repaired. [Full accounting.](runs/real-56sol/REPORT.md) Then
+[shell_gpt](https://github.com/TheR1D/shell_gpt) (12k stars): 14/14 regressed on the same
+400 with no workaround in its config; one one-line endpoint repair restored 14/14 —
+`SAFE WITH PATCH`, $0.56. [Report](reports/shellgpt-upgrade.md) ·
+[upstream issue](https://github.com/TheR1D/shell_gpt/issues/801).
+
+**Anthropic, Claude Fable 5 → Fable 5.1, run on release day.** The cookbook SMS bot that
+forces `tool_choice: any` broke 5/5 cases on the documented 400 and was fully restored —
+drop the forced choice, add the documented instruction, one rung of effort —
+`SAFE WITH PATCH`, 0 broken, $0.93. A quickstarts agent built around parallel tool calls
+showed no regression at N=5. A third agent turned out to be broken *before* the
+migration. [Report](reports/fable-5-1-upgrade.md) · upstream issues
+[FACT#5](https://github.com/ruvnet/FACT/issues/5),
+[claude-cookbooks#854](https://github.com/anthropics/claude-cookbooks/issues/854).
+
+## How it fits together
+
+- **The adapter** (`agent.json`, system prompt, tool schemas, `backend.py`, `cases/`) — five
+  files that describe your agent to upshift. The repair loop may edit only the first three;
+  your backend and your cases are the yardstick and are never touched.
+- **The runner** executes every case N times per model and records everything: the manifest,
+  each API request and response verbatim, each tool execution, each check — under
+  `runs/<run_id>/`. Runs resume from disk.
+- **The differ** labels each case (stable-pass, stable-fail, regressed, improved, flaky) with a
+  Fisher exact p, and classifies failures into signatures that drive repair.
+- **The repair loop** screens a candidate on the broken cases, verifies it on the full suite,
+  adjudicates contested statuses on 2N reps, and stacks accepted repairs. Rejected on
+  confirmed evidence means never retried.
+- **The verdict** and the patch. `SAFE WITH PATCH` requires every regression restored and
+  nothing broken; anything less is `STAY PINNED` with the evidence attached.
+- **`adapt`** and the **simulators** get you to a first run without hand-writing the adapter
+  or spending money.
+
+Design decisions, in one file: [DESIGN.md](DESIGN.md). The adapter contract: [ADAPTER.md](ADAPTER.md).
+
+## Why single runs lie
+
+Agents are stochastic. A borderline case passing 4/5, 3/5, 3/5, 4/5 across four runs — with
+or without a patch — is what we measured on our first real run, and a single-sample rule
+would have vetoed every behavioral repair we had. upshift never decides on one run: outcomes
+are rates against fixed thresholds (≥ 0.8 pass, ≤ 0.4 fail, otherwise flaky), contested
+statuses get 2N reps at unchanged thresholds, symmetric for restorations and vetoes, and the
+playbook contains no repair that dictates exact output phrasings — restoring an eval by
+overfitting to its assertions would make the number a lie.
+
+Anthropic's official migration skill (`/claude-api migrate`) edits your code for a target
+model and "produces a checklist of items to verify manually." upshift is that verification:
+it runs your suite on both versions, proves each repair against it, and hands you the patch
+with the evidence — or tells you to stay pinned.
+
+## Security and privacy
+
+- **Nothing leaves your machine.** Your keys are read from your environment or a local `.env`
+  and used only to call the provider you chose. Prompts, transcripts, and results are written
+  to your local `runs/` directory. No telemetry, no account, no server.
+- **Run records contain your prompts and the models' outputs verbatim** — that is what makes
+  them evidence. Review them before publishing yours.
+- **Backends you run are executed.** The `backend.py` in an adapter is code; the shell_gpt
+  adapter runs model-generated commands inside Docker with `--network none`.
+- **`adapt` reads; it does not execute.** It reads a repository's files and sends cited slices
+  to the model you configured.
+- Vulnerability reports: see [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+| Goal | Start here |
+|---|---|
+| Describe your agent to upshift | [ADAPTER.md](ADAPTER.md) |
+| Understand every design decision and the statistics | [DESIGN.md](DESIGN.md) |
+| Read the migration evidence | [shell_gpt on gpt-5.6](reports/shellgpt-upgrade.md) · [four Claude agents on Fable 5.1](reports/fable-5-1-upgrade.md) |
+| See what `adapt` does on real repos | [adapt reports](reports/) |
+| What's out of scope, and why | [ROADMAP.md](ROADMAP.md) · [SCOPE.md](SCOPE.md) |
+| What changed | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Honest limits
 
-- Tested on two agents so far: our synthetic booking agent (the committed experiment above)
-  and one real open-source agent — [shell_gpt](https://github.com/TheR1D/shell_gpt), which
-  the same upgrade hard-breaks and a verified one-line patch fully repairs
-  (**SAFE WITH PATCH**, 14/14 restored, $0.56 of API spend:
-  [the report](reports/shellgpt-upgrade.md)). That is not a benchmark suite.
-- Two providers: OpenAI (chat/completions, responses) and Anthropic (messages). No Google,
-  no local models, no framework integrations (LangChain, crewAI, etc.) — see
-  [ROADMAP.md](ROADMAP.md).
-- What each repair type covers: **endpoint routing** (OpenAI chat→responses), **model
-  params** (effort calibration on each provider's ladder, removing forced `tool_choice`,
-  dropping unsupported sampling params), **prompt edits** (documented instruction blocks,
-  appended to the system prompt only — Anthropic's stronger per-turn placements are a
-  harness change we don't make), **tool schema edits** (one known tool shape). The
-  thinking-block invalidation break has no agent-file repair; upshift detects it and
-  refuses with the documented pointer.
-- Repairs are limited to prompt edits, model params, tool schema edits, and endpoint
-  routing. The tool-schema repair currently only fires for one known tool shape; foreign
-  agents effectively get three of the four repair types.
-- The eval cases are yours to write, and the verdict is only as good as they are. Brittle
-  assertions produce brittle verdicts — one of our own four unrestored cases was exactly
-  that, and we say so in the report.
-- Backends must be deterministic; upshift documents this requirement but cannot yet detect
-  a nondeterministic backend — it will just surface as flakiness.
-- `upshift adapt` spans a spectrum we measured on three real repos and wrote up honestly:
-  a simple hand-rolled agent (shell_gpt) came out pipeline-ready with zero edits; a
-  framework-assembled monorepo (HolmesGPT) got runnable scaffolding but its jinja2 prompt
-  had to be flagged "write it by hand"; an agent whose tool schemas hide in function
-  docstrings across files (ChatDBG) defeated extraction — the output says so and points at
-  the right files instead of inventing schemas. Tools that touch the world (shell, network,
-  clusters) always become TODO stubs: writing their deterministic backend stays human work.
-- Adapt's extraction is itself a model call: results vary run to run, and the generated
-  eval cases are drafts to rewrite, not a suite to trust.
-- `adapt` does not yet chase identifiers across files (schemas defined far from where they
-  are registered), and it reads notebooks as rendered cell text — cite lines accordingly.
-- The statistics are honest but small-N: N=5 with Fisher exact tests tells you a 5/5 → 0/5
-  collapse is real (p ≈ 0.004); it will not resolve subtle single-case effects. Raise N if
-  you need more power and can pay for it.
+- Tested on our synthetic agent and a handful of open-source agents (one on OpenAI, four on
+  Anthropic). That is evidence, not a benchmark suite.
+- Two providers, plain API agents only — no Google, no local models, no framework
+  integrations ([ROADMAP.md](ROADMAP.md)).
+- Repairs are limited to prompts, params, tool schemas, and endpoint routing. Anthropic's
+  thinking-block invalidation is detected and refused with the documented pointer, not
+  repaired. The tool-schema repair covers one known tool shape.
+- Tools that touch the world (shell, network, clusters) need a human-written deterministic
+  backend; `adapt` stubs them with a TODO. Its generated eval cases are drafts.
+- `adapt` doesn't yet chase identifiers across files, and reads notebooks as rendered cell
+  text (cite lines accordingly).
+- N=5 with Fisher exact tests tells you a 5/5 → 0/5 collapse is real (p ≈ 0.004). It will not
+  resolve subtle single-case effects, and a clean result on one agent is not proof that a
+  documented shift doesn't exist. Raise N if you need more power and can pay for it.
 
 ## Development
 
 ```bash
-uv sync && uv run pytest -q && uv run ruff check src tests
+git clone https://github.com/Mechanism-world/upshift && cd upshift
+uv sync --group dev
+uv run ruff check src tests && uv run pytest -q
 ```
 
-macOS note: uv's editable-install `.pth` file sometimes gets the `UF_HIDDEN` flag, which
-makes CPython skip it (`import upshift` fails from `uv run upshift`). Tests self-heal via
-`tests/conftest.py`; for the CLI entry point run
-`chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
+macOS note: uv's editable-install `.pth` file sometimes gets the `UF_HIDDEN` flag and CPython
+skips it; tests self-heal via `tests/conftest.py`, and for the CLI entry point run
+`chflags nohidden .venv/lib/python3.12/site-packages/*.pth`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Elsewhere
+## Community
 
-Project site: [mechanism.world](https://mechanism.world). The two migration reports are
-standalone pages in this repo: [gpt-5.5 → gpt-5.6-sol on shell_gpt](reports/shellgpt-upgrade.md)
-and [Claude Fable 5 → 5.1 on four open-source agents](reports/fable-5-1-upgrade.md).
+- **The ask:** if you run a tool-calling agent, point `upshift adapt` at it and tell us what it
+  got wrong — [open an agent report](https://github.com/Mechanism-world/upshift/issues/new/choose).
+  Nothing leaves your machine.
+- Questions and ideas: [Discussions](https://github.com/Mechanism-world/upshift/discussions).
+- Bugs: [Issues](https://github.com/Mechanism-world/upshift/issues).
+- Project site: [mechanism.world](https://mechanism.world).
+
+upshift is built by [Mechanism.world](https://github.com/Mechanism-world) and released under
+the MIT License. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+
+## Contributors
+
+<a href="https://github.com/Mechanism-world/upshift/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Mechanism-world/upshift" alt="contributors">
+</a>
 
 ## License
 
-MIT.
+[MIT](LICENSE). This repository includes material derived from third-party projects under
+their own licenses and quotes provider documentation for interoperability — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). OpenAI, GPT, Anthropic, and Claude are
+trademarks of their respective owners; upshift is not affiliated with or endorsed by either.
