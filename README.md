@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://mechanism.world"><img src="docs/assets/upshift-banner.svg" alt="upshift — test whether a model upgrade breaks your agent, then fix it or prove you should stay pinned" width="100%"></a>
+  <a href="https://mechanism.world"><img src="docs/assets/hero-v2.svg" alt="upshift — test whether a model upgrade breaks your agent, then fix it or prove you should stay pinned" width="100%"></a>
 </p>
 
 <p align="center">
