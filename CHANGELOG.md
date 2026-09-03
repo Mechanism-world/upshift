@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 — 2026-09-03
 
 Pre-launch security pass over `adapt`, the runs root and the shell sandbox. Hostile input
 here means a repository you point `upshift adapt` at, and the model output it steers.
