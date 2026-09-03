@@ -17,6 +17,7 @@ Rules this module obeys, in order:
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -82,6 +83,31 @@ def slugify(text: str, fallback: str = "adapted-agent") -> str:
     and `todo_add_one` should stay `todo_add_one`."""
     slug = re.sub(r"[^a-z0-9_]+", "-", str(text or "").lower()).strip("-_")
     return slug or fallback
+
+
+#: Template placeholders, so a value substituted earlier cannot contain a later one.
+_PLACEHOLDERS = ("__ORIGIN__", "__COMMIT__", "__PROVENANCE__", "__TOOL_SPECS__")
+
+
+def docstring_safe(text: str) -> str:
+    """Text that is safe to paste inside a `'''...'''` module docstring.
+
+    Everything interpolated into `backend.py`'s header comes from outside: the origin is a
+    CLI argument, the provenance lines carry model-written tool names and citations, and the
+    model read a repository that may have been trying to get code into this file. A `'''`
+    (or a trailing backslash, or a stray placeholder) in any of them would end the docstring
+    and turn whatever follows into statements in a file `upshift upgrade` imports and runs.
+
+    Quotes are neutralised rather than dropped so the text stays readable, and control
+    characters other than tab go, so nothing can hide from a reviewer's eye.
+    """
+    out = str(text or "")
+    out = out.replace("\\", "/")  # no trailing backslash can escape the closing quotes
+    out = out.replace("'''", "'’'").replace('"""', '"”"')
+    for placeholder in _PLACEHOLDERS:
+        out = out.replace(placeholder, placeholder.replace("__", "_ _"))
+    out = "".join(ch if ch == "\t" or ch >= " " else " " for ch in out.replace("\n", " "))
+    return out
 
 
 def _locate(text: str, needle: str) -> str:
@@ -416,12 +442,35 @@ def build_backend(
                            "reason": reason})
 
     source = (
-        BACKEND_TEMPLATE.replace("__ORIGIN__", origin)
-        .replace("__COMMIT__", commit or "(not a git checkout)")
-        .replace("__PROVENANCE__", "\n".join(provenance_lines) or "  (none)")
+        BACKEND_TEMPLATE.replace("__ORIGIN__", docstring_safe(origin))
+        .replace("__COMMIT__", docstring_safe(commit or "(not a git checkout)"))
+        .replace(
+            "__PROVENANCE__",
+            "\n".join(docstring_safe(line) for line in provenance_lines) or "  (none)",
+        )
+        # json.dumps, never raw: every string here is escaped, so a tool name or citation
+        # cannot close the literal it sits in.
         .replace("__TOOL_SPECS__", json.dumps(specs, indent=4, sort_keys=True))
     )
+    if not _parses(source):
+        # Belt and braces: `docstring_safe` is what makes this impossible, so reaching here
+        # is a bug in it. Emit a file that is still valid Python rather than one that runs
+        # something the target repository chose.
+        source = (
+            BACKEND_TEMPLATE.replace("__ORIGIN__", "(omitted: unrenderable)")
+            .replace("__COMMIT__", "(omitted: unrenderable)")
+            .replace("__PROVENANCE__", "  (omitted: unrenderable — see PROVENANCE.json)")
+            .replace("__TOOL_SPECS__", json.dumps(specs, indent=4, sort_keys=True))
+        )
     return source, implemented, stubs, provenance
+
+
+def _parses(source: str) -> bool:
+    try:
+        ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

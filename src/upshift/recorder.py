@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,31 @@ DEFAULT_RUNS_ROOT = "runs"
 THRESHOLDS = {"pass": 0.8, "fail": 0.4}
 
 
+#: A run id and a case id both become one directory name under the runs root. Neither may
+#: contain a path separator or be a `..` hop: `--tag` is a CLI argument and a case id comes
+#: out of a `cases.json` that `upshift adapt` may have drafted from a repository nobody
+#: audited, and the repair loop `rmtree`s the run directory it is handed. Everything upshift
+#: writes stays under the runs root, and this is what makes that true.
+_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def safe_component(value: str, what: str) -> str:
+    """`value` if it is usable as a single directory name, else ValueError."""
+    text = str(value)
+    if not _SAFE_COMPONENT_RE.fullmatch(text) or ".." in text:
+        raise ValueError(
+            f"invalid {what} {value!r}: use letters, digits, '.', '_' and '-' only "
+            f"(it names a directory under the runs root)"
+        )
+    return text
+
+
 def run_dir(runs_root: str | Path, run_id: str) -> Path:
-    return Path(runs_root) / run_id
+    return Path(runs_root) / safe_component(run_id, "run id")
 
 
 def rep_path(run_directory: Path, case_id: str, rep: int) -> Path:
-    return run_directory / "cases" / case_id / f"rep_{rep:02d}.json"
+    return run_directory / "cases" / safe_component(case_id, "case id") / f"rep_{rep:02d}.json"
 
 
 def write_manifest(

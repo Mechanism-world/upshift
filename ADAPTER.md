@@ -1,10 +1,10 @@
 # ADAPTER.md — running upshift on your own agent
 
-upshift v1 evaluates **plain OpenAI API agents**: one system prompt, a list of function tools,
-and a tool-calling loop over `/v1/chat/completions` or `/v1/responses`. No framework
-integrations (LangChain, CrewAI, Agents SDK, …), no other model providers, no streaming, no
-multi-agent graphs (SCOPE.md). If your agent is not expressible as the five files below,
-upshift cannot run it — that is a scope decision, not an oversight.
+upshift evaluates **plain API agents**: one system prompt, a list of function tools, and a
+tool-calling loop over OpenAI's `/v1/chat/completions` or `/v1/responses`, or Anthropic's
+`/v1/messages`. No framework integrations (LangChain, CrewAI, Agents SDK, …), no other model
+providers, no streaming, no multi-agent graphs (SCOPE.md). If your agent is not expressible
+as the five files below, upshift cannot run it — that is a scope decision, not an oversight.
 
 ```
 my_agent/
@@ -21,10 +21,11 @@ my_agent/
 ## The contract
 
 1. **agent.json** requires `name`, `endpoint`, `model`, `system_prompt_file`, `tools_file`.
-   `endpoint` is `"chat_completions"` or `"responses"`. `params` is passed to the API verbatim
-   (`reasoning_effort` is mapped to `reasoning.effort` on `/v1/responses`); `max_turns` caps
-   assistant turns per episode (default 12). `tools.json` is chat-style even for `responses` —
-   upshift converts it.
+   `endpoint` is `"chat_completions"`, `"responses"` (OpenAI) or `"messages"` (Anthropic).
+   `params` is passed to the API verbatim (`reasoning_effort` is mapped to `reasoning.effort`
+   on `/v1/responses` and to `output_config.effort` on `/v1/messages`); `max_turns` caps
+   assistant turns per episode (default 12). `tools.json` is chat-style on every endpoint —
+   upshift converts it for `responses` and `messages`.
 2. **backend.py** must expose `create_backend(initial_state: dict) -> Backend`, called once per
    episode with the case's `initial_state`.
    - `Backend.execute(name: str, arguments: dict) -> dict` runs one tool call and **never
@@ -67,10 +68,10 @@ the sim provider — never by checks.
 | `tool_called {name, min_times=1, max_times?, args_subset?, exact_args?, retrieval?}` | The named tool ran within the count bounds, and (if given) at least one call's arguments contained `args_subset` / equalled `exact_args`. `retrieval: true` marks the tool as a retrieval tool; it changes **nothing** about pass/fail and is read only by the differ, which uses it to report a dropped retrieval call as `reduced_retrieval_calls` instead of a generic missing call. |
 | `tool_not_called {name}` | The named tool never ran. |
 | `state_count {path, equals, where?}` | Entries at `path` in the final state (a list, or an object's values) matching every key/value in `where` number exactly `equals`. |
-| `bookings_count {equals}` | Victim-flavored alias of `state_count {path: "bookings", where: {"status": "confirmed"}}`. Kept for the committed booking suite; write `state_count` instead. |
+| `bookings_count {equals}` | Booking-flavored alias of `state_count {path: "bookings", where: {"status": "confirmed"}}`. Kept for the committed booking suite; write `state_count` instead. |
 | `final_state {path, equals}` | Dot/bracket path into the final state (`tasks[0].status`) equals a value. |
 | `no_tool_calls_after_success {name}` | Over-acting detector: within the final user segment, no tool call of any kind happens after `name` first succeeds. |
-| `confirmation_id_valid {pattern?, state_path?, id_field?, known_from?}` | Id-fabrication detector: every identifier matching `pattern` in the final assistant message must be real. Defaults `pattern` `UPS-\d+`, `state_path` `bookings`, `id_field` `booking_id`, `known_from` `state`. Known ids are an object's keys plus each entry's `id_field`; `known_from` may be `state`, `tool_results` (ids some tool actually returned this episode) or `both`. Pass your own `pattern` — the default is the victim's format. |
+| `confirmation_id_valid {pattern?, state_path?, id_field?, known_from?}` | Id-fabrication detector: every identifier matching `pattern` in the final assistant message must be real. Defaults `pattern` `UPS-\d+`, `state_path` `bookings`, `id_field` `booking_id`, `known_from` `state`. Known ids are an object's keys plus each entry's `id_field`; `known_from` may be `state`, `tool_results` (ids some tool actually returned this episode) or `both`. Pass your own `pattern` — the default is the packaged example booking agent's format. |
 | `response_contains {text}` / `response_not_contains {text}` | Case-insensitive substring of the final assistant message. |
 | `response_matches {regex}` | `DOTALL`+`IGNORECASE` regex search on the final assistant message. |
 | `turns_at_most {n}` | Efficiency contract: the episode used at most `n` assistant turns. Turns are counted as the number of **distinct `turn` values across the episode's tool executions** (every assistant turn that issued at least one tool call) **plus one** for the final assistant turn, which answers and calls nothing — so an episode with no tool calls is 1 turn. In a multi-segment case an intermediate answer turn is counted only when it also called a tool. Wall time is never asserted. |

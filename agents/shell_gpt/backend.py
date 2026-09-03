@@ -7,6 +7,7 @@ cannot do that: it would be neither safe nor deterministic. So the command runs 
 throwaway container over a per-episode file tree instead::
 
     docker run --rm --network none --hostname shellbox --pids-limit 512 \\
+        --memory 512m --security-opt no-new-privileges \\
         -v <tmpdir>:/work -w /work -e TZ=UTC -e LC_ALL=C \\
         upshift-shellbox:latest bash -c <command>
 
@@ -82,6 +83,14 @@ TEXT_MANIFEST_MAX_BYTES = 200
 #: would be a source of nondeterminism.
 HOSTNAME = "shellbox"
 
+#: Memory ceiling for one command. `--pids-limit` bounds fork bombs; this bounds the other
+#: half of the same problem — a command that allocates until the *host* starts swapping.
+#: The container's OOM killer stops it instead, and the model sees the resulting exit code
+#: like any other failure. Deliberately not swap-limited: `--memory-swap` makes Docker print
+#: a kernel-support warning on some hosts, and that warning would land in the model's output
+#: and make the transcript host-dependent.
+MEMORY_LIMIT = "512m"
+
 _DOCKER = os.environ.get("UPSHIFT_SHELLBOX_DOCKER", "docker")
 
 
@@ -156,7 +165,7 @@ class Backend:
         if candidate.is_absolute() or ".." in candidate.parts:
             raise ValueError(f"initial_state path must stay inside the tree: {relpath!r}")
         target = (self.root / candidate).resolve()
-        if not str(target).startswith(str(self.root.resolve())):
+        if not target.is_relative_to(self.root.resolve()):
             raise ValueError(f"initial_state path must stay inside the tree: {relpath!r}")
         return target
 
@@ -184,6 +193,10 @@ class Backend:
             HOSTNAME,
             "--pids-limit",
             "512",
+            "--memory",
+            MEMORY_LIMIT,
+            "--security-opt",
+            "no-new-privileges",
             "-v",
             f"{self.root}:/work",
             "-w",

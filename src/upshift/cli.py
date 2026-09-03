@@ -46,6 +46,9 @@ SIM_FABLE_BASELINE_MODEL = "sim-fable-5"
 SIM_FABLE_CANDIDATE_MODEL = "sim-fable-5-1"
 _SIM_MODEL_PREFIXES = ("sim-5.5", "sim-5.6", "sim-fable-5")
 
+#: Doc links printed to users, who often installed via pipx and have no repo checkout.
+ADAPTER_URL = "https://github.com/Mechanism-world/upshift/blob/main/ADAPTER.md"
+
 PROVIDERS = ["openai", "anthropic", "sim"]
 #: model-id prefix -> the only provider that serves it
 _MODEL_PROVIDER_PREFIXES = {"gpt-": "openai", "claude-": "anthropic"}
@@ -71,7 +74,11 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="agent directory (default: auto-detected in the current directory; "
         "`upshift init <dir>` creates one)",
     )
-    p.add_argument("--provider", default="openai", choices=list(PROVIDERS))
+    p.add_argument(
+        "--provider", default="openai", choices=list(PROVIDERS),
+        help="which API to call: openai, anthropic, or sim (the free, keyless, "
+        "deterministic simulator). Default openai.",
+    )
     tier = p.add_mutually_exclusive_group()
     tier.add_argument(
         "--batch",
@@ -87,8 +94,15 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         "valid with --provider openai.",
     )
     p.add_argument("--n", type=int, default=5, help="reps per case (default 5)")
-    p.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument(
+        "--runs-root", default=recorder.DEFAULT_RUNS_ROOT,
+        help=f"directory run records are written to and resumed from (default "
+        f"{recorder.DEFAULT_RUNS_ROOT}); must be outside the agent directory",
+    )
+    p.add_argument(
+        "--workers", type=int, default=4,
+        help="reps executed concurrently (default 4)",
+    )
     p.add_argument("--quiet", action="store_true", help="no per-rep progress lines")
 
 
@@ -99,16 +113,23 @@ def _make_provider(args):
             f"--batch/--flex are only valid with --provider openai (got "
             f"--provider {args.provider}); Anthropic has no batch or flex tier here"
         )
+    # `adapt` has no --provider flag and no simulator, so pointing it at --provider sim
+    # would be advice the reader cannot follow.
+    sim_hint = (
+        ", or use --provider sim for a free, deterministic run"
+        if getattr(args, "command", None) != "adapt"
+        else " — `adapt` always calls a real model (there is no simulator for it)"
+    )
     if args.provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
         # Without this the run would "succeed" with every rep recording an auth error.
         raise ValueError(
             "OPENAI_API_KEY is not set — export it (upshift also reads a .env file in the "
-            "current directory), or use --provider sim for a free, deterministic run"
+            "current directory)" + sim_hint
         )
     if args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
         raise ValueError(
             "ANTHROPIC_API_KEY is not set — export it (upshift also reads a .env file in the "
-            "current directory), or use --provider sim for a free, deterministic run"
+            "current directory)" + sim_hint
         )
     if batch:
         return get_provider("openai-batch")
@@ -184,7 +205,7 @@ def validate_agent_dir(agent_dir: Path) -> dict:
         raise ValueError(
             f"{config_path} not found — {agent_dir} is not an upshift agent directory "
             f"(needs agent.json, system_prompt.txt, tools.json, backend.py, cases/cases.json; "
-            f"see ADAPTER.md). Run `upshift init <dir>` to create one."
+            f"the contract is at {ADAPTER_URL}). Run `upshift init <dir>` to create one."
         )
     raw = _read_json(config_path)
     if not isinstance(raw, dict):
@@ -420,9 +441,10 @@ def cmd_init(args) -> int:
         soft_wrap=True,
     )
     console.print(
-        "[dim]to point upshift at your own agent, rebuild these five files for it — "
-        "ADAPTER.md has the contract, and `upshift adapt <repo> --out <dir>` drafts them "
-        "from an existing codebase.[/dim]"
+        "[dim]to point upshift at your own agent, rebuild these five files for it — the "
+        f"contract is at {ADAPTER_URL}, and `upshift adapt <repo> --out <dir>` drafts "
+        f"them from an existing codebase.[/dim]",
+        soft_wrap=True,
     )
     return 0
 
@@ -630,6 +652,8 @@ def cmd_run(args) -> int:
 
     _positive(args.n, "--n")
     _positive(args.workers, "--workers")
+    # A run id names a directory under the runs root; refuse a path before any work happens.
+    recorder.safe_component(args.run_id, "run id")
     provider = _make_provider(args)
     agent_dir, raw_config = resolve_agent_dir(args.agent, args.runs_root)
     model = args.model or str(raw_config["model"])
@@ -677,6 +701,14 @@ def cmd_upgrade(args) -> int:
 
     _positive(args.n, "--n")
     _positive(args.workers, "--workers")
+    if args.budget < 1:
+        raise ValueError(
+            f"--budget must be at least 1 (got {args.budget}); pass --no-repair to skip the "
+            f"repair loop entirely"
+        )
+    # Every run id in this pipeline is derived from --tag, and one of the directories it
+    # names is rewritten by the repair loop: check it before the first run starts.
+    recorder.safe_component(args.tag, "tag")
     provider = _make_provider(args)
     agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
     _check_models(args.provider, [args.baseline_model, args.candidate_model])
@@ -791,6 +823,7 @@ def cmd_cost(args) -> int:
             f"in {c['input_tokens']:>9,} ({cache_note})  "
             f"out {c['output_tokens']:>8,}  {usd}",
             highlight=False,
+            soft_wrap=True,
         )
         if c["provider"] != "sim":
             total_in += c["input_tokens"]
@@ -803,6 +836,7 @@ def cmd_cost(args) -> int:
         f"{'TOTAL (real API)':<28} {'':<13} {'':<24} in {total_in:>9,}  out {total_out:>8,}  "
         + (f"${total_usd:.4f}" + (" + unknown-rate runs" if any_unknown else "")),
         highlight=False,
+        soft_wrap=True,
     )
     return 0
 
@@ -910,45 +944,77 @@ def main(argv: list[str] | None = None) -> int:
         help=f"abort with a partial report rather than exceed this (default "
         f"{ADAPT_DEFAULT_MAX_COST:.2f})",
     )
-    p_adapt.add_argument("--max-files", type=int, default=15, help="files ranked into the evidence")
+    p_adapt.add_argument(
+        "--max-files", type=int, default=15,
+        help="how many of the highest-ranked files are sent as evidence (default 15)",
+    )
     p_adapt.add_argument(
         "--max-evidence-tokens", type=int, default=120_000,
         help="hard cap on evidence sent to the model (estimated as len/4)",
     )
-    p_adapt.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
+    p_adapt.add_argument(
+        "--runs-root", default=recorder.DEFAULT_RUNS_ROOT,
+        help=f"directory the extraction call is recorded in "
+        f"(default {recorder.DEFAULT_RUNS_ROOT})",
+    )
     p_adapt.set_defaults(func=cmd_adapt, provider="openai", batch=False)
 
     p_run = sub.add_parser("run", help="run the eval suite against one model/config")
     _add_common_run_args(p_run)
-    p_run.add_argument("--run-id", required=True)
+    p_run.add_argument(
+        "--run-id", required=True,
+        help="name for this run; it is the directory under --runs-root and what "
+        "`upshift diff` and `upshift cost` take",
+    )
     p_run.add_argument("--model", default=None, help="override agent.json model")
-    p_run.add_argument("--endpoint", default=None, choices=list(ENDPOINTS))
+    p_run.add_argument(
+        "--endpoint", default=None, choices=list(ENDPOINTS),
+        help="override agent.json endpoint",
+    )
     p_run.add_argument("--case", action="append", help="run only these case ids (repeatable)")
-    p_run.add_argument("--notes", default="")
+    p_run.add_argument("--notes", default="", help="free text stored in the run manifest")
     p_run.set_defaults(func=cmd_run)
 
     p_diff = sub.add_parser("diff", help="compare two recorded runs")
-    p_diff.add_argument("baseline")
-    p_diff.add_argument("candidate")
-    p_diff.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
+    p_diff.add_argument("baseline", help="run id of the baseline run")
+    p_diff.add_argument("candidate", help="run id of the candidate run")
+    p_diff.add_argument(
+        "--runs-root", default=recorder.DEFAULT_RUNS_ROOT,
+        help=f"directory both runs were recorded in "
+        f"(default {recorder.DEFAULT_RUNS_ROOT})",
+    )
     p_diff.set_defaults(func=cmd_diff)
 
     p_up = sub.add_parser("upgrade", help="full pipeline: run both models, diff, repair, verdict")
     _add_common_run_args(p_up)
-    p_up.add_argument("--baseline-model", required=True)
-    p_up.add_argument("--candidate-model", required=True)
+    p_up.add_argument(
+        "--baseline-model", required=True, help="model version you run in production today"
+    )
+    p_up.add_argument(
+        "--candidate-model", required=True, help="model version you want to upgrade to"
+    )
     p_up.add_argument("--tag", required=True, help="name for this upgrade experiment")
     p_up.add_argument("--budget", type=int, default=6, help="max repair candidates (default 6)")
-    p_up.add_argument("--no-repair", action="store_true")
+    p_up.add_argument(
+        "--no-repair", action="store_true",
+        help="stop after the behavioral diff; do not try to repair the regressions",
+    )
     p_up.set_defaults(func=cmd_upgrade)
 
     p_cost = sub.add_parser("cost", help="exact token cost of recorded runs")
     p_cost.add_argument("run_ids", nargs="*", help="run ids; default: every run on disk")
-    p_cost.add_argument("--runs-root", default=recorder.DEFAULT_RUNS_ROOT)
+    p_cost.add_argument(
+        "--runs-root", default=recorder.DEFAULT_RUNS_ROOT,
+        help=f"directory the runs were recorded in "
+        f"(default {recorder.DEFAULT_RUNS_ROOT})",
+    )
     p_cost.set_defaults(func=cmd_cost)
 
     p_rep = sub.add_parser("report", help="re-render a saved diff")
-    p_rep.add_argument("diff_json")
+    p_rep.add_argument(
+        "diff_json",
+        help="path to a saved diff: runs/<tag>/diff.json or runs/diffs/<a>__<b>.json",
+    )
     p_rep.set_defaults(func=cmd_report)
 
     args = parser.parse_args(argv)

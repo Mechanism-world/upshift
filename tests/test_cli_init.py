@@ -265,9 +265,64 @@ def test_zero_reps_is_rejected(tmp_path, monkeypatch, agent, capsys):
     assert "--n must be at least 1" in flat(capsys)
 
 
+def test_nonpositive_repair_budget_is_rejected_before_any_run(
+    tmp_path, monkeypatch, agent, capsys
+):
+    """A negative --budget used to run the whole (paid) pipeline and then repair nothing."""
+    monkeypatch.chdir(tmp_path)
+    code = cli.main(
+        [
+            "upgrade", "--agent", str(agent), "--provider", "sim",
+            "--baseline-model", cli.SIM_BASELINE_MODEL,
+            "--candidate-model", cli.SIM_CANDIDATE_MODEL,
+            "--tag", "t", "--budget", "-1",
+        ]
+    )
+    assert code == 2
+    out = flat(capsys)
+    assert "--budget must be at least 1" in out and "--no-repair" in out
+    assert not (tmp_path / "runs").exists()
+
+
+def test_adapt_without_a_key_does_not_advise_a_provider_flag_it_lacks(
+    tmp_path, monkeypatch, capsys
+):
+    """`adapt` has no --provider and no simulator; the key error must not point at one."""
+    monkeypatch.chdir(tmp_path)  # away from any .env
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    code = cli.main(["adapt", str(tmp_path), "--out", str(tmp_path / "out")])
+    assert code == 2
+    out = flat(capsys)
+    assert "OPENAI_API_KEY" in out
+    assert "--provider sim" not in out
+    assert not (tmp_path / "out").exists()
+
+
 # ---------------------------------------------------------------------------
 # main(): every exception the CLI can see becomes a message, never a traceback
 # ---------------------------------------------------------------------------
+
+
+def test_every_flag_and_positional_documents_itself(capsys):
+    """`--help` is the whole manual for a stranger; a bare `--runs-root RUNS_ROOT` is not one."""
+    for sub in ("init", "adapt", "run", "diff", "upgrade", "cost", "report"):
+        with pytest.raises(SystemExit):
+            cli.main([sub, "--help"])
+        # NOT flat(): this needs argparse's line structure, one entry per line.
+        lines = capsys.readouterr().out.splitlines()
+        undocumented = []
+        for i, line in enumerate(lines):
+            # an entry line: two spaces of indent, then the flag/positional and its metavar
+            if not (line.startswith("  ") and not line.startswith("    ") and line.strip()):
+                continue
+            if len(line.split()) > 2 or line.strip().startswith("-h"):
+                continue  # the description shares the line, or it is argparse's own --help
+            # argparse wraps a long flag: the description lands on the next, deeper-indented
+            # line. Nothing there means the flag ships without one.
+            following = lines[i + 1] if i + 1 < len(lines) else ""
+            if not (following.startswith("        ") and following.strip()):
+                undocumented.append(line.split()[0])
+        assert not undocumented, f"{sub}: undocumented {undocumented}"
 
 
 def test_bare_invocation_prints_help_and_the_starting_command(capsys):

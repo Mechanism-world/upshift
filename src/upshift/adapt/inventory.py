@@ -288,6 +288,31 @@ def is_git_url(source: str) -> bool:
     return s.endswith(".git") and "/" in s
 
 
+def check_clone_url(url: str) -> None:
+    """Raise unless `url` is a clone URL git will treat as a URL and not as an option.
+
+    A source that starts with `-` is argument injection, not a repository: `git clone` would
+    parse `--upload-pack=…` / `--separate-git-dir=…` as its own flag. The scheme allowlist is
+    the same one `is_git_url` recognises, plus the `.git`-suffixed forms scp-style remotes
+    take; anything else is either a local path (handled without git) or not ours to run.
+    """
+    candidate = str(url or "").strip()
+    if not candidate:
+        raise ValueError("empty clone URL")
+    if candidate.startswith("-"):
+        raise ValueError(
+            f"refusing to clone {candidate!r}: a source starting with '-' would be read by "
+            f"git as an option, not a URL"
+        )
+    if not GIT_URL_RE.match(candidate) and not candidate.endswith(".git"):
+        raise ValueError(
+            f"refusing to clone {candidate!r}: expected https://, git://, ssh:// or git@ "
+            f"(or a path ending in .git)"
+        )
+    if "\n" in candidate or "\r" in candidate or "\x00" in candidate:
+        raise ValueError(f"refusing to clone {candidate!r}: URL contains a control character")
+
+
 def _git(
     args: list[str], cwd: Path | None = None, timeout: int = 300
 ) -> subprocess.CompletedProcess:
@@ -304,8 +329,17 @@ def _git(
 
 
 def _default_clone(url: str, dest: Path) -> str | None:
-    """Shallow-clone `url` into `dest`; returns the resolved commit sha."""
-    result = _git(["clone", "--depth", "1", url, str(dest)])
+    """Shallow-clone `url` into `dest`; returns the resolved commit sha.
+
+    `--depth 1` does not run the remote repository's hooks and does not initialise its
+    submodules, and no other git subcommand runs against the clone (only `rev-parse HEAD`),
+    so nothing in a hostile repository is executed by cloning it.
+    """
+    check_clone_url(url)
+    # `--` terminates option parsing: without it a "URL" like `--upload-pack=…` would be
+    # read by git as one of its own flags. `check_clone_url` refuses those too; both guards
+    # stay, because either one alone is a single point of failure.
+    result = _git(["clone", "--depth", "1", "--", url, str(dest)])
     if result.returncode != 0:
         tail = (result.stderr or result.stdout or "").strip().splitlines()
         detail = tail[-1] if tail else f"git exited {result.returncode}"
@@ -334,6 +368,7 @@ def resolve_source(
     function that copies a local fixture and returns a fake sha).
     """
     if is_git_url(source):
+        check_clone_url(source)
         dest = Path(workdir) / "clone"
         clone = clone_fn or _default_clone
         commit = clone(source, dest)
@@ -366,13 +401,34 @@ def readable_source(path: Path) -> bool:
         return False
 
 
+def inside_root(path: Path, root: Path) -> bool:
+    """Whether `path` really lives under `root` once every symlink is followed.
+
+    The target repository is untrusted input: a checked-in symlink named `config.py` that
+    points at `~/.ssh/id_rsa` or `/etc/passwd` would otherwise be read and sent to the model
+    as evidence. Anything whose resolved path leaves the repo is not repository source.
+    """
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except OSError:  # broken link, permission denied, resolution loop
+        return False
+
+
 def walk_repo(root: Path) -> list[Path]:
-    """Every candidate text file, sorted, vendored/build directories skipped."""
+    """Every candidate text file, sorted, vendored/build directories skipped.
+
+    Symlinks that leave the repository are skipped — see `inside_root`. A symlink pointing
+    *within* the repo is kept: it names source the repo itself contains.
+    """
     found: list[Path] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
         if any(part in SKIP_DIRS for part in path.relative_to(root).parts[:-1]):
+            continue
+        # Every path, not just `path.is_symlink()`: a symlinked *directory* would escape the
+        # same way, and whether `rglob` descends into one is a Python-version detail.
+        if not inside_root(path, root):
             continue
         if readable_source(path):
             found.append(path)
@@ -484,13 +540,23 @@ def _dotted(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
+#: A keyword argument's rendered value is evidence, not data: past this it is a hostile
+#: literal, and the slice it lands in has a token budget to respect.
+MAX_KWARG_CHARS = 4_000
+
+
 def _kwarg_source(node: ast.AST, text: str) -> str:
     try:
         value = ast.literal_eval(node)
-    except (ValueError, SyntaxError):
+        rendered = repr(value)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        # ValueError also covers CPython's int -> str digit limit, which `repr` raises on a
+        # huge hex literal in the target repo: a file we merely read must never abort adapt.
         segment = ast.get_source_segment(text, node)
-        return (segment or "<expr>").strip()
-    return repr(value)
+        rendered = (segment or "<expr>").strip()
+    if len(rendered) > MAX_KWARG_CHARS:
+        rendered = rendered[:MAX_KWARG_CHARS] + "…<truncated>"
+    return rendered
 
 
 def analyze_python(
