@@ -21,7 +21,7 @@ and [migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migra
   `remove-forced-tool-choice` (removes the param, appends the instruction-based
   equivalent).
 - **Thinking blocks bind to the conversation.** Editing anything before a 5.1 thinking
-  block invalidates it: 400 `Invalid \`signature\` in \`thinking\` block…`. Earlier models
+  block invalidates it: 400 ``Invalid `signature` in `thinking` block…``. Earlier models
   can't read 5.1 thinking blocks. upshift: signature `thinking_block_invalid`; no
   agent-file repair exists, so the loop refuses with the documented pointer (strip the
   invalidated run, or `prefix_mismatch_behavior: "drop_block"` under the

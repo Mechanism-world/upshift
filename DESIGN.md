@@ -44,7 +44,7 @@ confirmation IDs of the form `UPS-<seq>` deterministically. The agent's entire u
 surface lives in three files (agent.json / system_prompt.txt / tools.json) so every repair is
 expressible as a git diff over real files.
 
-`agent.json`: `{name, endpoint: "chat_completions"|"responses", model, params{...},
+`agent.json`: `{name, endpoint: "chat_completions"|"responses"|"messages", model, params{...},
 system_prompt_file, tools_file, max_turns}`. Default endpoint is chat_completions — that is
 what breaks on 5.6.
 
@@ -311,10 +311,10 @@ placement fails to restore.
    `tool_choice: type "tool" and "any" are not supported for this model.`
    Repair (one candidate, two edits): remove `tool_choice` from params AND append the
    instruction-based equivalent to the prompt: for `{"type":"tool","name":X}` →
-   `Use the \`X\` tool to answer; call it rather than replying in text.`; for `any` →
+   ``Use the `X` tool to answer; call it rather than replying in text.``; for `any` →
    `Respond with a tool call rather than text whenever one of the tools applies.`
-2. `thinking_block_invalid` — 400 whose message contains `Invalid \`signature\` in
-   \`thinking\` block`. No mechanical repair exists within allowed types (the fix is
+2. `thinking_block_invalid` — 400 whose message contains ``Invalid `signature` in
+   `thinking` block``. No mechanical repair exists within allowed types (the fix is
    runtime history handling: strip the invalidated run or set
    `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` under the
    `thinking-binding-controls-2026-08-01` beta). The loop REFUSES with that pointer.
