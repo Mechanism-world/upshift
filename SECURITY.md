@@ -14,13 +14,9 @@ new 0.3.x release.
 
 Please **do not** open a public issue for a security problem.
 
-1. **Preferred:** use GitHub private vulnerability reporting on the repository —
-   <https://github.com/Mechanism-world/upshift/security/advisories/new>. It is private
-   between you and the maintainer until an advisory is published.
-2. **Email:** `security@mechanism.world`
-   <!-- TODO(founder): confirm this mailbox exists and is monitored before launch. If it does
-        not exist, delete this option and leave GitHub private reporting as the only channel —
-        publishing an address that bounces is worse than publishing none. -->
+Use GitHub private vulnerability reporting on the repository —
+<https://github.com/Mechanism-world/upshift/security/advisories/new>. It is private
+between you and the maintainer until an advisory is published.
 
 Please include what you did, what happened, and what you expected — a reproducer is worth
 more than a description. Expect an acknowledgement within a few days; this is a solo-
