@@ -86,8 +86,15 @@ def price(
         return 0.0
     rates = _rate_for(model)
     tier = TIER_MULTIPLIER.get(provider)
-    if rates is None or tier is None:
+    if tier is None:
         return None
+    if rates is None:
+        # No usage was recorded, so the cost is zero at any rate: an aborted run (a
+        # provider 400 on the first call) must not be reported as unknown-rate, which
+        # would freeze the budget guard over a run that provably billed nothing.
+        no_usage = (input_tokens == output_tokens == cached_input_tokens
+                    == cache_creation_tokens == 0)
+        return 0.0 if no_usage else None
     in_rate, out_rate = rates[0] * tier, rates[1] * tier
     cached = min(cached_input_tokens, input_tokens)
     uncached = input_tokens - cached
