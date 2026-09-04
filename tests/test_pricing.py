@@ -1,5 +1,7 @@
 """Cost model: standard vs flex/batch tier, cached-input discount, unknown models."""
 
+import pytest
+
 from upshift.pricing import price
 
 
@@ -51,3 +53,38 @@ def test_claude_sonnet_4_5_has_a_known_rate():
     ) < 1e-9
     # cache reads at 10% of the input rate: 1M fully cached -> 0.30
     assert abs(price("anthropic", "claude-sonnet-4-5", 1_000_000, 0, 1_000_000) - 0.30) < 1e-9
+
+
+# Every model id `upshift` can be pointed at must price, or `upshift cost` reports
+# "unknown rate" on a real run and the whole cost column becomes a guess.
+GPT_56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_every_served_gpt_56_model_has_a_rate(model):
+    assert price("openai", model, 1_000_000, 1_000_000, 0) is not None, (
+        f"{model} has no entry in pricing.RATES"
+    )
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_gpt_56_published_rates(model):
+    # developers.openai.com/api/docs/pricing, fetched 2026-09-03; USD per 1M tokens.
+    published = {
+        "gpt-5.6-sol": (4.00, 20.00),
+        "gpt-5.6-terra": (2.00, 12.00),
+        "gpt-5.6-luna": (0.20, 1.20),
+    }[model]
+    assert abs(price("openai", model, 1_000_000, 0, 0) - published[0]) < 1e-9
+    assert abs(price("openai", model, 0, 1_000_000, 0) - published[1]) < 1e-9
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_gpt_56_flex_batch_and_cached_match_the_published_table(model):
+    # The published flex and batch rows are exactly half the standard row, and the published
+    # cached-input rate is exactly 10% of the applicable input rate, for all three models.
+    standard = price("openai", model, 1_000_000, 100_000, 0)
+    assert abs(price("openai-flex", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    assert abs(price("openai-batch", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    full_input = price("openai", model, 1_000_000, 0, 0)
+    assert abs(price("openai", model, 1_000_000, 0, 1_000_000) - full_input / 10) < 1e-9

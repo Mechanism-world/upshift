@@ -8,9 +8,10 @@ verified 2026-09-04 against claude.com/pricing (Legacy models): $3/$15 per MTok,
 reads $0.30/MTok.
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
-pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
-Batch bill at 50% of standard; cached input tokens bill at 10% of the applicable input
-rate (90% caching discount, which stacks with flex).
+pricing effective through 2026-11-21), and the whole gpt-5.6 family re-verified 2026-09-03
+against https://developers.openai.com/api/docs/pricing. USD per 1M tokens, standard sync
+tier. Flex and Batch bill at 50% of standard; cached input tokens bill at 10% of the
+applicable input rate (90% caching discount, which stacks with flex).
 """
 
 from __future__ import annotations
@@ -24,7 +25,15 @@ from upshift import recorder
 # model prefix -> (input, output) at standard sync rates
 RATES: dict[str, tuple[float, float]] = {
     "gpt-5.5": (5.00, 30.00),
+    # gpt-5.6 family: https://developers.openai.com/api/docs/pricing, fetched 2026-09-03.
+    # Standard tier, USD per 1M tokens. The published flex and batch rows are exactly half
+    # of these, and every published cached-input rate is exactly 10% of the model's input
+    # rate, so TIER_MULTIPLIER and CACHED_INPUT_FRACTION reproduce the table as printed.
+    # (The page also lists a fast-mode tier at 2x standard; upshift has no fast-mode
+    # provider, so no multiplier is recorded for it.)
     "gpt-5.6-sol": (4.00, 20.00),
+    "gpt-5.6-terra": (2.00, 12.00),
+    "gpt-5.6-luna": (0.20, 1.20),
     "claude-fable-5": (10.00, 50.00),
     "claude-fable-5-1": (10.00, 50.00),
     # Legacy Anthropic model still served, and still the model some target harnesses pin.
