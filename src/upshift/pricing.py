@@ -5,7 +5,8 @@ Anthropic rates verified 2026-09-01 (both Fables $10/$50 per MTok; cache reads a
 the input rate on claude-fable-5 and 2.5% on claude-fable-5-1; a 5-minute cache write is
 1.25x the input rate, i.e. $12.50/MTok on both; no flex tier exists). claude-sonnet-4-5
 verified 2026-09-04 against claude.com/pricing (Legacy models): $3/$15 per MTok, cache
-reads $0.30/MTok.
+reads $0.30/MTok. claude-opus-4-8 verified 2026-09-04 against the published Anthropic
+model/pricing reference: $5/$25 per MTok, cache reads at the default 10% ($0.50/MTok).
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
 pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
@@ -30,6 +31,14 @@ RATES: dict[str, tuple[float, float]] = {
     # Legacy Anthropic model still served, and still the model some target harnesses pin.
     # Cache reads are $0.30/MTok = 10% of input, i.e. CACHED_INPUT_FRACTION; no override.
     "claude-sonnet-4-5": (3.00, 15.00),
+    # Opus-tier model the Anthropic rescue track runs against. $5/$25 per MTok, verified
+    # 2026-09-04 against the published Anthropic model/pricing reference (Claude Opus 4.8;
+    # Claude Opus 5 is described there as "a drop-in upgrade at Opus 4.8's pricing
+    # ($5/$25 per MTok)"). Cache reads take the documented default 0.1x of input
+    # ($0.50/MTok) — the reference names 0.025x as the claude-fable-5-1 exception only —
+    # so no MODEL_CACHED_INPUT_FRACTION override; 5-minute cache writes are the standard
+    # 1.25x ($6.25/MTok).
+    "claude-opus-4-8": (5.00, 25.00),
 }
 
 TIER_MULTIPLIER = {
