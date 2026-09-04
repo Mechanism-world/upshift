@@ -51,3 +51,20 @@ def test_claude_sonnet_4_5_has_a_known_rate():
     ) < 1e-9
     # cache reads at 10% of the input rate: 1M fully cached -> 0.30
     assert abs(price("anthropic", "claude-sonnet-4-5", 1_000_000, 0, 1_000_000) - 0.30) < 1e-9
+
+
+def test_zero_usage_is_zero_even_for_an_unpriced_model():
+    """A run that recorded no tokens cost $0 whatever the rate would have been.
+
+    Regression: an aborted run (e.g. a provider billing 400 on the first call) leaves a
+    manifest and no reps. Reporting that as `unknown rate` froze the lab's whole budget
+    ledger — `budget.py check` refuses to authorise any spend while an unknown-rate run is
+    on record — over a run that provably cost nothing.
+    """
+    assert price("anthropic", "claude-opus-4-8", 0, 0, 0, 0) == 0.0
+    assert price("openai", "gpt-9-mystery", 0, 0, 0, 0) == 0.0
+    # An unknown model with real usage is still unknown — the guard keeps its teeth.
+    assert price("anthropic", "claude-opus-4-8", 10, 0, 0, 0) is None
+    # An unknown provider stays unknown at zero usage too: the tier multiplier, not the
+    # token count, is what is missing, and a proxy may bill on its own terms.
+    assert price("some-proxy", "gpt-5.5", 0, 0, 0, 0) is None
