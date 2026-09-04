@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Endpoint routing translates the output-token cap. `/v1/responses` spells it
+  `max_output_tokens`; an agent written against `/v1/chat/completions` carries `max_tokens`
+  (classic families) or `max_completion_tokens` (gpt-5*/o-series), and passing either to the
+  Responses SDK raises `TypeError: Responses.create() got an unexpected keyword argument
+  'max_completion_tokens'` before a request is sent — crashing the whole run rather than
+  recording a failed rep. Since endpoint routing is the documented repair for the gpt-5.5+ /
+  gpt-5.6 "function tools ... in /v1/chat/completions" 400, the untranslated cap made that
+  repair unusable for any agent that sets one. `map_params` now maps both spellings to
+  `max_output_tokens` on `responses`; an explicitly-spelled `max_output_tokens` wins.
+
 - Pricing for the rest of the gpt-5.6 family. `upshift cost` reported "unknown rate" for
   gpt-5.6-terra and gpt-5.6-luna. Standard-tier rates per 1M tokens, from
   https://developers.openai.com/api/docs/pricing (fetched 2026-09-03): sol $4.00 in /

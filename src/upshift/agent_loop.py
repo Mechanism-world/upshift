@@ -32,6 +32,10 @@ EPHEMERAL = {"type": "ephemeral"}
 
 INVALID_ARGS_ERROR = {"error": "invalid JSON in tool call arguments"}
 
+#: chat/completions spellings of the output-token cap. On `/v1/responses` the field is
+#: `max_output_tokens`; both of these are rejected there, so map_params translates them.
+TOKEN_CAP_PARAMS = ("max_tokens", "max_completion_tokens")
+
 _MISSING = object()
 
 
@@ -63,6 +67,7 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """Canonical params -> endpoint-specific request fields. Unknown keys pass through."""
     out: dict[str, Any] = {}
     effort = _MISSING
+    cap = _MISSING
     for key, value in (params or {}).items():
         if endpoint == RESPONSES and key == "reasoning_effort":
             out["reasoning"] = {"effort": value}
@@ -72,6 +77,10 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
             out["tool_choice"] = _messages_tool_choice(value)
         elif endpoint == RESPONSES and key == "tool_choice":
             out["tool_choice"] = _responses_tool_choice(value)
+        elif endpoint == RESPONSES and key in TOKEN_CAP_PARAMS:
+            # Translated below, after every explicitly-spelled value has landed.
+            if key == "max_completion_tokens" or cap is _MISSING:
+                cap = value
         else:
             out[key] = copy.deepcopy(value)
     if effort is not _MISSING:
@@ -80,6 +89,15 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         config = dict(out.get("output_config") or {})
         config.setdefault("effort", effort)
         out["output_config"] = config
+    if cap is not _MISSING:
+        # /v1/responses spells the output cap `max_output_tokens` and rejects the
+        # chat/completions spellings outright (the SDK raises TypeError before any request
+        # is sent). Without this translation `endpoint_routing` — the one repair for the
+        # documented gpt-5.5+/gpt-5.6 "function tools ... in /v1/chat/completions" 400 —
+        # cannot be applied to any agent that sets an output cap, which is most of them.
+        # An explicit `max_output_tokens` in the agent's params is the right spelling
+        # already and wins over a translated one.
+        out.setdefault("max_output_tokens", copy.deepcopy(cap))
     return out
 
 

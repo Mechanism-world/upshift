@@ -532,3 +532,53 @@ def test_responses_translates_a_chat_shaped_forced_tool_choice():
         "chat_completions",
         {"tool_choice": {"type": "function", "function": {"name": "book_flight"}}},
     ) == {"tool_choice": {"type": "function", "function": {"name": "book_flight"}}}
+
+
+def test_responses_translates_the_output_token_cap():
+    """`/v1/responses` spells the output cap `max_output_tokens`.
+
+    An agent written against `/v1/chat/completions` carries `max_tokens` (classic families)
+    or `max_completion_tokens` (gpt-5*/o-series) — Rynaro/prisma picks between exactly those
+    two per model (`resolveTokenParam`). Neither is accepted on `/v1/responses`: the OpenAI
+    SDK raises `TypeError: Responses.create() got an unexpected keyword argument
+    'max_completion_tokens'` before a request is ever sent, which crashes the run instead of
+    recording a failed rep. Endpoint routing is the documented repair for the gpt-5.5+ /
+    gpt-5.6 "function tools ... in /v1/chat/completions" 400, so an untranslated cap makes
+    that repair unusable for any agent that sets one.
+    """
+    from upshift.agent_loop import map_params
+
+    assert map_params("responses", {"max_completion_tokens": 4096}) == {
+        "max_output_tokens": 4096
+    }
+    assert map_params("responses", {"max_tokens": 512}) == {"max_output_tokens": 512}
+
+    # An explicitly-spelled max_output_tokens is already right and wins, in either order.
+    assert map_params("responses", {"max_output_tokens": 99, "max_completion_tokens": 1}) == {
+        "max_output_tokens": 99
+    }
+    assert map_params("responses", {"max_completion_tokens": 1, "max_output_tokens": 99}) == {
+        "max_output_tokens": 99
+    }
+
+    # chat_completions keeps whichever spelling the agent was written with.
+    assert map_params("chat_completions", {"max_completion_tokens": 4096}) == {
+        "max_completion_tokens": 4096
+    }
+    assert map_params("chat_completions", {"max_tokens": 512}) == {"max_tokens": 512}
+
+
+def test_responses_request_carries_max_output_tokens_after_endpoint_routing():
+    """The whole point: the request built for a routed agent is one /v1/responses accepts."""
+    from upshift.agent_loop import build_request
+
+    request = build_request(
+        "responses",
+        "gpt-5.6-luna",
+        {"tool_choice": "required", "max_completion_tokens": 4096},
+        [{"type": "function", "function": {"name": "t", "description": "", "parameters": {}}}],
+        [{"role": "user", "content": "hi"}],
+    )
+    assert request["max_output_tokens"] == 4096
+    assert "max_completion_tokens" not in request
+    assert "max_tokens" not in request
