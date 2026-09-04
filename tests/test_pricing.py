@@ -37,3 +37,17 @@ def test_unknown_model_and_provider():
     assert price("openai", "gpt-9-mystery", 1000, 1000, 0) is None
     assert price("some-proxy", "gpt-5.5", 1000, 1000, 0) is None
     assert price("sim", "sim-5.6-sol", 1000, 1000, 0) == 0.0
+
+
+def test_claude_sonnet_4_5_has_a_known_rate():
+    """A model the lab actually runs must price, or `upshift cost` reports "unknown rate"
+    and the whole spend ledger stops being accountable. Sonnet 4.5 is $3/$15 per MTok with
+    cache reads at $0.30/MTok (10% of input), per claude.com/pricing (Legacy models),
+    verified 2026-09-04."""
+    assert abs(price("anthropic", "claude-sonnet-4-5", 1_000_000, 100_000, 0) - 4.5) < 1e-9
+    # snapshot id resolves by prefix
+    assert abs(
+        price("anthropic", "claude-sonnet-4-5-20250929", 1_000_000, 0, 0) - 3.0
+    ) < 1e-9
+    # cache reads at 10% of the input rate: 1M fully cached -> 0.30
+    assert abs(price("anthropic", "claude-sonnet-4-5", 1_000_000, 0, 1_000_000) - 0.30) < 1e-9

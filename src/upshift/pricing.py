@@ -3,7 +3,9 @@ API's own usage fields in the rep records; only the $/token rates are external.
 
 Anthropic rates verified 2026-09-01 (both Fables $10/$50 per MTok; cache reads are 10% of
 the input rate on claude-fable-5 and 2.5% on claude-fable-5-1; a 5-minute cache write is
-1.25x the input rate, i.e. $12.50/MTok on both; no flex tier exists).
+1.25x the input rate, i.e. $12.50/MTok on both; no flex tier exists). claude-sonnet-4-5
+verified 2026-09-04 against claude.com/pricing (Legacy models): $3/$15 per MTok, cache
+reads $0.30/MTok.
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
 pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
@@ -25,6 +27,9 @@ RATES: dict[str, tuple[float, float]] = {
     "gpt-5.6-sol": (4.00, 20.00),
     "claude-fable-5": (10.00, 50.00),
     "claude-fable-5-1": (10.00, 50.00),
+    # Legacy Anthropic model still served, and still the model some target harnesses pin.
+    # Cache reads are $0.30/MTok = 10% of input, i.e. CACHED_INPUT_FRACTION; no override.
+    "claude-sonnet-4-5": (3.00, 15.00),
 }
 
 TIER_MULTIPLIER = {
