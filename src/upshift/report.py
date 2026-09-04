@@ -69,14 +69,20 @@ def _model_endpoint(manifest: dict[str, Any]) -> str:
     return f"{model} @ {endpoint}"
 
 
+#: Providers that talk to a real model. The sim stamp is the negation of this set, so a
+#: provider missing here silently discredits its own evidence — `anthropic` was missing until
+#: v0.3.2 and every live Fable run was stamped "machinery validation only".
+REAL_PROVIDERS = ("openai", "openai-batch", "openai-flex", "anthropic")
+
+
 def _providers(result: DiffResult) -> tuple[str, bool]:
-    """(display string, simulated?) — simulated when either run is not a real OpenAI
-    provider ('openai' sync or 'openai-batch'; batching changes transport, not evidence)."""
+    """(display string, simulated?) — simulated when either run used a provider that is not
+    talking to a real model. Transport variants ('openai-batch', 'openai-flex') are real:
+    batching changes transport, not evidence."""
     b = str(result.baseline_manifest.get("provider", "?"))
     c = str(result.candidate_manifest.get("provider", "?"))
     display = b if b == c else f"{b} -> {c}"
-    real = ("openai", "openai-batch", "openai-flex")
-    return display, not (b in real and c in real)
+    return display, not (b in REAL_PROVIDERS and c in REAL_PROVIDERS)
 
 
 def _n_reps(result: DiffResult) -> Any:
