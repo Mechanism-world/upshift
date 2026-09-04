@@ -223,9 +223,14 @@ def validate_agent_dir(agent_dir: Path) -> dict:
                 f"{config_path}: {key} points at {raw[key]!r}, which does not exist in {agent_dir}"
             )
     tools = _read_json(agent_dir / str(raw["tools_file"]))
-    if not isinstance(tools, list) or not tools:
+    # An empty list is legal: a plain completion agent (one system prompt, no tool loop) is
+    # still a plain API agent, and the loop already handles it — `_mark_last_tool_cacheable`
+    # is a documented no-op on an empty list and `build_request` sends `tools: []`. Rejecting
+    # it here only blocked adapters for real toolless agents (e.g. a shell harness that POSTs
+    # to /v1/messages and prints the text). A non-list is still an authoring error.
+    if not isinstance(tools, list):
         raise ValueError(
-            f"{agent_dir / str(raw['tools_file'])}: expected a non-empty JSON list of tool schemas"
+            f"{agent_dir / str(raw['tools_file'])}: expected a JSON list of tool schemas"
         )
 
     cases_path = agent_dir / "cases" / "cases.json"

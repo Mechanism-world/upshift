@@ -423,3 +423,19 @@ def test_upgrade_pipeline_produces_a_patch_and_a_verdict(tmp_path, monkeypatch, 
     patch = (out_dir / "upgrade.patch").read_text()
     assert patch.startswith(f"diff --git a/{agent.name}/") or f"a/{agent.name}/" in patch
     assert (out_dir / "REPORT.md").read_text().strip()
+
+
+def test_toolless_agent_is_accepted(agent):
+    """A plain completion agent — one system prompt, no tool loop — is a plain API agent.
+    Real targets look like this (laude-institute/headlong's `bin/llm` POSTs to /v1/messages
+    and prints the text; it defines no tools), and the loop already handles an empty tool
+    list. Only a non-list is an authoring error."""
+    (agent / "tools.json").write_text("[]")
+    raw = cli.validate_agent_dir(agent)
+    assert raw["tools_file"] == "tools.json"
+
+
+def test_tools_file_that_is_not_a_list_is_still_rejected(agent):
+    (agent / "tools.json").write_text('{"not": "a list"}')
+    message = error_of(cli.validate_agent_dir, agent)
+    assert "tools.json" in message and "JSON list" in message
