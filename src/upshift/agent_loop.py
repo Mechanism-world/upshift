@@ -70,6 +70,8 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
             effort = value  # folded into output_config below, after explicit values land
         elif endpoint == MESSAGES and key == "tool_choice":
             out["tool_choice"] = _messages_tool_choice(value)
+        elif endpoint == RESPONSES and key == "tool_choice":
+            out["tool_choice"] = _responses_tool_choice(value)
         else:
             out[key] = copy.deepcopy(value)
     if effort is not _MISSING:
@@ -79,6 +81,29 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         config.setdefault("effort", effort)
         out["output_config"] = config
     return out
+
+
+def _responses_tool_choice(value: Any) -> Any:
+    """Responses-shaped tool_choice, flattening a chat-shaped one on the way.
+
+    `/v1/responses` takes forced tool choice flat — `{"type": "function", "name": X}` —
+    just like its flat tool definitions, while chat/completions nests it under `function`.
+    An agent written against chat/completions therefore carries the nested shape (it is what
+    `ChatOpenAI.bind_tools(..., tool_choice="X")` produces), and routing it to `/v1/responses`
+    without this translation returns `400 Missing required parameter: 'tool_choice.name'` —
+    on the very repair (endpoint routing) that the gpt-5.6-family break calls for.
+
+    Strings (`"auto"`, `"none"`, `"required"`) are valid on both endpoints and pass through,
+    as does anything already flat or unrecognised, so a bad value produces the API's own 400
+    rather than a silent rewrite here.
+    """
+    if isinstance(value, dict) and value.get("type") == "function" and "name" not in value:
+        function = value.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            flattened = {k: v for k, v in value.items() if k != "function"}
+            flattened["name"] = function["name"]
+            return flattened
+    return copy.deepcopy(value)
 
 
 def _messages_tool_choice(value: Any) -> Any:

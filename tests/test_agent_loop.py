@@ -495,3 +495,40 @@ def test_empty_user_messages_is_a_no_op():
     assert result.api_calls == []
     assert result.final_message == ""
     assert result.final_state == {"executed": []}
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses forced tool choice
+# ---------------------------------------------------------------------------
+
+
+def test_responses_translates_a_chat_shaped_forced_tool_choice():
+    """`/v1/responses` takes a FLAT forced tool choice, exactly like its flat tool defs.
+
+    An agent whose params carry the chat-completions shape
+    `{"type": "function", "function": {"name": X}}` — what `ChatOpenAI.bind_tools(...,
+    tool_choice="X")` produces, and what every chat/completions agent that forces a tool
+    therefore has — must be translated on the way to `/v1/responses`, or the API answers
+    `400 Missing required parameter: 'tool_choice.name'`. That 400 lands precisely on the
+    endpoint-routing repair, which is the documented fix for the gpt-5.6 family's
+    "use /v1/responses" break, so leaving it untranslated makes that repair unusable for
+    any agent with a forced tool.
+    """
+    from upshift.agent_loop import map_params
+
+    assert map_params(
+        "responses", {"tool_choice": {"type": "function", "function": {"name": "book_flight"}}}
+    ) == {"tool_choice": {"type": "function", "name": "book_flight"}}
+
+    # already flat, or a plain string: untouched
+    assert map_params(
+        "responses", {"tool_choice": {"type": "function", "name": "book_flight"}}
+    ) == {"tool_choice": {"type": "function", "name": "book_flight"}}
+    for value in ("auto", "none", "required"):
+        assert map_params("responses", {"tool_choice": value}) == {"tool_choice": value}
+
+    # chat_completions keeps the nested shape it was written in
+    assert map_params(
+        "chat_completions",
+        {"tool_choice": {"type": "function", "function": {"name": "book_flight"}}},
+    ) == {"tool_choice": {"type": "function", "function": {"name": "book_flight"}}}
