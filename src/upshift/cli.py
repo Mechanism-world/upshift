@@ -229,7 +229,7 @@ def validate_agent_dir(agent_dir: Path) -> dict:
     # it here only blocked adapters for real toolless agents (e.g. a shell harness that POSTs
     # to /v1/messages and prints the text). A non-list is still an authoring error.
     if not isinstance(tools, list):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 - authoring errors are ValueError throughout preflight
             f"{agent_dir / str(raw['tools_file'])}: expected a JSON list of tool schemas"
         )
 
