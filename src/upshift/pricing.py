@@ -34,6 +34,16 @@ RATES: dict[str, tuple[float, float]] = {
     "gpt-5.6-sol": (4.00, 20.00),
     "gpt-5.6-terra": (2.00, 12.00),
     "gpt-5.6-luna": (0.20, 1.20),
+    # gpt-5.2 family and gpt-5-mini: https://developers.openai.com/api/docs/pricing,
+    # fetched 2026-09-03. Standard tier, USD per 1M tokens; the published flex and batch
+    # rows are exactly half of these and the published cached-input rows exactly 10% of
+    # input, so the existing multipliers reproduce the table as printed. gpt-5.2-pro gets
+    # its own entry because it is a separate published row at 12x gpt-5.2: without it,
+    # longest-prefix matching would price a -pro run as gpt-5.2 and understate the spend
+    # twelvefold. (The pro row publishes no cached-input price — it is "-" in the table.)
+    "gpt-5.2": (1.75, 14.00),
+    "gpt-5.2-pro": (21.00, 168.00),
+    "gpt-5-mini": (0.25, 2.00),
     "claude-fable-5": (10.00, 50.00),
     "claude-fable-5-1": (10.00, 50.00),
     # Legacy Anthropic model still served, and still the model some target harnesses pin.

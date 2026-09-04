@@ -19,6 +19,14 @@
   $1.20. The published flex and batch rows are exactly half of standard and the cached rows
   exactly 10% of input, which is what the existing tier and cache multipliers already do.
 
+- Pricing for the gpt-5.2 family and gpt-5-mini. `upshift cost` reported "unknown rate" for
+  every model outside the 5.5/5.6 families, and an unpriced leg is exactly what a spend
+  ceiling must not treat as free. Standard-tier rates per 1M tokens, from
+  https://developers.openai.com/api/docs/pricing (fetched 2026-09-03): gpt-5.2 $1.75 in /
+  $0.175 cached / $14.00 out, gpt-5.2-pro $21.00 / — / $168.00, gpt-5-mini $0.25 / $0.025 /
+  $2.00. gpt-5.2-pro is listed separately because longest-prefix matching would otherwise
+  price a `-pro` run at the `gpt-5.2` rate and understate it twelvefold.
+
 - `adapt` reconstructs prompts written as Python implicit string concatenation correctly.
   `("You are a screener. " "Return JSON with keys a, b.")` is one string to the interpreter,
   and adapt was inserting a newline between the two literals while labelling both verbatim —
