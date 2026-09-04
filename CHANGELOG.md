@@ -19,6 +19,21 @@
   $1.20. The published flex and batch rows are exactly half of standard and the cached rows
   exactly 10% of input, which is what the existing tier and cache multipliers already do.
 
+- `upshift run` and `upshift upgrade` take `--max-cost-usd`. Only `adapt`, which makes one
+  paid call, had a spend ceiling; `run` and `upgrade` make thousands — baseline reps,
+  candidate reps, then a screen and a full-suite verify per repair candidate — and a lab
+  overran a $5 per-case cap inside a single `upgrade`. The ceiling is priced, not estimated:
+  it sums the recorded token usage under this run id (for `upgrade`, the whole `--tag`
+  family) through the same `pricing` module `upshift cost` uses, and is checked before every
+  rep is dispatched and again between phases and repair candidates. On reaching it the
+  command stops before the next API call, leaves every completed rep on disk (rerun the same
+  command with a higher ceiling to resume), prints the priced total and the phase that
+  stopped, and exits 3 — distinct from a STAY PINNED verdict (1) and a usage error (2).
+  No verdict is emitted, and a `COST_STOPPED.json` marker lands beside `diff.json` so a
+  partial pipeline can never be read as a finished one; it is deleted when one finishes.
+  Unpriced models fail closed: a model with no published rate warns loudly at startup and
+  its usage is charged at the highest rate in the table, never at $0.
+
 - Pricing for the gpt-5.2 family and gpt-5-mini. `upshift cost` reported "unknown rate" for
   every model outside the 5.5/5.6 families, and an unpriced leg is exactly what a spend
   ceiling must not treat as free. Standard-tier rates per 1M tokens, from

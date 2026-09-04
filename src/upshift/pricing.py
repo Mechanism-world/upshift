@@ -119,6 +119,57 @@ def price(
     ) / 1_000_000
 
 
+def has_rate(model: str) -> bool:
+    """Whether `model` resolves to a published rate. A spend ceiling has to say so up front."""
+    return _rate_for(model) is not None
+
+
+def highest_rate() -> tuple[float, float]:
+    """The most expensive (input, output) pair in the table, used to fail closed."""
+    return (max(r[0] for r in RATES.values()), max(r[1] for r in RATES.values()))
+
+
+def ceiling_price(
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+    cache_creation_tokens: int = 0,
+) -> tuple[float, bool]:
+    """USD to charge against a spend ceiling, and whether that number is a published rate.
+
+    Differs from `price` in two ways, both so a ceiling fails closed rather than open:
+
+    * an unpriced model on a billing provider costs `highest_rate()` rather than None —
+      "we do not know" must never be spent as "$0" — and the caller is told (second element
+      False) so it can say so out loud;
+    * the provider is not what decides that something is free. `sim` is free only because
+      no rate exists for its model ids; if the table does list one (a test injecting a fake
+      table, a real model id run through the simulator) it is priced like any other. That
+      keeps the ceiling testable without a paid provider.
+    """
+    rates = _rate_for(model)
+    published = rates is not None
+    if rates is None:
+        if provider == "sim":
+            # The simulator issues no HTTP request; there is nothing to bill.
+            return 0.0, True
+        rates = highest_rate()
+    tier = TIER_MULTIPLIER.get(provider, 1.0)
+    in_rate, out_rate = rates[0] * tier, rates[1] * tier
+    cached = min(cached_input_tokens, input_tokens)
+    uncached = input_tokens - cached
+    cached_fraction = cached_input_fraction(model)
+    usd = (
+        uncached * in_rate
+        + cached * in_rate * cached_fraction
+        + cache_creation_tokens * in_rate * CACHE_WRITE_MULTIPLIER
+        + output_tokens * out_rate
+    ) / 1_000_000
+    return usd, published
+
+
 def run_cost(run_directory: str | Path) -> dict[str, Any]:
     """Sum recorded usage for one run and price it."""
     run_directory = Path(run_directory)

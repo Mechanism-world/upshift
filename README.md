@@ -81,6 +81,12 @@ upshift upgrade --agent my-agent --provider anthropic \
 path caches the prompt prefix automatically. `upshift cost` prints the exact recorded spend.
 Runs are resumable — Ctrl-C exits immediately and a rerun picks up where it stopped.
 
+`--max-cost-usd N` puts a ceiling on that spend. The priced cost of everything recorded
+under the run id (or, for `upgrade`, the whole `--tag` family: baseline, candidate and every
+repair screen and verification) is checked before each rep and between phases; on reaching
+the ceiling the command stops before the next API call, writes a `COST_STOPPED.json` marker
+instead of a verdict, and exits 3. Rerun the same command with a higher ceiling to resume.
+
 ### Onboarding your agent in minutes
 
 ```bash

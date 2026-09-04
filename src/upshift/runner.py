@@ -17,6 +17,7 @@ from typing import Any
 
 from upshift import recorder
 from upshift.agent_loop import run_episode
+from upshift.budget import CostCeiling, CostCeilingExceeded
 from upshift.checks import evaluate_checks
 from upshift.providers import Provider
 from upshift.schemas import AgentConfig, Case, RepRecord
@@ -76,8 +77,14 @@ def run_suite(
     workers: int = 4,
     notes: str = "",
     on_rep_done: Callable[[RepRecord], None] | None = None,
+    cost_ceiling: CostCeiling | None = None,
 ) -> Path:
-    """Run every case n_reps times; returns the run directory."""
+    """Run every case n_reps times; returns the run directory.
+
+    `cost_ceiling`, when given, is consulted before each rep is dispatched and charged after
+    each rep is recorded; crossing it raises CostCeilingExceeded instead of making the next
+    API call (see budget.py).
+    """
     config = AgentConfig.load(agent_dir)
     cases_path = Path(agent_dir) / "cases" / "cases.json"
     if not cases_path.is_file():
@@ -129,6 +136,9 @@ def run_suite(
                 provider.episode_finished(f"{case.id}:{rep}")
 
     def _one_inner(case: Case, rep: int) -> RepRecord:
+        # Before the episode, so a crossed ceiling costs nothing: no request is sent.
+        if cost_ceiling is not None:
+            cost_ceiling.check()
         start = time.monotonic()
         backend = backend_factory(case.initial_state)
         episode = run_episode(
@@ -175,6 +185,8 @@ def run_suite(
             latency_s=round(time.monotonic() - start, 3),
         )
         recorder.write_rep(run_directory, record)
+        if cost_ceiling is not None:
+            cost_ceiling.observe(provider.name, effective_model, record.usage)
         return record
 
     if workers <= 1:
@@ -190,7 +202,7 @@ def run_suite(
                     record = future.result()
                     if on_rep_done:
                         on_rep_done(record)
-            except BillingError:
+            except (BillingError, CostCeilingExceeded):
                 pool.shutdown(wait=False, cancel_futures=True)
                 raise
 

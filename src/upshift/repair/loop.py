@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from upshift import recorder
+from upshift.budget import CostCeiling
 from upshift.differ import SIG_THINKING_BLOCK_INVALID, DiffResult, failure_signatures
 from upshift.providers import Provider
 from upshift.repair.playbook import generate_candidates
@@ -143,6 +144,7 @@ def repair(
     run_prefix: str,
     budget: int = 6,
     workers: int = 4,
+    cost_ceiling: CostCeiling | None = None,
 ) -> RepairOutcome:
     original_agent_dir = Path(original_agent_dir)
     work_dir = Path(work_dir)
@@ -190,6 +192,10 @@ def repair(
         for patch in candidates:
             if tried >= budget:
                 break
+            # Between candidates: a ceiling that was reached by the last verify stops the
+            # loop here rather than after another screen+verify has been paid for.
+            if cost_ceiling is not None:
+                cost_ceiling.check(f"repair candidate {tried + 1}/{budget}")
             tried += 1
             tried_ids.add(patch.id)
             log.append(f"candidate {tried}/{budget}: [{patch.repair_type}] {patch.id} — "
@@ -214,6 +220,7 @@ def repair(
                     case_ids=sorted(unrestored),
                     workers=workers,
                     notes=f"repair screen for candidate {patch.id}",
+                    cost_ceiling=cost_ceiling,
                 )
                 screen_counts = _case_pass_counts(
                     recorder.run_dir(runs_root, screen_id), sorted(unrestored)
@@ -244,6 +251,7 @@ def repair(
                     runs_root=runs_root,
                     workers=workers,
                     notes=f"repair full verification for candidate {patch.id}",
+                    cost_ceiling=cost_ceiling,
                 )
                 verify_counts = _case_pass_counts(
                     recorder.run_dir(runs_root, verify_id), all_case_ids
@@ -283,6 +291,7 @@ def repair(
                         case_ids=suspects,
                         workers=workers,
                         notes=f"adjudication of contested cases for candidate {patch.id}",
+                        cost_ceiling=cost_ceiling,
                     )
                     adj_counts = _case_pass_counts(recorder.run_dir(runs_root, adj_id), suspects)
                     for case_id in suspects:
