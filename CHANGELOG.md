@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `adapt` reconstructs prompts written as Python implicit string concatenation correctly.
+  `("You are a screener. " "Return JSON with keys a, b.")` is one string to the interpreter,
+  and adapt was inserting a newline between the two literals while labelling both verbatim —
+  a generated agent that sends a prompt the upstream agent never sends. The gate now records
+  each chunk's span inside the source literal it came from, and chunks that sit end to end
+  inside one literal are joined with "" exactly as Python joins them; chunks from separate
+  statements, from non-Python sources, or that cannot be placed keep the newline join.
+
 ## v0.3.1 — 2026-09-03
 
 Pre-launch security pass over `adapt`, the runs root and the shell sandbox. Hostile input
