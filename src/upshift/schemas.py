@@ -33,6 +33,10 @@ class AgentConfig:
     tools: list[dict[str, Any]]  # chat/completions-style tool definitions
     max_turns: int
     agent_dir: str  # absolute path of the directory the config was loaded from
+    #: Optional fixed text the harness appends to EVERY request as a trailing user-role
+    #: message, after the whole conversation (ADAPTER.md, "Volatile suffix"). It is never part
+    #: of the conversation history and never carries a cache breakpoint. None = not sent.
+    volatile_suffix: str | None = None
 
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
@@ -59,6 +63,7 @@ class AgentConfig:
             tools=json.loads((agent_dir / raw["tools_file"]).read_text()),
             max_turns=raw.get("max_turns", 12),
             agent_dir=str(agent_dir),
+            volatile_suffix=load_volatile_suffix(raw, path),
         )
 
     def file_hashes(self) -> dict[str, str]:
@@ -69,6 +74,35 @@ class AgentConfig:
         for rel in ("agent.json", raw["system_prompt_file"], raw["tools_file"]):
             out[rel] = hashlib.sha256((agent_dir / rel).read_bytes()).hexdigest()
         return out
+
+
+VOLATILE_SUFFIX_KEY = "volatile_suffix"
+
+
+def load_volatile_suffix(raw: dict[str, Any], path: str | Path) -> str | None:
+    """Validate agent.json's optional `volatile_suffix`: absent or null means "not sent"; a
+    non-empty string is sent verbatim; anything else is an authoring error.
+
+    The value must be a literal. upshift never templates, formats or evaluates it — a suffix
+    that upstream fills with live values (a clock, a session id) has to be frozen by the
+    adapter author to a fixed string, for the same reason the backend freezes its clock
+    (ADAPTER.md rule 3). An empty or whitespace-only string is rejected rather than silently
+    dropped: the Messages API refuses an empty text turn, and an author who wrote the key
+    meant to send something.
+    """
+    value = raw.get(VOLATILE_SUFFIX_KEY)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(  # noqa: TRY004 - authoring errors are ValueError throughout loading
+            f"{path}: {VOLATILE_SUFFIX_KEY} must be a string (the exact text to append to every "
+            f"request) or null, got {type(value).__name__}"
+        )
+    if not value.strip():
+        raise ValueError(
+            f"{path}: {VOLATILE_SUFFIX_KEY} is empty — omit the key or give it the text to send"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------

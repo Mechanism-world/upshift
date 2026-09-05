@@ -45,8 +45,13 @@ surface lives in three files (agent.json / system_prompt.txt / tools.json) so ev
 expressible as a git diff over real files.
 
 `agent.json`: `{name, endpoint: "chat_completions"|"responses"|"messages", model, params{...},
-system_prompt_file, tools_file, max_turns}`. Default endpoint is chat_completions — that is
-what breaks on 5.6.
+system_prompt_file, tools_file, max_turns, volatile_suffix?}`. Default endpoint is
+chat_completions — that is what breaks on 5.6. `volatile_suffix` (optional, added 2026-09-05
+after rescue case A-015/everruns) is a fixed string `build_request` appends as one trailing
+user-role message to EVERY request, after the whole conversation and never into the replayed
+history; it models harnesses that send a per-request live-facts block. It is a literal —
+never templated (determinism) — validated by `schemas.load_volatile_suffix` on load and in
+the CLI preflight (absent/null = not sent; non-string or empty = authoring error).
 
 ## Eval cases
 
@@ -261,7 +266,10 @@ No provider-specific forks in the core: `agent_loop.py` gains a third endpoint s
 - Request: `{model, max_tokens, system: [{type: text, text: <prompt>, cache_control:
   {type: ephemeral}}], messages: [...], tools: [...]}` — the last tool definition also
   carries `cache_control` so system+tools form the cached prefix (min 512 tokens; messages
-  are never marked). Empty prompt ⇒ no `system` key. Anthropic reports `input_tokens`
+  are never marked). The optional `volatile_suffix` is the LAST element of `messages`, behind
+  both breakpoints and unmarked, so the prefix stays cached and the suffix is the volatile
+  tail; after a tool turn it follows the `tool_result` user message (Anthropic combines
+  consecutive user turns, tool_result blocks first). Empty prompt ⇒ no `system` key. Anthropic reports `input_tokens`
   EXCLUDING cache reads; the loop folds `cache_read_input_tokens` back in so pricing's
   cached-subset convention holds.
   `max_tokens` is REQUIRED by the API; canonical param `max_tokens` (default 8192 when

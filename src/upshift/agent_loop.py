@@ -144,19 +144,28 @@ def build_request(
     items: list[dict[str, Any]],
     *,
     system: str | None = None,
+    volatile_suffix: str | None = None,
 ) -> dict[str, Any]:
     """`system` is only used by the `messages` endpoint, where the system prompt is a
-    top-level request field instead of a conversation item."""
+    top-level request field instead of a conversation item.
+
+    `volatile_suffix` (ADAPTER.md, "Volatile suffix") is the harness-appended trailing message
+    some agents send on every request — a live-facts block, a per-request reminder. It is sent
+    as ONE user-role message placed after every conversation item, on all three endpoints. It
+    is appended to the outgoing request only, never to `items`, so the conversation history
+    the loop replays next turn does not accumulate copies of it.
+    """
+    wire_items = _with_volatile_suffix(items, volatile_suffix)
     if endpoint == CHAT:
         request: dict[str, Any] = {
             "model": model,
-            "messages": copy.deepcopy(items),
+            "messages": wire_items,
             "tools": copy.deepcopy(tools or []),
         }
     elif endpoint == RESPONSES:
         request = {
             "model": model,
-            "input": copy.deepcopy(items),
+            "input": wire_items,
             "tools": convert_tools(tools or []),
             "store": False,
         }
@@ -165,7 +174,10 @@ def build_request(
         # the prefix they close over. Two breakpoints: one on the final tool definition (so
         # the tools array is cached) and one on the system block (tools + system). Nothing is
         # ever marked on `messages`, so the cached prefix is the part that never changes
-        # within an episode and the marks never move.
+        # within an episode and the marks never move. The volatile suffix is the LAST element
+        # of `messages`, i.e. after both breakpoints: it is exactly the content Anthropic's
+        # caching guidance says to put behind the cached prefix, and it must never be marked
+        # (a breakpoint on it would move every turn and cache nothing).
         request = {"model": model, "max_tokens": _max_tokens(params)}
         if system:
             request["system"] = [
@@ -173,12 +185,31 @@ def build_request(
             ]
         # An empty system prompt is omitted entirely rather than sent as "" — the claudette
         # adapter has a 0-byte prompt, and an empty block list is not a valid `system`.
-        request["messages"] = copy.deepcopy(items)
+        request["messages"] = wire_items
         request["tools"] = _mark_last_tool_cacheable(convert_tools_messages(tools or []))
     else:
         raise ValueError(f"unknown endpoint {endpoint!r}")
     request.update(map_params(endpoint, params))
     return request
+
+
+def volatile_suffix_item(text: str) -> dict[str, Any]:
+    """The wire item for the volatile suffix: a plain user-role text message. The same shape
+    is valid on all three endpoints. On `messages` it may follow another user-role message (the
+    tool_result turn); Anthropic combines consecutive same-role turns into one, with the
+    tool_result blocks first, which is the order the API requires."""
+    return {"role": "user", "content": text}
+
+
+def _with_volatile_suffix(
+    items: list[dict[str, Any]], volatile_suffix: str | None
+) -> list[dict[str, Any]]:
+    """A fresh copy of the conversation with the volatile suffix appended last, or a fresh
+    copy of the conversation alone when there is no suffix."""
+    wire_items = copy.deepcopy(items)
+    if volatile_suffix:
+        wire_items.append(volatile_suffix_item(volatile_suffix))
+    return wire_items
 
 
 def _mark_last_tool_cacheable(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -420,7 +451,13 @@ def run_episode(
 
     while call_idx < config.max_turns:
         request = build_request(
-            endpoint, model, params, config.tools, items, system=config.system_prompt
+            endpoint,
+            model,
+            params,
+            config.tools,
+            items,
+            system=config.system_prompt,
+            volatile_suffix=config.volatile_suffix,
         )
         seed_key = f"{case.id}:{rep}:{call_idx}"
         try:

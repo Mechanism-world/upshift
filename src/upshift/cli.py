@@ -29,7 +29,7 @@ from upshift.providers import get_provider
 from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
-from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case
+from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case, load_volatile_suffix
 from upshift.verdict import SAFE_WITH_PATCH, decide
 
 console = Console()
@@ -222,6 +222,7 @@ def validate_agent_dir(agent_dir: Path) -> dict:
             raise ValueError(
                 f"{config_path}: {key} points at {raw[key]!r}, which does not exist in {agent_dir}"
             )
+    load_volatile_suffix(raw, config_path)  # optional; a clean ValueError when malformed
     tools = _read_json(agent_dir / str(raw["tools_file"]))
     # An empty list is legal: a plain completion agent (one system prompt, no tool loop) is
     # still a plain API agent, and the loop already handles it — `_mark_last_tool_cacheable`

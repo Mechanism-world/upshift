@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `agent.json` gains an optional `volatile_suffix`: a fixed string upshift appends as one
+  trailing user-role message to every request in an episode, after the whole conversation
+  and never into the replayed history. It models harnesses that send a per-request
+  live-facts block (rescue case A-015, everruns, whose block carries the current time — the
+  reason its model skipped the time tool upstream and could not in our adapter). On
+  `messages` it sits behind both cache breakpoints and is never marked, so the cached prefix
+  stays cached. It is a literal, never templated; a non-string or empty value is an
+  authoring error caught in the preflight. ADAPTER.md, "Volatile suffix".
+
 ## v0.3.1 — 2026-09-03
 
 Pre-launch security pass over `adapt`, the runs root and the shell sandbox. Hostile input

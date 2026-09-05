@@ -8,7 +8,8 @@ as the five files below, upshift cannot run it — that is a scope decision, not
 
 ```
 my_agent/
-  agent.json          # {name, endpoint, model, params{}, system_prompt_file, tools_file, max_turns}
+  agent.json          # {name, endpoint, model, params{}, system_prompt_file, tools_file, max_turns,
+                      #  volatile_suffix?}
   system_prompt.txt   # the system message, verbatim
   tools.json          # OpenAI chat-style tools: [{"type": "function", "function": {...}}]
   backend.py          # create_backend(initial_state) -> object with .execute()/.state()
@@ -25,7 +26,9 @@ my_agent/
    `params` is passed to the API verbatim (`reasoning_effort` is mapped to `reasoning.effort`
    on `/v1/responses` and to `output_config.effort` on `/v1/messages`); `max_turns` caps
    assistant turns per episode (default 12). `tools.json` is chat-style on every endpoint —
-   upshift converts it for `responses` and `messages`.
+   upshift converts it for `responses` and `messages`. The optional `volatile_suffix` is a
+   fixed string appended to every request after the whole conversation (see "Volatile
+   suffix" below).
 2. **backend.py** must expose `create_backend(initial_state: dict) -> Backend`, called once per
    episode with the case's `initial_state`.
    - `Backend.execute(name: str, arguments: dict) -> dict` runs one tool call and **never
@@ -40,11 +43,52 @@ my_agent/
    the clock, the network, a random source or shared mutable state makes every case flaky and
    every number meaningless. Given the same `initial_state` and the same sequence of `execute`
    calls, a backend must produce the same results and the same final state. Keep it in memory.
+   The same rule covers `volatile_suffix`: it is a literal, sent verbatim, never templated.
 4. **The repair loop may edit only three files**: `agent.json`, the system prompt file and the
    tools file — the four allowed repair types (prompt edit, model params, tool-schema edit,
    endpoint routing) are all expressible as edits to those. `backend.py` and `cases/cases.json`
    are never modified: they are the agent under test and the yardstick. The emitted patch is a
    `git apply`-able diff over exactly those three files.
+
+## Volatile suffix (`agent.json` → `volatile_suffix`, optional)
+
+Some harnesses append a message to **every** outgoing request, after the conversation, rather
+than as a user turn: a live-facts block (current time, session facts), a per-request reminder.
+Anthropic's prompt-caching guidance makes the pattern common — volatile content goes *behind*
+the cached prefix. A case script cannot express it: `user_messages` are turns the model answers
+one at a time, while this block rides along on every call and is never answered.
+
+```json
+{"name": "...", "endpoint": "messages", "model": "claude-fable-5", "params": {},
+ "system_prompt_file": "system_prompt.txt", "tools_file": "tools.json",
+ "volatile_suffix": "<dynamic_facts>\ncurrent_time: 2026-09-02T12:00:00Z\n</dynamic_facts>"}
+```
+
+What upshift does with it:
+
+- On **every** request in an episode — the first call, every tool-result turn, every later
+  segment — it appends one `{"role": "user", "content": <volatile_suffix>}` as the **last**
+  item of `messages` / `input`, on all three endpoints. Nothing comes after it. The recorded
+  request in each rep file shows it exactly where the model saw it.
+- It is appended to the **outgoing request only**, never to the conversation history the loop
+  replays, so a five-turn episode sends it five times and the model sees it once per request.
+- On `messages` it sits **after both cache breakpoints** (system block, last tool definition)
+  and never carries one itself, so the cached prefix stays cached and the suffix is the volatile
+  tail Anthropic's guidance describes. After a tool turn it follows the `tool_result` user
+  message; Anthropic combines consecutive user turns, `tool_result` blocks first, which is the
+  order the API requires. The OpenAI endpoints get the same placement, which is also what their
+  automatic prefix caching wants.
+- **It is a literal.** upshift never templates, formats or evaluates it (rule 3). If upstream
+  fills the block with live values, freeze them to the same instant your `backend.py` freezes
+  its clock, and record the frozen values in your adapter notes. Absent or `null` means "not
+  sent"; a non-string or an empty string is an authoring error caught before any model call.
+- It lives in `agent.json`, so it is part of the hashed, recorded, patchable surface — but no
+  repair candidate edits it. The candidate that does the same job is a system-prompt edit.
+
+Where it comes from: case A-015 of the Anthropic rescue lab (everruns). That engine appends a
+dynamic-facts block, with the current time, as a trailing user message on every request; its
+model is told the time and then asked what time it is. Without the block the adapter's model has
+no clock, must call the time tool, and the suite cannot see the regression upstream reported.
 
 ## Case schema (`cases/cases.json`, a JSON array)
 
