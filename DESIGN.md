@@ -274,9 +274,14 @@ No provider-specific forks in the core: `agent_loop.py` gains a third endpoint s
   `tool_choice` passes through in Anthropic shape (`{"type": "auto"|"any"|"none"}` or
   `{"type":"tool","name":...}`); an OpenAI-shaped value is translated (`"required"`→any,
   `{"type":"function","function":{"name":X}}`→tool X). `thinking` passes through (omit ⇒
-  adaptive; `enabled`/`disabled` are 400s on both Fables). `temperature/top_p/top_k` pass
-  through — non-default values are 400s on BOTH models (not a 5→5.1 regression; see the
-  sampling-params detector below).
+  adaptive; `enabled`/`disabled` are 400s on both Fables). `temperature/top_p/top_k` are
+  passed through by the mapping but no longer reach the wire: `anthropic` >= 1.3.0 removed
+  them from `Messages.create()`, so the SDK raises `TypeError: ... got an unexpected keyword
+  argument 'temperature'` in process. The provider catches that one TypeError shape and
+  records it as the 400 the API used to return ("`temperature` is deprecated for this
+  model"), so the sampling-params detector below still fires and its repair stays reachable;
+  any other TypeError propagates. Either way non-default values fail on BOTH models (not a
+  5→5.1 regression).
 - Conversation: assistant turns are stored with their FULL `content` block list (thinking +
   text + tool_use) and replayed byte-for-byte; tool results go back as a `user` message
   whose content is `tool_result` blocks FIRST (`tool_use_id`, `content` = JSON-encoded

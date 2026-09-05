@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
-from upshift import cli
+from upshift import cli, differ
 from upshift.agent_loop import (
     DEFAULT_MAX_TOKENS,
     build_request,
@@ -19,10 +20,15 @@ from upshift.agent_loop import (
     map_params,
     run_episode,
 )
+from upshift.differ import failure_signatures
 from upshift.pricing import price
 from upshift.providers.anthropic_provider import AnthropicProvider
 from upshift.providers.base import Provider, ProviderAPIError, get_provider
+from upshift.recorder import load_case_reps
+from upshift.runner import run_suite
 from upshift.schemas import AgentConfig, Case
+
+TODO_AGENT = Path(__file__).resolve().parent / "todo_agent"
 
 TOOLS = [
     {
@@ -796,3 +802,72 @@ def test_preflight_other_errors_propagate_as_api_errors():
     provider = PreflightProvider(ProviderAPIError(message="server down", status_code=503))
     with pytest.raises(ProviderAPIError):
         cli.anthropic_preflight(provider, ["claude-fable-5"])
+
+
+# ---------------------------------------------------------------------------
+# SDK-side parameter rejection (anthropic >= 1.3.0 removed temperature/top_p/top_k
+# from Messages.create, so the documented 400 never reaches the wire)
+# ---------------------------------------------------------------------------
+
+
+def removed_kwarg_type_error(name: str) -> TypeError:
+    """What anthropic 1.3.0 raises from `_utils._utils.wrapper` for a dropped param."""
+    return TypeError(f"Messages.create() got an unexpected keyword argument '{name}'")
+
+
+@pytest.mark.parametrize("param", ["temperature", "top_p", "top_k"])
+def test_sdk_removed_sampling_kwarg_is_a_400_the_differ_calls_a_sampling_break(param):
+    provider = make_provider(FakeClient(messages_outcome=removed_kwarg_type_error(param)))
+
+    with pytest.raises(ProviderAPIError) as excinfo:
+        provider.call("messages", {"model": "claude-fable-5", param: 0}, "k")
+
+    exc = excinfo.value
+    assert exc.status_code == 400
+    assert f"unexpected keyword argument '{param}'" in exc.message
+    assert (
+        differ._api_error_signature(exc.to_dict())
+        == differ.SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS
+    )
+
+
+def test_a_type_error_that_is_not_an_unexpected_kwarg_is_not_swallowed():
+    provider = make_provider(FakeClient(messages_outcome=TypeError("unhashable type: 'dict'")))
+
+    with pytest.raises(TypeError, match="unhashable type"):
+        provider.call("messages", {"model": "claude-fable-5"}, "k")
+
+
+def test_the_episode_records_the_sdk_rejection_instead_of_dying():
+    provider = make_provider(FakeClient(messages_outcome=removed_kwarg_type_error("temperature")))
+
+    result = run_episode(
+        make_config(params={"temperature": 0}), make_case(), provider, StubBackend(),
+        rep=0, seed=0,
+    )
+
+    assert result.api_error["status_code"] == 400
+    assert "temperature" in result.api_error["message"]
+    assert result.api_calls[0].response is None
+
+
+def test_the_whole_suite_survives_it_and_records_failing_reps(tmp_path):
+    """The bug that motivated this: an uncaught TypeError propagated out of the thread pool
+    and killed run_suite, so a run produced no reps and no diff at all."""
+    provider = make_provider(FakeClient(messages_outcome=removed_kwarg_type_error("temperature")))
+    runs_root = tmp_path / "runs"
+
+    run_dir = run_suite(
+        TODO_AGENT, provider, "sdk-sampling-break", n_reps=2,
+        model_override="claude-fable-5", endpoint_override="messages",
+        params_override={"temperature": 0}, runs_root=runs_root, workers=1,
+    )
+
+    case_ids = sorted(d.name for d in (run_dir / "cases").iterdir() if d.is_dir())
+    assert case_ids
+    for case_id in case_ids:
+        reps = load_case_reps(run_dir, case_id)
+        assert len(reps) == 2
+        assert all(not r.passed for r in reps)
+        assert all(r.api_error["status_code"] == 400 for r in reps)
+        assert failure_signatures(reps) == [differ.SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS]
