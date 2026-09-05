@@ -146,6 +146,11 @@ def extends(previous: list[Any], current: list[Any]) -> tuple[bool, int | None]:
     if [canonical(m) for m in current[: len(previous)]] == [canonical(m) for m in previous]:
         return True, None
     cut = len(previous) - 1
+    if cut < 1:
+        # The volatile block can never be the FIRST message: with nothing identical in front
+        # of it, two unrelated conversations that each open with one user turn would look
+        # like one conversation with a volatile suffix.
+        return False, None
     head_matches = [canonical(m) for m in current[:cut]] == [canonical(m) for m in previous[:cut]]
     if head_matches and _is_plain_user(previous[cut]) and _is_plain_user(current[cut]):
         return True, cut

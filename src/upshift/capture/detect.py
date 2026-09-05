@@ -22,18 +22,29 @@ DETECTION_HEADERS = ("user-agent", "x-app", "x-stainless-lang", "x-stainless-pac
                      "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-os",
                      "x-stainless-retry-count", "x-stainless-helper-method")
 
-#: (framework name, header, lowercase literal the sender puts there). First match wins.
+#: (framework name, header, lowercase literal the sender puts there). First match wins, so the
+#: specific names come before the generic SDK signature. Every token below was read out of the
+#: sender's own source; the citation is in docs/framework-mapping.md.
+#:
+#: One framework is deliberately absent: **langchain-anthropic adds no identifying header at
+#: all** (its only header hook is the user's own `default_headers`), so on the wire it is
+#: byte-for-byte an `anthropic-sdk-python` call and is detected as one. Pass
+#: `--framework langchain-anthropic` when that is what you are running.
 RULES: tuple[tuple[str, str, str], ...] = (
-    ("opencode", "user-agent", "opencode"),
-    ("litellm", "user-agent", "litellm"),
-    ("langchain-anthropic", "user-agent", "langchain"),
-    ("pydantic-ai", "user-agent", "pydantic-ai"),
-    ("claude-agent-sdk", "user-agent", "claude-cli"),
+    # `opencode/<version> ai-sdk/provider-utils/... runtime/bun/...` — must precede the AI SDK
+    # rule, because opencode goes through @ai-sdk/anthropic and carries its UA fragment too.
+    ("opencode", "user-agent", "opencode/"),
+    ("litellm", "user-agent", "litellm/"),
+    ("pydantic-ai", "user-agent", "pydantic-ai/"),
+    # `claude-cli/<version> (external, sdk-py, agent-sdk/<version>)`, plus `x-app: cli`.
+    ("claude-agent-sdk", "user-agent", "claude-cli/"),
     ("claude-agent-sdk", "user-agent", "claude-agent-sdk"),
     ("claude-agent-sdk", "x-app", "cli"),
-    ("vercel-ai-sdk", "user-agent", "ai-sdk"),
-    ("vercel-ai-sdk", "x-stainless-package-version", "ai-sdk"),
-    # Generic fallbacks: the Anthropic SDKs' own signature, used directly.
+    # `ai-sdk/anthropic/<version> ...` from the provider, or `ai/<version> ...` from generateText.
+    ("vercel-ai-sdk", "user-agent", "ai-sdk/"),
+    # Generic fallbacks: the Anthropic SDKs' own signature, used directly or wrapped.
+    ("anthropic-sdk-python", "user-agent", "anthropic/python"),
+    ("anthropic-sdk-typescript", "user-agent", "anthropic/js"),
     ("anthropic-sdk-python", "x-stainless-lang", "python"),
     ("anthropic-sdk-typescript", "x-stainless-lang", "js"),
 )

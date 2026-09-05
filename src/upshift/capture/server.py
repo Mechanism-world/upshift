@@ -41,6 +41,12 @@ from upshift.capture.sse import parse_events, reassemble
 DEFAULT_LISTEN = "127.0.0.1:8787"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 MESSAGES_PATH = "/v1/messages"
+#: `@ai-sdk/anthropic` only adds `/v1` when the base URL is literally
+#: `https://api.anthropic.com`, then requests `${baseURL}/messages`
+#: (anthropic-provider.ts:28-35 and anthropic-language-model.ts:964-968 @ 4.0.49) — so a
+#: Vercel-AI-SDK or opencode agent pointed at `http://127.0.0.1:8787` sends `POST /messages`.
+#: Recorded like any other Messages call, and forwarded to the versioned path upstream.
+UNVERSIONED_MESSAGES_PATH = "/messages"
 UPSTREAM_TIMEOUT_S = 900.0
 CHUNK = 8192
 
@@ -98,7 +104,8 @@ def parse_listen(listen: str, *, allow_remote: bool) -> tuple[str, int]:
         port = int(port_text)
     except ValueError as exc:
         raise ValueError(f"--listen port must be a number (got {port_text!r})") from exc
-    if not 1 <= port <= 65535:
+    # Port 0 means "any free port"; the bound port is reported through on_ready.
+    if not 0 <= port <= 65535:
         raise ValueError(f"--listen port out of range: {port}")
     if host not in LOOPBACK and not allow_remote:
         raise ValueError(
@@ -157,7 +164,17 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.config  # type: ignore[attr-defined]
 
     def _recordable(self) -> bool:
-        return self.path.split("?", 1)[0].rstrip("/").endswith(MESSAGES_PATH)
+        path = self.path.split("?", 1)[0].rstrip("/")
+        return path.endswith(MESSAGES_PATH) or path == UNVERSIONED_MESSAGES_PATH
+
+    def _upstream_path(self) -> str:
+        """The path to forward. `/messages` is versioned on the way out (see the note on
+        UNVERSIONED_MESSAGES_PATH): the client believed its base URL already carried `/v1`,
+        and the API serves the versioned path only."""
+        path, _, query = self.path.partition("?")
+        if path.rstrip("/") == UNVERSIONED_MESSAGES_PATH:
+            path = MESSAGES_PATH
+        return path + (f"?{query}" if query else "")
 
     def _read_body(self) -> tuple[bytes, bool]:
         limit = self._config.max_body_bytes
@@ -203,7 +220,7 @@ class _Handler(BaseHTTPRequestHandler):
         return out
 
     def _url(self) -> str:
-        return f"{self._config.upstream}{self.path}"
+        return f"{self._config.upstream}{self._upstream_path()}"
 
     # -- forwarding --------------------------------------------------------
 
@@ -568,9 +585,16 @@ def run_capture(
         max_body_bytes=max_body_bytes,
         on_record=on_record,
     )
-    server = ThreadingHTTPServer((host, port), _Handler)
+    try:
+        server = ThreadingHTTPServer((host, port), _Handler)
+    except OSError as exc:
+        raise ValueError(
+            f"cannot listen on {host}:{port} ({exc.strerror or exc}) — something else is "
+            f"already there; pass --listen {host}:0 to take any free port"
+        ) from exc
     server.daemon_threads = True
     server.config = config  # type: ignore[attr-defined]
+    bound_port = server.server_address[1]
 
     finished = stop or threading.Event()
     previous = signal.getsignal(signal.SIGINT)
@@ -589,7 +613,7 @@ def run_capture(
                               daemon=True)
     thread.start()
     if on_ready:
-        on_ready(host, port)
+        on_ready(host, bound_port)
     try:
         while not finished.wait(0.2):
             pass
