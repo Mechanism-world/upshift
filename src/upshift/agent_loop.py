@@ -168,6 +168,39 @@ def convert_tools_messages(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
+def append_volatile_suffix(
+    endpoint: str, items: list[dict[str, Any]], suffix: str
+) -> list[dict[str, Any]]:
+    """Append a per-request volatile block to the trailing user turn.
+
+    Some agents rebuild a live-facts block on every single request and hang it off the last
+    user turn (rescue-ops `cases/A-015/REPORT.md` §4 describes exactly this: a trailing
+    user-role message carrying `current_time` and friends, regenerated per request). Without
+    it, the eval measures an agent with no clock — a different agent than the one that runs
+    in production.
+
+    It goes on the LAST user message when there is one. On `messages` that keeps the
+    documented block ordering intact: a tool-result turn's `tool_result` blocks stay first and
+    this lands after them. Applied here, at request-building time, so it is never stored in
+    the conversation history and never accumulates as the episode grows. Returns a new list.
+    """
+    if not suffix:
+        return items
+    out = copy.deepcopy(items)
+    last = out[-1] if out else None
+    if endpoint == MESSAGES and isinstance(last, dict) and last.get("role") == "user":
+        content = last.get("content")
+        blocks: list[Any] = (
+            [{"type": "text", "text": content}] if isinstance(content, str)
+            else (list(content) if isinstance(content, list) else [])
+        )
+        blocks.append({"type": "text", "text": suffix})
+        last["content"] = blocks
+        return out
+    out.append({"role": "user", "content": suffix})
+    return out
+
+
 def build_request(
     endpoint: str,
     model: str,
@@ -176,9 +209,11 @@ def build_request(
     items: list[dict[str, Any]],
     *,
     system: str | None = None,
+    volatile_suffix: str = "",
 ) -> dict[str, Any]:
     """`system` is only used by the `messages` endpoint, where the system prompt is a
     top-level request field instead of a conversation item."""
+    items = append_volatile_suffix(endpoint, items, volatile_suffix)
     if endpoint == CHAT:
         request: dict[str, Any] = {
             "model": model,
@@ -452,7 +487,13 @@ def run_episode(
 
     while call_idx < config.max_turns:
         request = build_request(
-            endpoint, model, params, config.tools, items, system=config.system_prompt
+            endpoint,
+            model,
+            params,
+            config.tools,
+            items,
+            system=config.system_prompt,
+            volatile_suffix=getattr(config, "volatile_suffix", ""),
         )
         seed_key = f"{case.id}:{rep}:{call_idx}"
         try:
