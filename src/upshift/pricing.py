@@ -7,6 +7,13 @@ the input rate on claude-fable-5 and 2.5% on claude-fable-5-1; a 5-minute cache 
 verified 2026-09-04 against claude.com/pricing (Legacy models): $3/$15 per MTok, cache
 reads $0.30/MTok. claude-opus-4-8 verified 2026-09-04 against the published Anthropic
 model/pricing reference: $5/$25 per MTok, cache reads at the default 10% ($0.50/MTok).
+claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-6, claude-sonnet-5 and claude-opus-5
+verified 2026-09-05 against the same published Anthropic model/pricing reference (see RATES
+below); all take the default 10% cache-read fraction — that reference names claude-fable-5-1
+(0.025x, $0.25/MTok) as the only exception, and states it is "half of Claude Opus 5's" rate,
+which pins Opus 5 cache reads at $0.50/MTok = 0.1x. claude-opus-4-5 is deliberately absent:
+the reference lists it as an active legacy model but carries no per-MTok rate for it, and a
+guessed rate is worse than an honest "unknown rate".
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
 pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
@@ -39,6 +46,18 @@ RATES: dict[str, tuple[float, float]] = {
     # so no MODEL_CACHED_INPUT_FRACTION override; 5-minute cache writes are the standard
     # 1.25x ($6.25/MTok).
     "claude-opus-4-8": (5.00, 25.00),
+    # The Anthropic rescue track's scope extension runs its baselines on the models below —
+    # the near side of the 4.7+ wall — so every one of them must price or the baseline leg of
+    # an `upgrade` reports "unknown rate" and freezes the spend ledger. Rates verified
+    # 2026-09-05 against the published Anthropic model/pricing reference. None of them takes
+    # a MODEL_CACHED_INPUT_FRACTION override: that reference names claude-fable-5-1 (0.025x)
+    # as its sole exception, so cache reads here are the default 0.1x of input and 5-minute
+    # cache writes the standard 1.25x.
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-opus-5": (5.00, 25.00),
 }
 
 TIER_MULTIPLIER = {

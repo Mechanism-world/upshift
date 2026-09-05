@@ -80,3 +80,48 @@ def test_claude_opus_4_8_has_a_known_rate():
     assert abs(price("anthropic", "claude-opus-4-8", 1_000_000, 0, 1_000_000) - 0.50) < 1e-9
     # 5-minute cache writes at 1.25x input: 1M written -> 6.25
     assert abs(price("anthropic", "claude-opus-4-8", 0, 0, 0, 1_000_000) - 6.25) < 1e-9
+
+
+# The Anthropic rescue track's scope extension runs its baselines on the models below, so a
+# missing rate would report "unknown rate" on the baseline leg of every run under it and
+# freeze the lab's budget guard. Rates verified 2026-09-05 against the published Anthropic
+# model/pricing reference; all take the default 10% cache-read fraction (that reference names
+# claude-fable-5-1's 0.025x as its only exception).
+
+
+def test_claude_haiku_4_5_has_a_known_rate():
+    """$1/$5 per MTok, cache reads $0.10/MTok."""
+    assert abs(price("anthropic", "claude-haiku-4-5", 1_000_000, 100_000, 0) - 1.5) < 1e-9
+    # snapshot id resolves by prefix
+    assert abs(
+        price("anthropic", "claude-haiku-4-5-20251001", 1_000_000, 0, 0) - 1.0
+    ) < 1e-9
+    assert abs(price("anthropic", "claude-haiku-4-5", 1_000_000, 0, 1_000_000) - 0.10) < 1e-9
+
+
+def test_claude_sonnet_4_6_has_a_known_rate():
+    """$3/$15 per MTok, cache reads $0.30/MTok."""
+    assert abs(price("anthropic", "claude-sonnet-4-6", 1_000_000, 100_000, 0) - 4.5) < 1e-9
+    assert abs(price("anthropic", "claude-sonnet-4-6", 1_000_000, 0, 1_000_000) - 0.30) < 1e-9
+
+
+def test_claude_sonnet_5_has_a_known_rate():
+    """$2/$10 per MTok, cache reads $0.20/MTok. The prefix must not be shadowed by the
+    older claude-sonnet-4-5 / 4-6 entries, which share the `claude-sonnet-` stem."""
+    assert abs(price("anthropic", "claude-sonnet-5", 1_000_000, 100_000, 0) - 3.0) < 1e-9
+    assert abs(price("anthropic", "claude-sonnet-5", 1_000_000, 0, 1_000_000) - 0.20) < 1e-9
+
+
+def test_claude_opus_4_6_has_a_known_rate():
+    """$5/$25 per MTok, cache reads $0.50/MTok."""
+    assert abs(price("anthropic", "claude-opus-4-6", 1_000_000, 100_000, 0) - 7.5) < 1e-9
+    assert abs(price("anthropic", "claude-opus-4-6", 1_000_000, 0, 1_000_000) - 0.50) < 1e-9
+
+
+def test_claude_opus_5_has_a_known_rate():
+    """$5/$25 per MTok. Cache reads are $0.50/MTok = the default 0.1x — the reference pins
+    this by describing claude-fable-5-1's $0.25/MTok as half of Opus 5's rate."""
+    assert abs(price("anthropic", "claude-opus-5", 1_000_000, 100_000, 0) - 7.5) < 1e-9
+    assert abs(price("anthropic", "claude-opus-5", 1_000_000, 0, 1_000_000) - 0.50) < 1e-9
+    # 5-minute cache writes at 1.25x input: 1M written -> 6.25
+    assert abs(price("anthropic", "claude-opus-5", 0, 0, 0, 1_000_000) - 6.25) < 1e-9
