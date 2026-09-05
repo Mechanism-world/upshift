@@ -12,11 +12,21 @@ to the request: what the loop built is what is sent and what the record shows.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from upshift.providers.base import Provider, ProviderAPIError
 
 MESSAGES = "messages"
+
+#: `anthropic` >= 1.3.0 removed `temperature` (and the other sampling params) from
+#: `Messages.create()`, so a request carrying one is rejected IN PROCESS with a TypeError
+#: and the documented 400 ("`temperature` is deprecated for this model") never reaches the
+#: wire. Recorded as that same 400 so the differ's sampling-params signature — which keys on
+#: a 400 whose message names temperature/top_p/top_k — still fires and its repair (drop the
+#: param) stays reachable. See DESIGN.md "Params mapping".
+_RE_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument", re.IGNORECASE)
+SDK_REJECTED_PARAM_STATUS = 400
 TIMEOUT_S = 600.0  # thinking + long tool turns; the SDK also retries
 MAX_RETRIES = 5
 
@@ -92,6 +102,18 @@ class AnthropicProvider(Provider):
                 message=f"{exc.__class__.__name__}: {exc}",
                 status_code=None,
                 error_type="network_error",
+            ) from exc
+        except TypeError as exc:
+            message = str(exc)
+            if not _RE_UNEXPECTED_KWARG.search(message):
+                raise  # not a parameter the SDK refuses to send; a real bug, let it surface
+            raise ProviderAPIError(
+                message=(
+                    f"the installed anthropic SDK rejected a request parameter before it "
+                    f"reached the wire: {message}"
+                ),
+                status_code=SDK_REJECTED_PARAM_STATUS,
+                error_type="api_status_error",
             ) from exc
         return result.model_dump(mode="json")
 
