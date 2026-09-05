@@ -1,0 +1,2085 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "plan_part",
+      "description": "For a COMPLEX or multi-part object, FIRST decompose it into a plan graph before building: nodes are sub-parts ({ id, part, parent? }, hierarchy via parent), relations are spatial/constraint edges ({ from, to, kind } with kind aligned|attached|coaxial|offset|pattern|symmetric|contains). The browser validates structure (referential integrity, acyclic) and returns it; then call build_part referencing the node ids. Skip this for a simple single part.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "part": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parent": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "part"
+              ]
+            }
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "to": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "aligned",
+                    "attached",
+                    "coaxial",
+                    "offset",
+                    "pattern",
+                    "symmetric",
+                    "contains"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to",
+                "kind"
+              ]
+            }
+          }
+        },
+        "required": [
+          "nodes"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_part",
+      "description": "Build or replace the parametric CAD part from an authoring document (lengths in mm, angles in degrees). The browser validates and compiles it; on success it becomes the live editable model. When editing the current part, send the full modified document.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "box"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "dx": {
+                              "type": "number"
+                            },
+                            "dy": {
+                              "type": "number"
+                            },
+                            "dz": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "dx",
+                            "dy",
+                            "dz"
+                          ]
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "sketch"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "profile": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "circle"
+                                    },
+                                    "center": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 2,
+                                      "maxItems": 2
+                                    },
+                                    "radius": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "center",
+                                    "radius"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "loop"
+                                    },
+                                    "start": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 2,
+                                      "maxItems": 2
+                                    },
+                                    "segments": {
+                                      "type": "array",
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "line"
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "to"
+                                            ]
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "arc"
+                                              },
+                                              "through": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "through",
+                                              "to"
+                                            ]
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "spline"
+                                              },
+                                              "through": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "array",
+                                                  "prefixItems": [
+                                                    {
+                                                      "type": "number"
+                                                    },
+                                                    {
+                                                      "type": "number"
+                                                    }
+                                                  ],
+                                                  "minItems": 2,
+                                                  "maxItems": 2
+                                                }
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "through",
+                                              "to"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "start",
+                                    "segments"
+                                  ]
+                                }
+                              ]
+                            },
+                            "plane": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "base": {
+                                      "type": "string",
+                                      "enum": [
+                                        "XY",
+                                        "XZ",
+                                        "YZ"
+                                      ]
+                                    },
+                                    "offset": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "base",
+                                    "offset"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "face"
+                                    },
+                                    "face": {
+                                      "type": "object",
+                                      "properties": {
+                                        "normal": {
+                                          "type": "array",
+                                          "prefixItems": [
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "number"
+                                            }
+                                          ],
+                                          "minItems": 3,
+                                          "maxItems": 3
+                                        },
+                                        "centroid": {
+                                          "type": "array",
+                                          "prefixItems": [
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "number"
+                                            }
+                                          ],
+                                          "minItems": 3,
+                                          "maxItems": 3
+                                        }
+                                      },
+                                      "required": [
+                                        "normal"
+                                      ]
+                                    },
+                                    "offset": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "face",
+                                    "offset"
+                                  ]
+                                }
+                              ]
+                            },
+                            "model": {}
+                          },
+                          "required": [
+                            "profile"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "extrude"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "height": {
+                              "type": "number"
+                            },
+                            "back": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "height"
+                          ]
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "direction": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ],
+                              "minItems": 3,
+                              "maxItems": 3
+                            },
+                            "directionEdge": {
+                              "type": "object",
+                              "properties": {
+                                "faceNormals": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 3,
+                                      "maxItems": 3
+                                    },
+                                    {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 3,
+                                      "maxItems": 3
+                                    }
+                                  ],
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                },
+                                "midpoint": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ],
+                                  "minItems": 3,
+                                  "maxItems": 3
+                                }
+                              },
+                              "required": [
+                                "faceNormals"
+                              ]
+                            },
+                            "toFace": {
+                              "type": "object",
+                              "properties": {
+                                "normal": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ],
+                                  "minItems": 3,
+                                  "maxItems": 3
+                                },
+                                "centroid": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ],
+                                  "minItems": 3,
+                                  "maxItems": 3
+                                }
+                              },
+                              "required": [
+                                "normal"
+                              ]
+                            }
+                          },
+                          "required": []
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "revolve"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "angle": {
+                              "type": "number"
+                            },
+                            "ax": {
+                              "type": "number"
+                            },
+                            "ay": {
+                              "type": "number"
+                            },
+                            "az": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "angle"
+                          ]
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "cut"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "depth": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "depth"
+                          ]
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "fillet"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "radius": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "radius"
+                          ]
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "edges": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "faceNormals": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          }
+                                        ],
+                                        "minItems": 3,
+                                        "maxItems": 3
+                                      },
+                                      {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          }
+                                        ],
+                                        "minItems": 3,
+                                        "maxItems": 3
+                                      }
+                                    ],
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "midpoint": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ],
+                                    "minItems": 3,
+                                    "maxItems": 3
+                                  }
+                                },
+                                "required": [
+                                  "faceNormals"
+                                ]
+                              }
+                            },
+                            "selector": {}
+                          },
+                          "required": []
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "chamfer"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "distance": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "distance"
+                          ]
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "edges": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "faceNormals": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          }
+                                        ],
+                                        "minItems": 3,
+                                        "maxItems": 3
+                                      },
+                                      {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "number"
+                                          }
+                                        ],
+                                        "minItems": 3,
+                                        "maxItems": 3
+                                      }
+                                    ],
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "midpoint": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ],
+                                    "minItems": 3,
+                                    "maxItems": 3
+                                  }
+                                },
+                                "required": [
+                                  "faceNormals"
+                                ]
+                              }
+                            },
+                            "selector": {}
+                          },
+                          "required": []
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "shell"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "thickness": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "thickness"
+                          ]
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "faces": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "normal": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ],
+                                    "minItems": 3,
+                                    "maxItems": 3
+                                  },
+                                  "centroid": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ],
+                                    "minItems": 3,
+                                    "maxItems": 3
+                                  }
+                                },
+                                "required": [
+                                  "normal"
+                                ]
+                              }
+                            },
+                            "selector": {}
+                          },
+                          "required": []
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "draft"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "angle": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "angle"
+                          ]
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "face": {
+                              "type": "object",
+                              "properties": {
+                                "normal": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ],
+                                  "minItems": 3,
+                                  "maxItems": 3
+                                },
+                                "centroid": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ],
+                                  "minItems": 3,
+                                  "maxItems": 3
+                                }
+                              },
+                              "required": [
+                                "normal"
+                              ]
+                            },
+                            "pull": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ],
+                              "minItems": 3,
+                              "maxItems": 3
+                            },
+                            "neutralOrigin": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ],
+                              "minItems": 3,
+                              "maxItems": 3
+                            },
+                            "neutralNormal": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ],
+                              "minItems": 3,
+                              "maxItems": 3
+                            }
+                          },
+                          "required": [
+                            "face"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "transform"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "mirror"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "linearPattern"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "spacing": {
+                              "type": "number"
+                            },
+                            "count": {
+                              "type": "number"
+                            },
+                            "dx": {
+                              "type": "number"
+                            },
+                            "dy": {
+                              "type": "number"
+                            },
+                            "dz": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "spacing",
+                            "count"
+                          ]
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "circularPattern"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "number"
+                            },
+                            "angle": {
+                              "type": "number"
+                            },
+                            "ox": {
+                              "type": "number"
+                            },
+                            "oy": {
+                              "type": "number"
+                            },
+                            "oz": {
+                              "type": "number"
+                            },
+                            "ax": {
+                              "type": "number"
+                            },
+                            "ay": {
+                              "type": "number"
+                            },
+                            "az": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "count"
+                          ]
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "params"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "loft"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "sections": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "z": {
+                                    "type": "number"
+                                  },
+                                  "profile": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "circle"
+                                          },
+                                          "center": {
+                                            "type": "array",
+                                            "prefixItems": [
+                                              {
+                                                "type": "number"
+                                              },
+                                              {
+                                                "type": "number"
+                                              }
+                                            ],
+                                            "minItems": 2,
+                                            "maxItems": 2
+                                          },
+                                          "radius": {
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "center",
+                                          "radius"
+                                        ]
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "loop"
+                                          },
+                                          "start": {
+                                            "type": "array",
+                                            "prefixItems": [
+                                              {
+                                                "type": "number"
+                                              },
+                                              {
+                                                "type": "number"
+                                              }
+                                            ],
+                                            "minItems": 2,
+                                            "maxItems": 2
+                                          },
+                                          "segments": {
+                                            "type": "array",
+                                            "items": {
+                                              "anyOf": [
+                                                {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "kind": {
+                                                      "type": "string",
+                                                      "const": "line"
+                                                    },
+                                                    "to": {
+                                                      "type": "array",
+                                                      "prefixItems": [
+                                                        {
+                                                          "type": "number"
+                                                        },
+                                                        {
+                                                          "type": "number"
+                                                        }
+                                                      ],
+                                                      "minItems": 2,
+                                                      "maxItems": 2
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "kind",
+                                                    "to"
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "kind": {
+                                                      "type": "string",
+                                                      "const": "arc"
+                                                    },
+                                                    "through": {
+                                                      "type": "array",
+                                                      "prefixItems": [
+                                                        {
+                                                          "type": "number"
+                                                        },
+                                                        {
+                                                          "type": "number"
+                                                        }
+                                                      ],
+                                                      "minItems": 2,
+                                                      "maxItems": 2
+                                                    },
+                                                    "to": {
+                                                      "type": "array",
+                                                      "prefixItems": [
+                                                        {
+                                                          "type": "number"
+                                                        },
+                                                        {
+                                                          "type": "number"
+                                                        }
+                                                      ],
+                                                      "minItems": 2,
+                                                      "maxItems": 2
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "kind",
+                                                    "through",
+                                                    "to"
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "kind": {
+                                                      "type": "string",
+                                                      "const": "spline"
+                                                    },
+                                                    "through": {
+                                                      "type": "array",
+                                                      "items": {
+                                                        "type": "array",
+                                                        "prefixItems": [
+                                                          {
+                                                            "type": "number"
+                                                          },
+                                                          {
+                                                            "type": "number"
+                                                          }
+                                                        ],
+                                                        "minItems": 2,
+                                                        "maxItems": 2
+                                                      }
+                                                    },
+                                                    "to": {
+                                                      "type": "array",
+                                                      "prefixItems": [
+                                                        {
+                                                          "type": "number"
+                                                        },
+                                                        {
+                                                          "type": "number"
+                                                        }
+                                                      ],
+                                                      "minItems": 2,
+                                                      "maxItems": 2
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "kind",
+                                                    "through",
+                                                    "to"
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "start",
+                                          "segments"
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "z",
+                                  "profile"
+                                ]
+                              },
+                              "minItems": 2
+                            },
+                            "ruled": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "sections"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "sweep"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "profile": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "circle"
+                                    },
+                                    "center": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 2,
+                                      "maxItems": 2
+                                    },
+                                    "radius": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "center",
+                                    "radius"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "loop"
+                                    },
+                                    "start": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ],
+                                      "minItems": 2,
+                                      "maxItems": 2
+                                    },
+                                    "segments": {
+                                      "type": "array",
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "line"
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "to"
+                                            ]
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "arc"
+                                              },
+                                              "through": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "through",
+                                              "to"
+                                            ]
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "spline"
+                                              },
+                                              "through": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "array",
+                                                  "prefixItems": [
+                                                    {
+                                                      "type": "number"
+                                                    },
+                                                    {
+                                                      "type": "number"
+                                                    }
+                                                  ],
+                                                  "minItems": 2,
+                                                  "maxItems": 2
+                                                }
+                                              },
+                                              "to": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "number"
+                                                  },
+                                                  {
+                                                    "type": "number"
+                                                  }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "through",
+                                              "to"
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "start",
+                                    "segments"
+                                  ]
+                                }
+                              ]
+                            },
+                            "path": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "polyline"
+                                },
+                                "points": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ],
+                                    "minItems": 3,
+                                    "maxItems": 3
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "points"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "profile",
+                            "path"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "boolean"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "op": {
+                              "type": "string",
+                              "enum": [
+                                "union",
+                                "subtract",
+                                "intersect"
+                              ]
+                            },
+                            "toolFeatures": {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            },
+                            "dx": {
+                              "type": "number"
+                            },
+                            "dy": {
+                              "type": "number"
+                            },
+                            "dz": {
+                              "type": "number"
+                            },
+                            "tx": {
+                              "type": "number"
+                            },
+                            "ty": {
+                              "type": "number"
+                            },
+                            "tz": {
+                              "type": "number"
+                            }
+                          },
+                          "required": []
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "importStep"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "step": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "step"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "deps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "suppressed": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "placement"
+                        },
+                        "params": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        },
+                        "data": {}
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "params": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "number"
+                }
+              },
+              "assembly": {}
+            },
+            "required": [
+              "features",
+              "params"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "inspect_geometry",
+      "description": "Return a text enumeration of the current part's faces and edges (normals, centroids, areas, lengths in mm). Call this before adding a dress-up (fillet/chamfer/shell/draft) if you are unsure which face or edge to target; then reference faces/edges by their normal + centroid, or use a named selector.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "answer_user",
+      "description": "Finish the task with a short message to the user describing what you built or changed.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+]

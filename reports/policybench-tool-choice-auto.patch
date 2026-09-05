@@ -1,0 +1,35 @@
+diff --git a/policybench/eval_no_tools.py b/policybench/eval_no_tools.py
+index b4f2dee..3e5ab30 100644
+--- a/policybench/eval_no_tools.py
++++ b/policybench/eval_no_tools.py
+@@ -185,6 +185,19 @@ GRANDFATHERED_CHUNKED_CLAUDE_MODELS = frozenset(
+         "claude-haiku-4-5-20251001",
+     }
+ )
++# Models whose Messages API rejects a forced tool choice outright:
++#   400 invalid_request_error: tool_choice: type "tool" and "any" are not
++#   supported for this model.
++# The canonical forced-tool condition cannot be sent to these models at all, so
++# they answer under `tool_choice: "auto"`. Scores produced this way are NOT
++# comparable to the frozen board, for the same reason the
++# POLICYBENCH_TOOL_CHOICE escape hatch is not: add a model here only together
++# with a versioned re-run, never to slip it onto existing scores.
++FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS = frozenset(
++    {
++        "claude-fable-5-1",
++    }
++)
+ 
+ 
+ class RequestWallTimeoutError(TimeoutError):
+@@ -728,6 +741,10 @@ def _chat_completion_request_kwargs(
+             "type": "function",
+             "function": {"name": ANSWER_FUNCTION_NAME},
+         }
++        # A model that 400s on a forced tool choice cannot run the canonical
++        # condition at all; `auto` is the only shape it accepts.
++        if model_id in FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS:
++            tool_choice = "auto"
+         # Sensitivity-run escape hatch: POLICYBENCH_TOOL_CHOICE=auto lets the
+         # model decide when to call the answer tool. Anthropic models skip
+         # thinking when the tool is forced (verified on claude-opus-5: forced
