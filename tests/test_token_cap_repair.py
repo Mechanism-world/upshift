@@ -262,3 +262,19 @@ def test_the_patch_applies_and_the_agent_still_loads(tmp_path: Path) -> None:
     config = AgentConfig.load(agent_dir)
     assert config.params["max_completion_tokens"] == 16384
     assert "max_tokens" not in config.params
+
+
+def test_the_loop_forwards_every_signature_the_differ_can_emit() -> None:
+    """The repair loop keeps its own copy of the signature priority order and filters the
+    differ's signatures through it before generating candidates. A signature missing from
+    that copy is silently dropped: candidates that exist are never even asked for, which is
+    how the token-cap repair still produced STAY PINNED after the playbook could fix it.
+
+    `thinking_block_invalid` is the one deliberate omission (the loop refuses it instead).
+    """
+    from upshift.differ import SIG_THINKING_BLOCK_INVALID, SIGNATURE_PRIORITY
+    from upshift.repair.loop import _SIGNATURE_PRIORITY
+
+    assert list(_SIGNATURE_PRIORITY) == [
+        s for s in SIGNATURE_PRIORITY if s != SIG_THINKING_BLOCK_INVALID
+    ]
