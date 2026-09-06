@@ -11,11 +11,12 @@ Offline and deterministic — no key, no network, no cost.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from upshift.agent_loop import build_request, convert_tools_messages
+from upshift.agent_loop import build_request, convert_tools_messages, run_episode
 from upshift.capture import mapping as capture_mapping
 from upshift.capture.adapt import NO_RECORD_ERROR, adapt_from_capture
 from upshift.capture.record import CaptureStore, load_capture
@@ -393,3 +394,127 @@ def test_a_recorded_failure_is_reported_rather_than_hidden(tmp_path: Path) -> No
     store.close()
     result = adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
     assert any("recorded 1 failed response" in note for note in result.notes)
+
+
+# ---------------------------------------------------------------------------
+# Terminal tools: the framework stopped, so the episode stops
+# ---------------------------------------------------------------------------
+
+
+def _structured_output_capture(out_dir: Path) -> Path:
+    """The pydantic-ai shape: one ordinary tool, then a `final_result` call the framework
+    never answers because that call IS the output."""
+    store = CaptureStore(out_dir, listen="127.0.0.1:0", upstream="x", mode="forward")
+    tools = [
+        {"name": "temperature_c", "description": "temp",
+         "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}},
+        {"name": "final_result", "description": "The final response which ends this "
+         "conversation", "input_schema": {"type": "object",
+                                          "properties": {"celsius": {"type": "integer"}}}},
+    ]
+    calls = [
+        {"type": "tool_use", "id": "toolu_1", "name": "temperature_c", "input": {"city": "Oslo"}},
+        {"type": "tool_use", "id": "toolu_2", "name": "final_result", "input": {"celsius": 3}},
+    ]
+    messages: list[dict] = [{"role": "user", "content": "weather in Oslo?"}]
+    for turn, call in enumerate(calls, start=1):
+        store.add(
+            headers={"user-agent": "pydantic-ai/2.40.0"},
+            body={"model": "claude-fable-5", "max_tokens": 4096, "messages": list(messages),
+                  "system": "Report the weather.", "tools": tools,
+                  "tool_choice": {"type": "any"}},
+            raw_body_bytes=400, path="/v1/messages?beta=true", status=200,
+            response_body={"id": f"msg_{turn}", "type": "message", "role": "assistant",
+                           "model": "claude-fable-5", "content": [call],
+                           "stop_reason": "tool_use"},
+            events=None, streamed=False, latency_s=0.1,
+        )
+        messages += [
+            {"role": "assistant", "content": [call]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call["id"],
+                                          "content": "3"}]},
+        ]
+    store.close()
+    return out_dir
+
+
+def test_a_tool_the_capture_never_answered_is_marked_terminal(tmp_path: Path) -> None:
+    result = adapt_from_capture(_structured_output_capture(tmp_path / "cap"), tmp_path / "agent")
+    assert result.terminal_tools == ["final_result"]
+    config = json.loads((tmp_path / "agent" / "agent.json").read_text())
+    assert config["terminal_tools"] == ["final_result"]
+    assert any("never answered" in note for note in result.notes)
+
+
+def test_an_answered_tool_is_never_terminal(tmp_path: Path) -> None:
+    """temperature_c got a tool_result, so it is an ordinary tool no matter how it looks."""
+    result = adapt_from_capture(_structured_output_capture(tmp_path / "cap"), tmp_path / "agent")
+    assert "temperature_c" not in result.terminal_tools
+
+
+def test_the_cookbook_capture_has_no_terminal_tools(adapted: Path) -> None:
+    """Every tool in that capture was answered; nothing may be invented."""
+    assert "terminal_tools" not in json.loads((adapted / "agent.json").read_text())
+
+
+class _CallOnce:
+    """A provider that calls a terminal tool, then would keep talking if it were allowed to."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def call(self, endpoint, request, seed_key, sim_context):
+        self.calls += 1
+        block = {"type": "tool_use", "id": f"t{self.calls}", "name": "final_result",
+                 "input": {"answer": self.calls}}
+        return {"id": "msg", "type": "message", "role": "assistant", "model": "m",
+                "content": [block], "stop_reason": "tool_use",
+                "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+
+class _NeverCalled:
+    def execute(self, name, arguments):  # pragma: no cover - the point is that it is not
+        raise AssertionError(f"the replay backend was asked for {name!r}")
+
+    def state(self):
+        return {}
+
+
+def test_the_episode_ends_on_a_terminal_tool_and_the_backend_is_never_asked(
+    tmp_path: Path,
+) -> None:
+    adapt_from_capture(_structured_output_capture(tmp_path / "cap"), tmp_path / "agent")
+    config = AgentConfig.load(tmp_path / "agent")
+    assert config.terminal_tools == ["final_result"]
+    provider = _CallOnce()
+    episode = run_episode(
+        config,
+        Case(id="c", description="", initial_state={}, user_messages=["weather in Oslo?"],
+             checks=[]),
+        provider,
+        _NeverCalled(),
+        rep=1,
+        seed=1,
+    )
+    assert provider.calls == 1  # the loop stopped instead of feeding a result back
+    assert [e.name for e in episode.tool_executions] == ["final_result"]
+    assert episode.final_message == '{"answer": 1}'  # the framework's own output
+    assert episode.api_error is None
+
+
+def test_without_terminal_tools_the_same_episode_keeps_going(tmp_path: Path) -> None:
+    """The control: this is the extra assistant turn the real framework never took."""
+    adapt_from_capture(_structured_output_capture(tmp_path / "cap"), tmp_path / "agent")
+    config = AgentConfig.load(tmp_path / "agent")
+    provider = _CallOnce()
+    episode = run_episode(
+        replace(config, terminal_tools=[]),
+        Case(id="c", description="", initial_state={}, user_messages=["weather in Oslo?"],
+             checks=[]),
+        provider,
+        load_backend_factory(Path(config.agent_dir))({}),
+        rep=1,
+        seed=1,
+    )
+    assert provider.calls == config.max_turns
+    assert len(episode.tool_executions) == config.max_turns

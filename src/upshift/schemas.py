@@ -38,6 +38,11 @@ class AgentConfig:
     #: appended per request by agent_loop and never stored in the conversation history.
     #: Empty for every agent that does not do this, which is nearly all of them.
     volatile_suffix: str = ""
+    #: Tools that END the episode when the model calls one, because the framework the agent
+    #: was captured from never returned a result for them (`upshift adapt --from-capture`
+    #: derives the list from the capture: a `tool_use` no later request ever answered).
+    #: pydantic-ai's `final_result` is the canonical example. Empty for every other agent.
+    terminal_tools: list[str] = field(default_factory=list)
 
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
@@ -65,6 +70,7 @@ class AgentConfig:
             max_turns=raw.get("max_turns", 12),
             agent_dir=str(agent_dir),
             volatile_suffix=str(raw.get("volatile_suffix") or ""),
+            terminal_tools=[str(name) for name in (raw.get("terminal_tools") or [])],
         )
 
     def file_hashes(self) -> dict[str, str]:

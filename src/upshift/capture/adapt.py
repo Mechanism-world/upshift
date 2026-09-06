@@ -61,6 +61,7 @@ class CaptureAdaptResult:
     model: str = ""
     framework: str = ""
     volatile_suffix: str | None = None
+    terminal_tools: list[str] = field(default_factory=list)
     max_turns: int = 12
 
 
@@ -189,6 +190,42 @@ def build_replay(conversations: list[dict[str, Any]], notes: list[str]) -> dict[
                         notes.append(note)
                     recorded.setdefault(name, {})[canonical(arguments)] = result
     return recorded
+
+
+def terminal_tool_names(conversations: list[dict[str, Any]]) -> list[str]:
+    """Tools the framework never fed a result back for — so calling one ended the conversation.
+
+    Read off the capture, not guessed: every recorded `tool_use` id is matched against the
+    `tool_result` blocks of the later requests. A name that was answered even once is an
+    ordinary tool; a name that was never answered anywhere in the capture is terminal, because
+    the framework stopped the moment the model called it.
+
+    This is what pydantic-ai's `final_result` is (structured `output_type`), and what every
+    framework's "the model has produced the output, we are done" tool is. Without it the
+    replayed episode hands the model a result the real client never produced, and the model —
+    still under a forced `tool_choice` — calls it again: one extra assistant turn that the
+    real agent could not have taken, which fails the case's own `turns_at_most` on the
+    BASELINE model. Found live, on a pydantic-ai capture.
+    """
+    called: set[str] = set()
+    answered: set[str] = set()
+    for conversation in conversations:
+        pending: dict[str, str] = {}
+        for turn in conversation["turns"]:
+            for block in _tool_calls(_ok(turn) or {}):
+                pending[str(block.get("id"))] = str(block.get("name"))
+                called.add(str(block.get("name")))
+            body = (turn.get("request") or {}).get("body") or {}
+            for message in body.get("messages") or []:
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                for block in text_blocks(message.get("content")):
+                    if block.get("type") != "tool_result":
+                        continue
+                    name = pending.get(str(block.get("tool_use_id")))
+                    if name is not None:
+                        answered.add(name)
+    return sorted(called - answered)
 
 
 def _result_dict(content: Any, name: str) -> tuple[dict[str, Any], str | None]:
@@ -683,6 +720,15 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
             f"agent.json `volatile_suffix` and appended to every request"
         )
 
+    # -- terminal tools -----------------------------------------------------
+    result.terminal_tools = terminal_tool_names(conversations)
+    if result.terminal_tools:
+        notes.append(
+            f"tool(s) {result.terminal_tools} were called but never answered with a "
+            f"tool_result anywhere in the capture, so the framework ended the conversation on "
+            f"them; written as agent.json `terminal_tools` and the episode stops there too"
+        )
+
     # -- max_turns ----------------------------------------------------------
     result.max_turns = max(len(c["turns"]) for c in conversations) + 1
 
@@ -702,6 +748,8 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
     }
     if result.volatile_suffix is not None:
         config["volatile_suffix"] = result.volatile_suffix
+    if result.terminal_tools:
+        config["terminal_tools"] = result.terminal_tools
     config["capture"] = {
         "directory": str(capture_dir),
         "framework": framework,
