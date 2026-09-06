@@ -423,17 +423,19 @@ send) is ignored when deciding to record and kept verbatim in the record.
 
 No model call and no source file read. Every value comes out of a request or a response the
 framework actually made: `agent.json` (model, max_tokens, sampling params, tool_choice,
-thinking, effort — as sent), `system_prompt.txt` (byte-identical), `tools.json` (the recorded
-schemas, re-wrapped chat-style per ADAPTER.md), `backend.py` + `recorded_tools.json` (a replay
-keyed by tool name and canonical arguments; unknown arguments fail honestly rather than
-answering plausibly), and one case per conversation. Checks are derived, never invented:
-`no_api_error`, `tool_called` for tools the recording shows being called, and `turns_at_most`
-at the recorded turn count plus one. No check is built from the recorded answer text — that
-would be an assertion written from the model's own output. Thinking blocks never reach a case:
-a signature is valid only for the turn that produced it, and replaying one is what causes the
-invalidation 400 in the first place. `ATTRIBUTION.md` and `ADAPT_EDITS.md` list every source
-and every deviation. Two derived `agent.json` keys are documented in ADAPTER.md's addendum:
-`volatile_suffix` and `terminal_tools`.
+thinking, effort — as sent; a sampling param seen on the wire is DECLARED under `params`, and
+the loop's `extra_body` routing above decides how it travels back out, so it is sent exactly
+once and the sampling repair can drop it), `system_prompt.txt` (byte-identical), `tools.json`
+(the recorded schemas, re-wrapped chat-style per ADAPTER.md), `backend.py` +
+`recorded_tools.json` (a replay keyed by tool name and canonical arguments; unknown arguments
+fail honestly rather than answering plausibly), and one case per conversation. Checks are
+derived, never invented: `no_api_error`, `tool_called` for tools the recording shows being
+called, and `turns_at_most` at the recorded turn count plus one. No check is built from the
+recorded answer text — that would be an assertion written from the model's own output.
+Thinking blocks never reach a case: a signature is valid only for the turn that produced it, and
+replaying one is what causes the invalidation 400 in the first place. `ATTRIBUTION.md` and
+`ADAPT_EDITS.md` list every source and every deviation. Two derived `agent.json` keys are
+documented in ADAPTER.md's addendum: `volatile_suffix` and `terminal_tools`.
 
 ### Framework mapping (`docs/framework-mapping.md` + `capture/mapping.py`)
 

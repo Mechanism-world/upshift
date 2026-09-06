@@ -25,6 +25,7 @@ from upshift.differ import diff_runs
 from upshift.providers.sim import SimProvider
 from upshift.recorder import run_dir
 from upshift.repair.loop import repair
+from upshift.repair.playbook import generate_candidates
 from upshift.report import diff_to_markdown
 from upshift.runner import load_backend_factory, run_suite
 from upshift.schemas import LABEL_REGRESSED, AgentConfig, Case
@@ -518,3 +519,81 @@ def test_without_terminal_tools_the_same_episode_keeps_going(tmp_path: Path) -> 
     )
     assert provider.calls == config.max_turns
     assert len(episode.tool_executions) == config.max_turns
+
+
+# ---------------------------------------------------------------------------
+# A sampling param seen on the wire: capture -> agent.json -> wire -> repair
+# ---------------------------------------------------------------------------
+
+
+_ABSENT = object()
+
+
+def _sampling_capture(out_dir: Path) -> Path:
+    """A framework that sets `temperature` on every request — the shape that makes the
+    Anthropic sampling 400 reachable, recorded the way the recorder really writes it."""
+    store = CaptureStore(out_dir, listen="127.0.0.1:0", upstream="x", mode="forward")
+    store.add(
+        headers={"user-agent": "framework/1.0"},
+        body={"model": "claude-fable-5", "max_tokens": 512, "temperature": 0.2,
+              "messages": [{"role": "user", "content": "say hi"}],
+              "system": "Be brief.",
+              "tools": [{"name": "clock", "description": "clock",
+                         "input_schema": {"type": "object", "properties": {}}}]},
+        raw_body_bytes=400, path="/v1/messages", status=200,
+        response_body={"id": "msg_1", "type": "message", "role": "assistant",
+                       "model": "claude-fable-5",
+                       "content": [{"type": "text", "text": "Hi."}],
+                       "stop_reason": "end_turn"},
+        events=None, streamed=False, latency_s=0.1,
+    )
+    store.close()
+    return out_dir
+
+
+@pytest.fixture()
+def sampling_agent(tmp_path: Path) -> Path:
+    adapt_from_capture(_sampling_capture(tmp_path / "cap"), tmp_path / "agent")
+    return tmp_path / "agent"
+
+
+def test_a_captured_sampling_param_is_declared_under_params(sampling_agent: Path) -> None:
+    """What the agent DECLARES is `params.temperature`, whatever the installed SDK will take
+    as a keyword: how it travels is the loop's business (ADAPTER.md, "Params")."""
+    params = json.loads((sampling_agent / "agent.json").read_text())["params"]
+    assert params["temperature"] == 0.2
+    assert "extra_body" not in params
+
+
+@pytest.mark.parametrize("sdk_takes_it", [True, False])
+def test_it_reaches_the_wire_exactly_once(
+    sampling_agent: Path, monkeypatch: pytest.MonkeyPatch, sdk_takes_it: bool
+) -> None:
+    """Whichever way `map_params` routes it, the request carries ONE temperature — a value in
+    both the top level and `extra_body` would be sent twice and could disagree."""
+    monkeypatch.setattr(
+        "upshift.agent_loop.messages_create_accepts", lambda name: sdk_takes_it
+    )
+    config = AgentConfig.load(sampling_agent)
+    request = build_request(
+        "messages", config.model, config.params, config.tools,
+        [{"role": "user", "content": "say hi"}], system=config.system_prompt,
+    )
+    places = [request.get("temperature", _ABSENT),
+              (request.get("extra_body") or {}).get("temperature", _ABSENT)]
+    assert [p for p in places if p is not _ABSENT] == [0.2]
+    assert ("temperature" in request) is sdk_takes_it
+
+
+def test_the_capture_derived_param_is_dropped_by_the_repair(sampling_agent: Path) -> None:
+    """The declaration is what the repair edits, so the candidate fires on a capture-derived
+    agent exactly as it does on a hand-written one — and the request is then clean."""
+    candidates = generate_candidates(sampling_agent, ["api_error_unsupported_sampling_params"])
+    assert [c.id for c in candidates] == ["drop-sampling-params"]
+    edited = [e for e in candidates[0].edits if e.file == "agent.json"]
+    params = json.loads(edited[0].new_content)["params"]
+    assert "temperature" not in params
+    assert "extra_body" not in params
+    request = build_request("messages", "claude-fable-5-1", params, [], [], system="Be brief.")
+    assert "temperature" not in request
+    assert "temperature" not in (request.get("extra_body") or {})
