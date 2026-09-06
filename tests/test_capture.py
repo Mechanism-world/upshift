@@ -632,5 +632,33 @@ def test_the_store_writes_one_file_pair_per_request(tmp_path):
     assert files == ["req_01.json", "res_01.json"]
 
 
+def test_the_index_is_stamped_with_the_version_that_actually_ran(tmp_path):
+    """A capture is evidence; its provenance field must name the tool that produced it.
+
+    `upshift.__version__` was a hand-maintained literal three releases behind
+    `pyproject.toml`, so every capture `index.json` — and every run record, which stamps the
+    same constant — claimed to come from 0.1.0 while `upshift --version` said otherwise.
+    Found on the first real capture-mode case (rescue-ops `A-075`).
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    from upshift import __version__
+
+    try:
+        installed = version("upshift")
+    except PackageNotFoundError:  # pragma: no cover - only in a non-installed tree
+        pytest.skip("upshift is not installed; nothing to agree with")
+
+    assert __version__ == installed
+
+    store = CaptureStore(tmp_path / "cap", listen="127.0.0.1:0", upstream="x", mode="forward")
+    store.add(headers={}, body={"messages": [{"role": "user", "content": "a"}]},
+              raw_body_bytes=10, path="/v1/messages", status=200, response_body=TEXT_MESSAGE,
+              events=None, streamed=False, latency_s=0.1)
+    store.close()
+    index = json.loads((tmp_path / "cap" / "index.json").read_text())
+    assert index["upshift_version"] == installed
+
+
 def _url(server) -> str:
     return f"http://127.0.0.1:{server.server_address[1]}"
