@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from upshift import cli, differ
+from upshift import agent_loop, cli, differ
 from upshift.agent_loop import (
     DEFAULT_MAX_TOKENS,
     build_request,
@@ -22,7 +22,11 @@ from upshift.agent_loop import (
 )
 from upshift.differ import failure_signatures
 from upshift.pricing import price
-from upshift.providers.anthropic_provider import AnthropicProvider
+from upshift.providers.anthropic_provider import (
+    SAMPLING_PARAMS,
+    AnthropicProvider,
+    messages_create_accepts,
+)
 from upshift.providers.base import Provider, ProviderAPIError, get_provider
 from upshift.recorder import load_case_reps
 from upshift.runner import run_suite
@@ -258,17 +262,111 @@ def test_reasoning_effort_becomes_output_config_effort():
     ) == {"output_config": {"effort": "max"}}
 
 
-def test_thinking_and_sampling_params_pass_through():
-    mapped = map_params(
-        "messages",
-        {"thinking": {"type": "enabled"}, "temperature": 0.4, "top_p": 0.9, "top_k": 20},
+def test_thinking_passes_through():
+    assert map_params("messages", {"thinking": {"type": "enabled"}}) == {
+        "thinking": {"type": "enabled"}
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sampling params: top-level on an SDK that takes them, `extra_body` on one that
+# does not (anthropic >= 1.1.0 removed them from Messages.create).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sdk_takes_sampling_params(monkeypatch):
+    """Pretend the installed SDK still lists temperature/top_p/top_k (anthropic < 1.1.0)."""
+    monkeypatch.setattr(agent_loop, "messages_create_accepts", lambda name: True)
+
+
+@pytest.fixture
+def sdk_dropped_sampling_params(monkeypatch):
+    """Pretend the installed SDK dropped them (anthropic >= 1.1.0), whatever is installed."""
+    monkeypatch.setattr(
+        agent_loop, "messages_create_accepts", lambda name: name not in SAMPLING_PARAMS
     )
-    assert mapped == {
-        "thinking": {"type": "enabled"},
+
+
+def test_sampling_params_stay_top_level_on_an_sdk_that_accepts_them(sdk_takes_sampling_params):
+    assert map_params("messages", {"temperature": 0.4, "top_p": 0.9, "top_k": 20}) == {
         "temperature": 0.4,
         "top_p": 0.9,
         "top_k": 20,
     }
+
+
+def test_sampling_params_are_routed_into_extra_body_when_the_sdk_dropped_them(
+    sdk_dropped_sampling_params,
+):
+    assert map_params("messages", {"temperature": 0.4, "top_p": 0.9, "top_k": 20}) == {
+        "extra_body": {"temperature": 0.4, "top_p": 0.9, "top_k": 20}
+    }
+
+
+def test_routing_leaves_the_other_endpoints_and_the_other_params_alone(
+    sdk_dropped_sampling_params,
+):
+    assert map_params("chat_completions", {"temperature": 0.4}) == {"temperature": 0.4}
+    assert map_params("responses", {"top_p": 0.9}) == {"top_p": 0.9}
+    assert map_params("messages", {"max_tokens": 32, "temperature": 0.4}) == {
+        "max_tokens": 32,
+        "extra_body": {"temperature": 0.4},
+    }
+
+
+def test_an_explicit_extra_body_is_merged_and_wins_over_the_canonical_param(
+    sdk_dropped_sampling_params,
+):
+    """An agent that already writes the escape hatch by hand keeps its own value — the same
+    rule `output_config.effort` follows — and its other extra_body keys survive."""
+    assert map_params(
+        "messages",
+        {"temperature": 0.4, "top_k": 20, "extra_body": {"temperature": 0.9, "beta": True}},
+    ) == {"extra_body": {"temperature": 0.9, "beta": True, "top_k": 20}}
+
+
+def test_an_explicit_extra_body_is_left_alone_on_an_older_sdk(sdk_takes_sampling_params):
+    assert map_params("messages", {"extra_body": {"temperature": 0.9}}) == {
+        "extra_body": {"temperature": 0.9}
+    }
+
+
+def test_the_installed_sdk_is_what_decides(monkeypatch):
+    """No monkeypatching: whichever anthropic is installed, the built request must put the
+    param where THAT SDK's Messages.create will take it."""
+    import inspect as _inspect
+
+    from anthropic.resources.messages import Messages
+
+    accepted = "temperature" in _inspect.signature(Messages.create).parameters
+    request = build_request("messages", "claude-fable-5", {"temperature": 0.2}, [], [])
+
+    if accepted:
+        assert request["temperature"] == 0.2
+        assert "extra_body" not in request
+    else:
+        assert request["extra_body"] == {"temperature": 0.2}
+        assert "temperature" not in request
+
+
+def test_the_recorded_request_shows_the_param_where_it_was_actually_sent(
+    sdk_dropped_sampling_params,
+):
+    """The recorder writes the request the loop built, and the provider sends it verbatim, so
+    the two must agree — a record that said `temperature` top-level while the wire carried it
+    in extra_body would be a lie about what was measured."""
+    provider = ScriptedProvider([msg_text("done")])
+
+    result = run_episode(
+        make_config(params={"temperature": 0.2}), make_case(), provider, StubBackend(),
+        rep=0, seed=0,
+    )
+
+    recorded = result.api_calls[0].request
+    assert recorded["extra_body"] == {"temperature": 0.2}
+    assert "temperature" not in recorded
+    assert provider.calls[0]["request"] == recorded
 
 
 @pytest.mark.parametrize(
@@ -839,11 +937,13 @@ def test_a_type_error_that_is_not_an_unexpected_kwarg_is_not_swallowed():
 
 
 def test_the_episode_records_the_sdk_rejection_instead_of_dying():
+    """The forced outcome stands in for ANY parameter the installed SDK refuses: since the
+    sampling params are routed through `extra_body`, `temperature` is no longer one of them
+    (see the strict-client tests below), but the recording path must still hold."""
     provider = make_provider(FakeClient(messages_outcome=removed_kwarg_type_error("temperature")))
 
     result = run_episode(
-        make_config(params={"temperature": 0}), make_case(), provider, StubBackend(),
-        rep=0, seed=0,
+        make_config(params={}), make_case(), provider, StubBackend(), rep=0, seed=0,
     )
 
     assert result.api_error["status_code"] == 400
@@ -860,7 +960,7 @@ def test_the_whole_suite_survives_it_and_records_failing_reps(tmp_path):
     run_dir = run_suite(
         TODO_AGENT, provider, "sdk-sampling-break", n_reps=2,
         model_override="claude-fable-5", endpoint_override="messages",
-        params_override={"temperature": 0}, runs_root=runs_root, workers=1,
+        params_override={}, runs_root=runs_root, workers=1,
     )
 
     case_ids = sorted(d.name for d in (run_dir / "cases").iterdir() if d.is_dir())
@@ -871,3 +971,73 @@ def test_the_whole_suite_survives_it_and_records_failing_reps(tmp_path):
         assert all(not r.passed for r in reps)
         assert all(r.api_error["status_code"] == 400 for r in reps)
         assert failure_signatures(reps) == [differ.SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS]
+
+
+# ---------------------------------------------------------------------------
+# ... and why `temperature` is no longer one of those refused parameters
+# ---------------------------------------------------------------------------
+
+
+class StrictFakeMessages(FakeMessages):
+    """A `messages` resource with anthropic 1.3.0's real keyword set: no sampling params, no
+    **kwargs, `extra_body` present. Anything else raises the SDK's own TypeError."""
+
+    ACCEPTED = frozenset(
+        {
+            "max_tokens", "messages", "model", "cache_control", "container", "inference_geo",
+            "metadata", "output_config", "service_tier", "stop_sequences", "stream", "system",
+            "thinking", "tool_choice", "tools", "user_profile_id", "extra_headers",
+            "extra_query", "extra_body", "timeout",
+        }
+    )
+
+    def create(self, **request):
+        for name in request:
+            if name not in self.ACCEPTED:
+                raise removed_kwarg_type_error(name)
+        return super().create(**request)
+
+
+def strict_provider():
+    return make_provider(FakeClient(messages_outcome={"id": "msg_1", "content": []}))
+
+
+def test_temperature_reaches_an_sdk_that_dropped_it_instead_of_raising(
+    sdk_dropped_sampling_params,
+):
+    """The A-052 mapping made the in-process TypeError a recorded failure, but it fired on
+    BOTH models and left the signature undecidable. Routed through extra_body the request now
+    reaches the wire, so the API's own answer is what the run records."""
+    client = FakeClient()
+    client.messages = StrictFakeMessages({"id": "msg_1", "content": [], "stop_reason": "end_turn"})
+    provider = make_provider(client)
+
+    result = run_episode(
+        make_config(params={"temperature": 0.2, "top_p": 0.9, "top_k": 5}),
+        make_case(), provider, StubBackend(), rep=0, seed=0,
+    )
+
+    assert result.api_error is None
+    assert client.messages.seen["extra_body"] == {"temperature": 0.2, "top_p": 0.9, "top_k": 5}
+    for name in SAMPLING_PARAMS:
+        assert name not in client.messages.seen
+
+
+def test_another_unexpected_kwarg_still_maps_to_the_documented_400():
+    """The A-052 mapping is kept for every other parameter a future SDK removes."""
+    client = FakeClient()
+    client.messages = StrictFakeMessages({"id": "msg_1", "content": []})
+    provider = make_provider(client)
+
+    with pytest.raises(ProviderAPIError) as excinfo:
+        provider.call("messages", {"model": "claude-fable-5", "top_z": 1}, "k")
+
+    assert excinfo.value.status_code == 400
+    assert "unexpected keyword argument 'top_z'" in excinfo.value.message
+
+
+def test_the_sdk_probe_reads_the_real_signature():
+    assert messages_create_accepts("model") is True
+    assert messages_create_accepts("extra_body") is True
+    assert messages_create_accepts("definitely_not_a_messages_param") is False
+

@@ -7,16 +7,20 @@ Offline and deterministic — no key, no network, no cost.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from upshift import recorder
 from upshift.agent_loop import run_episode
+from upshift.differ import SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS, diff_runs
+from upshift.providers.anthropic_provider import SAMPLING_PARAMS
 from upshift.providers.base import ProviderAPIError
 from upshift.providers.sim import FORCED_TOOL_CHOICE_MESSAGE, SimProvider
+from upshift.repair.loop import repair
 from upshift.runner import run_suite
-from upshift.schemas import AgentConfig, Case
+from upshift.schemas import LABEL_REGRESSED, AgentConfig, Case
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_AGENT = ROOT / "src" / "upshift" / "example_agent"
@@ -389,3 +393,99 @@ def test_marker_detection_still_fires_through_the_cache_marked_system_block():
     )
     assert isinstance(request["system"], list)
     assert BATCHING_SENTENCE.lower() in _system_prompt("messages", request).lower()
+
+
+# ---------------------------------------------------------------------------
+# The sampling-params repair, end to end through the loop
+# ---------------------------------------------------------------------------
+
+TODO_AGENT = Path(__file__).resolve().parent / "todo_agent"
+
+SAMPLING_400 = "`temperature` is deprecated for this model."
+
+
+class SamplingStrictSim(SimProvider):
+    """The sim plus one thing it deliberately does not simulate: a 400 on a sampling
+    parameter, wherever the request carries it (top level or inside `extra_body`).
+
+    The sim's own docstring excludes that 400 on purpose — on real models it fires on BOTH
+    sides of a pair, so it is never a regression and the sim would be modelling a fiction.
+    This subclass makes it one-sided, and only inside this test, so the repair loop's
+    machinery (signature -> candidate -> screen -> full-suite verification -> acceptance)
+    can be exercised offline.
+    """
+
+    def call(self, endpoint, request, seed_key, sim_context=None):
+        if str(request.get("model") or "").startswith("sim-fable-5-1"):
+            carried = {**request, **(request.get("extra_body") or {})}
+            if any(name in carried for name in SAMPLING_PARAMS):
+                raise ProviderAPIError(
+                    message=SAMPLING_400, status_code=400, error_type="invalid_request_error"
+                )
+        return super().call(endpoint, request, seed_key, sim_context)
+
+
+def write_sampling_agent(tmp_path: Path, params: dict) -> Path:
+    agent_dir = tmp_path / "agent"
+    shutil.copytree(TODO_AGENT, agent_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    raw = json.loads((agent_dir / "agent.json").read_text())
+    raw["endpoint"] = "messages"
+    raw["model"] = "sim-fable-5"
+    raw["params"] = params
+    (agent_dir / "agent.json").write_text(json.dumps(raw, indent=2) + "\n")
+    return agent_dir
+
+
+@pytest.mark.parametrize(
+    ("params", "label"),
+    [
+        ({"temperature": 0.2, "max_tokens": 2048}, "declared-as-a-param"),
+        ({"extra_body": {"temperature": 0.2}, "max_tokens": 2048}, "written-into-extra-body"),
+    ],
+)
+def test_the_sampling_repair_produces_a_candidate_and_survives_full_verification(
+    tmp_path, params, label
+):
+    """a-101 §4.1: the signature fired and the loop had no candidate to offer, because
+    `_agent_json_remove` could only see top-level `params` keys. Both spellings of the same
+    intent must now reach `drop-sampling-params` and pass the full-suite verification."""
+    agent_dir = write_sampling_agent(tmp_path, params)
+    provider = SamplingStrictSim()
+    runs = tmp_path / "runs"
+    n_reps = 3
+
+    baseline = run_suite(
+        agent_dir, provider, f"sp-{label}-baseline", n_reps=n_reps,
+        model_override="sim-fable-5", runs_root=runs, workers=1,
+    )
+    candidate = run_suite(
+        agent_dir, provider, f"sp-{label}-candidate", n_reps=n_reps,
+        model_override="sim-fable-5-1", runs_root=runs, workers=1,
+    )
+    result = diff_runs(baseline, candidate)
+
+    regressed = result.by_label(LABEL_REGRESSED)
+    assert {c.case_id for c in regressed} == {c.case_id for c in result.cases}
+    for case in regressed:
+        assert case.failure_signatures == [SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS]
+
+    outcome = repair(
+        original_agent_dir=agent_dir,
+        work_dir=tmp_path / "patched",
+        provider=provider,
+        candidate_model="sim-fable-5-1",
+        baseline_diff=result,
+        n_reps=n_reps,
+        runs_root=runs,
+        run_prefix=f"sp-{label}",
+        budget=6,
+        workers=1,
+    )
+
+    assert [p.id for p in outcome.accepted_patches] == ["drop-sampling-params"]
+    assert sorted(outcome.restored) == sorted(c.case_id for c in result.cases)
+    assert outcome.unrestored == []
+    assert outcome.final_verify_run_id is not None
+
+    patched = json.loads((tmp_path / "patched" / "agent.json").read_text())
+    assert patched["params"] == {"max_tokens": 2048}

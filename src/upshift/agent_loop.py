@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from upshift.providers.anthropic_provider import SAMPLING_PARAMS, messages_create_accepts
 from upshift.providers.base import ProviderAPIError
 from upshift.schemas import AgentConfig, APICall, Case, ToolExecution
 
@@ -63,6 +64,7 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """Canonical params -> endpoint-specific request fields. Unknown keys pass through."""
     out: dict[str, Any] = {}
     effort = _MISSING
+    sampling: dict[str, Any] = {}
     for key, value in (params or {}).items():
         if endpoint == RESPONSES and key == "reasoning_effort":
             out["reasoning"] = {"effort": value}
@@ -70,6 +72,8 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
             effort = value  # folded into output_config below, after explicit values land
         elif endpoint == MESSAGES and key == "tool_choice":
             out["tool_choice"] = _messages_tool_choice(value)
+        elif endpoint == MESSAGES and key in SAMPLING_PARAMS:
+            sampling[key] = copy.deepcopy(value)  # placed below, once extra_body has landed
         else:
             out[key] = copy.deepcopy(value)
     if effort is not _MISSING:
@@ -78,7 +82,35 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         config = dict(out.get("output_config") or {})
         config.setdefault("effort", effort)
         out["output_config"] = config
+    if sampling:
+        _place_sampling_params(out, sampling)
     return out
+
+
+def _place_sampling_params(out: dict[str, Any], sampling: dict[str, Any]) -> None:
+    """Put temperature/top_p/top_k where the INSTALLED anthropic SDK will actually send them.
+
+    `anthropic` >= 1.1.0 dropped them from `Messages.create()`, so a top-level value raises
+    TypeError in process and the request never reaches the wire — identically on both models
+    of an upgrade pair, which leaves the sampling-params signature undecidable. Routed through
+    `extra_body` (the SDK's documented escape hatch) the value is sent as the same JSON body
+    field it always was, and the API answers for itself: older models accept it, the newest
+    ones return the documented 400. On an SDK that still lists them nothing moves and a pinned
+    older client behaves exactly as before.
+
+    This runs while the request is being BUILT, not in the provider, because the request dict
+    is what the recorder writes: a record must show each param where it was really sent.
+    An `extra_body` the agent wrote by hand is the more specific statement and wins, the same
+    rule `output_config.effort` follows.
+    """
+    extra_body = dict(out.get("extra_body") or {})
+    for key, value in sampling.items():
+        if messages_create_accepts(key):
+            out[key] = value
+        else:
+            extra_body.setdefault(key, value)
+    if extra_body:
+        out["extra_body"] = extra_body
 
 
 def _messages_tool_choice(value: Any) -> Any:

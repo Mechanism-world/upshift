@@ -464,6 +464,63 @@ def test_drop_sampling_params_is_skipped_when_no_such_param_exists(tmp_path):
     assert "drop-sampling-params" not in ids
 
 
+def test_drop_sampling_params_reaches_a_param_the_agent_nested_under_extra_body(tmp_path):
+    """The transport is the provider's business, the repair is about the agent's intent: a
+    param written into the SDK escape hatch by hand must still be removable, or the signature
+    fires with no candidate behind it (a-101 §4.1)."""
+    agent_dir = write_agent(
+        tmp_path, params={"max_tokens": 4096, "extra_body": {"temperature": 0.2}}
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_unsupported_sampling_params"]),
+        "drop-sampling-params",
+    )
+    assert json.loads(patch.edits[0].new_content)["params"] == {"max_tokens": 4096}
+
+
+def test_drop_sampling_params_keeps_the_other_extra_body_keys(tmp_path):
+    agent_dir = write_agent(
+        tmp_path, params={"extra_body": {"temperature": 0.2, "beta_flag": True}}
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_unsupported_sampling_params"]),
+        "drop-sampling-params",
+    )
+    assert json.loads(patch.edits[0].new_content)["params"] == {"extra_body": {"beta_flag": True}}
+
+
+def test_drop_sampling_params_removes_the_param_from_both_places_at_once(tmp_path):
+    agent_dir = write_agent(
+        tmp_path, params={"temperature": 0.2, "extra_body": {"top_k": 5}}, one_line=False
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_unsupported_sampling_params"]),
+        "drop-sampling-params",
+    )
+    assert json.loads(patch.edits[0].new_content)["params"] == {}
+
+
+def test_drop_sampling_params_still_ignores_an_unrelated_extra_body(tmp_path):
+    agent_dir = write_agent(tmp_path, params={"extra_body": {"beta_flag": True}})
+    ids = [
+        p.id for p in generate_candidates(agent_dir, ["api_error_unsupported_sampling_params"])
+    ]
+    assert "drop-sampling-params" not in ids
+
+
+def test_removing_a_forced_tool_choice_never_touches_extra_body(tmp_path):
+    """Only the sampling repair looks inside the escape hatch; tool_choice stays top-level."""
+    agent_dir = write_agent(
+        tmp_path, params={"tool_choice": {"type": "any"}, "extra_body": {"tool_choice": "x"}}
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_forced_tool_choice"]),
+        "remove-forced-tool-choice",
+    )
+    edit = next(e for e in patch.edits if e.file == "agent.json")
+    assert json.loads(edit.new_content)["params"] == {"extra_body": {"tool_choice": "x"}}
+
+
 def test_batching_sentence_is_appended_verbatim_and_only_once(tmp_path):
     agent_dir = write_agent(tmp_path)
     patch = only(
