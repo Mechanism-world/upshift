@@ -94,6 +94,48 @@ could not determine, and exactly which lines to review. Measured on real repos �
 zero-edit on a simple agent to an honest refusal on schemas buried across files:
 [the adapt reports](reports/).
 
+### Framework agents (capture mode)
+
+If the failing request is built inside pydantic-ai, litellm, LangChain, the Vercel AI SDK,
+the Claude Agent SDK or opencode, there is nothing to lift into five adapter files. So don't
+read the framework — record it. `upshift capture` stands between your agent and
+`api.anthropic.com` and writes down the bytes it actually sends:
+
+```bash
+upshift capture --out cap                      # terminal 1: a local recorder on 127.0.0.1:8787
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ./run-my-agent    # terminal 2: your agent, unchanged
+                                               # Ctrl-C the recorder when you're done
+upshift adapt --from-capture cap --out my-agent
+upshift upgrade --agent my-agent --provider anthropic \
+  --baseline-model claude-fable-5 --candidate-model claude-fable-5-1 --tag my-upgrade
+```
+
+`adapt --from-capture` calls no model and reads no source: the prompt, the tools, the params
+and the cases all come out of requests your agent really made. The recorder is loopback-only
+by default, never writes a credential or an account identifier to disk, relays a 400 verbatim,
+and reassembles SSE so a streaming agent adapts like a non-streaming one.
+
+**Where to point each framework.** Every row was read from that framework's own source; the
+citations and versions are in [docs/framework-mapping.md](docs/framework-mapping.md).
+
+| framework | set this |
+|---|---|
+| `anthropic` Python / TypeScript SDK | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` |
+| pydantic-ai | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` |
+| litellm | `ANTHROPIC_API_BASE` or `ANTHROPIC_BASE_URL` — the **origin only**; litellm appends `/v1/messages` itself |
+| langchain-anthropic | `ANTHROPIC_API_URL` (else `ANTHROPIC_BASE_URL`); it sends no header of its own, so add `--framework langchain-anthropic` |
+| Vercel AI SDK | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/v1` — **with the `/v1`**: it requests `baseURL + "/messages"` |
+| claude-agent-sdk | `ANTHROPIC_BASE_URL` in the process env, or `ClaudeAgentOptions(env=…)` |
+| opencode | `provider.anthropic.options.baseURL` in `opencode.json` — **no env var exists**; same `/v1` rule as the AI SDK |
+
+When a repair is accepted, the report and the patch say where that repair lives in *your*
+framework — `AnthropicModelSettings(anthropic_effort=…)`, `drop_params=True`,
+`providerOptions.anthropic.effort` — with the file and line each mapping was verified at. A
+knob a framework does not have is reported as "not mapped", never guessed.
+
+Live smoke on a real pydantic-ai agent, `claude-fable-5` → `claude-fable-5-1`:
+[reports/capture-pydantic-ai-smoke.md](reports/capture-pydantic-ai-smoke.md).
+
 ## What it has found so far
 
 Every number below is reproducible from the committed records with `upshift cost` and
@@ -174,6 +216,7 @@ with the evidence — or tells you to stay pinned.
 | Understand every design decision and the statistics | [DESIGN.md](DESIGN.md) |
 | Read the migration evidence | [shell_gpt on gpt-5.6](reports/shellgpt-upgrade.md) · [four Claude agents on Fable 5.1](reports/fable-5-1-upgrade.md) |
 | See what `adapt` does on real repos | [adapt reports](reports/) |
+| Capture a framework agent at the wire | [docs/framework-mapping.md](docs/framework-mapping.md) |
 | What's out of scope, and why | [ROADMAP.md](ROADMAP.md) · [SCOPE.md](SCOPE.md) |
 | What changed | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -181,8 +224,9 @@ with the evidence — or tells you to stay pinned.
 
 - Tested on our synthetic agent and a handful of open-source agents (one on OpenAI, four on
   Anthropic). That is evidence, not a benchmark suite.
-- Two providers, plain API agents only — no Google, no local models, no framework
-  integrations ([ROADMAP.md](ROADMAP.md)).
+- Two providers. Plain API agents on both; framework agents on Anthropic only, through
+  `upshift capture` — no Google, no local models, and still no code-level framework
+  integration ([ROADMAP.md](ROADMAP.md)).
 - Repairs are limited to prompts, params, tool schemas, and endpoint routing. Anthropic's
   thinking-block invalidation is detected and refused with the documented pointer, not
   repaired. The tool-schema repair covers one known tool shape.
@@ -190,6 +234,10 @@ with the evidence — or tells you to stay pinned.
   backend; `adapt` stubs them with a TODO. Its generated eval cases are drafts.
 - `adapt` doesn't yet chase identifiers across files, and reads notebooks as rendered cell
   text (cite lines accordingly).
+- Capture mode has been exercised live against one framework (pydantic-ai, 3 cases at N=3 —
+  a smoke, not evidence). The other seven mapping rows are verified from source, not from a
+  live capture. A capture is a record of what your agent did, so the suite it produces is
+  only as broad as the session you recorded.
 - N=5 with Fisher exact tests tells you a 5/5 → 0/5 collapse is real (p ≈ 0.004). It will not
   resolve subtle single-case effects, and a clean result on one agent is not proof that a
   documented shift doesn't exist. Raise N if you need more power and can pay for it.

@@ -135,3 +135,40 @@ Everything below has a booking-agent default and is a no-op or an opt-in for any
 which target a tool literally named `book_flight` and are skipped for an agent that has no such
 tool. Every other repair candidate — the prompt blocks, `reasoning_effort`, endpoint routing —
 is domain-neutral and is appended or applied verbatim to whatever agent is under repair.
+
+## Addendum: agent directories built by `upshift adapt --from-capture` (v0.4)
+
+A capture-derived directory satisfies the contract above exactly — runner, differ, repair loop,
+patch and verdict do not know where it came from. Three optional `agent.json` keys are what it
+adds, and every one of them is read out of the recorded bytes, never inferred:
+
+- **`volatile_suffix`** (string) — text the agent regenerates on every request and hangs off
+  the trailing user turn (a live facts block: `current_time`, a session id). ONE recorded
+  sample, appended by `agent_loop` at request-building time, never stored in the conversation
+  history and never regenerated, because a value that changed per rep would make every case
+  flaky. On `messages` it lands as a trailing text block on the last user message, after any
+  `tool_result` blocks.
+- **`terminal_tools`** (list of names) — tools whose call ENDS the episode, because the
+  capture shows the framework never answered one: a `tool_use` id that no later request
+  returns a `tool_result` for. pydantic-ai's `final_result` (a structured `output_type`) is
+  the canonical case. upshift records the call, does not ask the backend for a result the
+  framework never had, does not invent one, and stops — with the call's arguments as the
+  episode's final message, because that is the framework's own output. A tool answered even
+  once anywhere in the capture is never terminal.
+- **`capture`** (object) — provenance: the capture directory, the detected framework, and the
+  request/conversation counts. The framework name is what makes the report's "Framework
+  mapping" section possible (`docs/framework-mapping.md`); a hand-written agent directory has
+  no framework and gets no such section.
+
+Both `volatile_suffix` and `terminal_tools` are legal in a hand-written `agent.json` too. Both
+default to absent, which is what nearly every agent wants.
+
+The generated `backend.py` is a **replay, not a re-implementation**: it looks up (tool name,
+canonical arguments) in `recorded_tools.json` and returns the result the real tool really
+returned. Arguments that were never recorded return
+`{"error": "no recorded result for these arguments"}` — deliberately, because a repaired
+candidate that calls a tool with new arguments has left the ground the capture covers, and an
+invented answer would turn "we do not know" into a passing case. This is the one place where a
+capture-derived agent is weaker than a hand-written one: the further a repair moves the model
+off the recorded path, the more of the suite goes unanswered. `ATTRIBUTION.md` and
+`ADAPT_EDITS.md` in the generated directory name every source and every deviation.
