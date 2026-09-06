@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.4.1-dev — unreleased
+
+Three fixes found by running capture mode on its first real case outside pydantic-ai
+(rescue-ops `cases/A-075`, litellm 1.83.9). The first is a false pass, in the one direction
+this product must never fail.
+
+- **A capture-derived agent now replays the framework's per-turn shape.** `adapt
+  --from-capture` wrote ONE episode-level `tool_choice`, picked by frequency over the recorded
+  requests. A framework that forces a tool on turn 1 and then goes `auto` — pydantic-ai and
+  litellm both do, and so does every structured-output and routing agent — became an adapter
+  that forced a tool on *every* turn. Under a forced choice the model cannot answer in text,
+  so the replayed episode called tools until `max_turns` and failed its own `turns_at_most`
+  **on the baseline model**; with nothing passing on the baseline there was no regression to
+  find, and the verdict read `SAFE`, "the candidate model is a drop-in replacement", over a
+  suite that never worked once.
+  - **`agent.json` `turn_params`** (ADAPTER.md): param overrides applied over `params` by
+    assistant-turn index, the last entry repeating, `null` meaning the field was not sent on
+    that turn. `agent_loop` applies turn N's overrides to turn N's request; the repair loop
+    reads the sequence too, so removing a forced `tool_choice` removes it from every entry
+    instead of finding nothing to repair.
+  - **`adapt --from-capture` derives it** for exactly the params one recorded conversation
+    sent differently across its turns, and leaves those out of `params`. Captures that
+    disagree with each other in a way no sequence can express are **not** resolved quietly:
+    every variant and its count land in `ADAPT_EDITS.md` under CONFLICTS, and
+    **`adapt --from-capture --strict`** exits non-zero. A tie is broken by canonical text and
+    reported — never by which request the recorder happened to see first, which is what
+    `Counter.most_common` was doing.
+- **`BASELINE_BROKEN`** — the guard that catches this independently of capture. A run whose
+  baseline model passed **no** case measured nothing about the candidate and can never be
+  `SAFE`. Checked before every other verdict, and unable to mask one (a regression needs a
+  case the baseline passed). `upshift upgrade` also says it between the two legs, before the
+  candidate run spends money on a comparison that cannot mean anything.
+- **Captures, run records and adapt records are stamped with the version that actually ran.**
+  `upshift.__version__` was a hand-maintained literal three releases behind `pyproject.toml`,
+  so every one of them claimed `0.1.0` while `upshift --version` reported the truth. It now
+  reads the installed package metadata, the way `cli._version()` always did. Provenance only:
+  no measurement changes, and the 169 already-committed lab records carry the stale string.
+- **Tool fields the adapter cannot carry are reported, not dropped in silence.** The
+  chat-style shape holds `name`/`description`/`input_schema`; everything else a recorded tool
+  carried is now a per-tool note in `ADAPT_EDITS.md`, louder for a server tool — a
+  `computer_20241022` with no `input_schema` at all was becoming a plain custom tool with an
+  empty schema, with nothing anywhere saying so. Structural deviation 2 stops claiming
+  byte-identity and names the two fields dropped on purpose.
+
 ## v0.4.0-dev — unreleased
 
 Framework agents, without reading a framework. If the failing request is built inside
