@@ -69,7 +69,7 @@ The repair for `api_error_forced_tool_choice` — the 400
 | langchain-anthropic | `llm.bind_tools(tools, tool_choice=…)` — `chat_models.py:2064-2091`. Careful: any string other than `"any"`/`"auto"` is read as a **tool name** |
 | vercel-ai-sdk | `toolChoice` on `generateText` / `streamText` — `anthropic-prepare-tools.ts:390-435` (`'required'` → `{type:'any'}`; `'none'` drops the `tools` array entirely) |
 | claude-agent-sdk | **not mapped** — no `tool_choice` / `toolChoice` anywhere in `claude_agent_sdk/types.py` @0.2.152 or `sdk.d.ts` @0.3.261, and captured requests carry none |
-| opencode | **not mapped** as a config key — set internally only (`packages/opencode/src/session/prompt.ts:1285`, `"required"` for a `json_schema` output format). The escape hatch is the `chat.params` plugin hook (`packages/opencode/src/session/llm/request.ts:113-130`) |
+| opencode | **not mapped** — set internally only (`packages/opencode/src/session/prompt.ts:1285`, `"required"` for a `json_schema` output format), and there is no user-side escape hatch: the `chat.params` plugin hook carries no tool-choice field and is never read back for one (`packages/plugin/src/index.ts:247-256` @`v1.18.29`). Changing it means patching the source. Reaching this path to record it: opencode's own documented structured-output API, `POST /session/:id/message` with `body.format = {type:"json_schema", schema}` (`packages/web/src/content/docs/sdk.mdx:120-152` @`v1.18.29`); note the checked-in `types.gen.ts` omits `format`, so use the HTTP API rather than the typed SDK |
 
 **pydantic-ai, in detail** (this is the single most common shape of the break). A structured
 `output_type` sets `tool_choice: {"type": "any"}` on the Anthropic request:
