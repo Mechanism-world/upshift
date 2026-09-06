@@ -431,6 +431,15 @@ def test_every_credential_shaped_header_is_redacted(header):
     assert redact_headers({header: "the-secret"})[header.lower()] == REDACTED
 
 
+@pytest.mark.parametrize(
+    "header", ["anthropic-workspace-id", "Anthropic-Workspace-Id", "anthropic-organization-id"]
+)
+def test_an_account_identifier_is_recorded_as_present_not_as_a_value(header):
+    """A capture is meant to be shared. Found live: a real pydantic-ai capture wrote the
+    workspace id into all six request records."""
+    assert redact_headers({header: "wrkspc_real"})[header.lower()] == REDACTED
+
+
 def test_headers_outside_the_allowlist_are_dropped_entirely():
     recorded = redact_headers({"user-agent": "x", "x-stainless-lang": "python",
                                "x-forwarded-for": "10.0.0.1", "host": "api.anthropic.com"})

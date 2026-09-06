@@ -53,8 +53,15 @@ SECRET_SUBSTRINGS = ("api-key", "apikey", "api_key", "token", "secret", "passwor
 #: about the request the framework built, not a packet dump of the user's machine.
 KEPT_HEADERS = frozenset(
     {"user-agent", "content-type", "accept", "anthropic-version", "anthropic-beta",
-     "anthropic-workspace-id", "x-app", "x-request-id"}
+     "x-app", "x-request-id"}
 )
+
+#: Not credentials, but account identifiers: recorded as present, never as a value. A capture
+#: is meant to be shared (attached to an issue, committed as evidence), and nothing downstream
+#: needs the value — upshift's own runs read the workspace id from the environment, the way
+#: the framework did. Found live: a real pydantic-ai capture wrote a real workspace id into
+#: every request record.
+IDENTIFIER_HEADERS = frozenset({"anthropic-workspace-id", "anthropic-organization-id"})
 
 #: 10 MiB. Larger than any plausible Messages body, small enough that a runaway client cannot
 #: fill the disk before the operator notices.
@@ -74,15 +81,18 @@ def is_secret_header(name: str) -> bool:
 
 
 def redact_headers(raw: Any) -> dict[str, str]:
-    """Recordable header map: kept headers verbatim, credential headers as REDACTED.
+    """Recordable header map: kept headers verbatim, credential and identifier headers as
+    REDACTED.
 
     A credential header is recorded *as present* (`{"x-api-key": "REDACTED"}`) because whether
-    the framework authenticated at all is part of the wire shape; its value never is.
+    the framework authenticated at all is part of the wire shape; its value never is. The same
+    rule covers the workspace/organization headers: which workspace a request was billed to is
+    not a fact about the request the framework built.
     """
     out: dict[str, str] = {}
     for key, value in _header_items(raw):
         lowered = str(key).lower()
-        if is_secret_header(lowered):
+        if is_secret_header(lowered) or lowered in IDENTIFIER_HEADERS:
             out[lowered] = REDACTED
         elif lowered in KEPT_HEADERS or lowered.startswith("x-stainless-"):
             out[lowered] = str(value)

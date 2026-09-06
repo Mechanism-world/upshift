@@ -159,7 +159,8 @@ a recorder. `upshift capture` uses these; `--framework <name>` overrides them.
 | opencode | `opencode/<version> ai-sdk/provider-utils/4.0.46 runtime/bun/…` (`session/llm/request.ts:18,186-201`) | `x-session-affinity`, `x-session-id` |
 
 upshift records only `user-agent`, `x-app` and the `x-stainless-*` family; session-id headers
-are deliberately not written to disk.
+are deliberately not written to disk, and credential and account-identifier headers
+(`x-api-key`, `anthropic-workspace-id`) are recorded as `REDACTED` — present, never valued.
 
 ---
 
