@@ -14,9 +14,20 @@ def patchable_files(agent_dir: Path) -> list[str]:
     return ["agent.json", raw["system_prompt_file"], raw["tools_file"]]
 
 
-def make_patch(original_dir: str | Path, patched_dir: str | Path, rel_prefix: str) -> str:
+def make_patch(
+    original_dir: str | Path,
+    patched_dir: str | Path,
+    rel_prefix: str,
+    header: str = "",
+) -> str:
     """Unified diff of the patchable files, with paths rooted at the repo (rel_prefix, e.g.
-    'victim/booking_agent') so the output applies with `git apply`."""
+    'victim/booking_agent') so the output applies with `git apply`.
+
+    ``header`` is prose written above the first `diff --git` line — where these same repairs
+    live in the framework the agent was captured from (upshift.capture.mapping.patch_header).
+    Git skips everything before that line, so the patch still applies unchanged; a reader who
+    opens the file sees where the change really belongs before they see the diff.
+    """
     original_dir, patched_dir = Path(original_dir), Path(patched_dir)
     files = sorted(set(patchable_files(original_dir)) | set(patchable_files(patched_dir)))
     chunks: list[str] = []
@@ -33,4 +44,6 @@ def make_patch(original_dir: str | Path, patched_dir: str | Path, rel_prefix: st
             tofile=f"b/{repo_rel}",
         )
         chunks.append(f"diff --git a/{repo_rel} b/{repo_rel}\n" + "".join(diff))
-    return "".join(chunks)
+    if not chunks:
+        return ""
+    return header + "".join(chunks)

@@ -24,7 +24,11 @@ def decide(
     diff: DiffResult,
     repair_outcome: RepairOutcome | None = None,
     patch_path: str | None = None,
+    framework: str | None = None,
 ) -> dict[str, Any]:
+    """``framework`` is the framework a capture-derived agent directory was built from
+    (``upshift.capture.mapping.framework_of``). It is carried in the verdict so a report
+    rendered later, from verdict.json alone, still knows where each repair lives."""
     regressed = sorted(c.case_id for c in diff.cases if c.label == LABEL_REGRESSED)
     flaky = sorted(c.case_id for c in diff.cases if c.label == LABEL_FLAKY)
     improved = sorted(c.case_id for c in diff.cases if c.label == LABEL_IMPROVED)
@@ -62,4 +66,11 @@ def decide(
         "improved": improved,
         "patch_path": patch_path if verdict == SAFE_WITH_PATCH else None,
         "repair_log": repair_log,
+        "framework": framework,
+        # The accepted repairs, structured. `repair_log` is prose for a human to read; this is
+        # what the report's framework mapping is keyed on (upshift.capture.mapping).
+        "accepted_patches": [
+            {"id": p.id, "repair_type": p.repair_type, "description": p.description}
+            for p in (repair_outcome.accepted_patches if repair_outcome else [])
+        ],
     }

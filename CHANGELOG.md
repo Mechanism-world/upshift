@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.4.0-dev — unreleased
+
+Framework agents, without reading a framework. If the failing request is built inside
+pydantic-ai, litellm, LangChain, the Vercel AI SDK, the Claude Agent SDK or opencode, there is
+nothing to lift into five adapter files — so record the wire instead. (36 of the 52 Anthropic
+rescue cases closed `UNSUPPORTED_FRAMEWORK` for exactly this.)
+
+- **`upshift capture`** — a local forwarding recorder (stdlib only) that writes down the
+  `/v1/messages` requests your agent really sends. Loopback-only by default; upstream status
+  and body relayed verbatim, a 400 included; credential *and* account-identifier headers
+  recorded as present, never as a value; SSE relayed chunk by chunk and reassembled, so a
+  streaming agent adapts like a non-streaming one; requests grouped into conversations by
+  their `messages` array; `--sim` records against the bundled simulator for $0. Both
+  `/v1/messages` and the bare `/messages` are accepted.
+- **`upshift adapt --from-capture`** — the five files, built from the recorded bytes. No model
+  call, no source file read. Checks are derived, never invented; thinking blocks never reach a
+  case; the generated backend replays recorded tool results and fails honestly on arguments it
+  never saw. `ATTRIBUTION.md` and `ADAPT_EDITS.md` name every source and every deviation.
+- **Framework mapping** — an accepted repair is now reported against the knob that expresses
+  it in the framework the agent was captured from, with the file and line each mapping was
+  verified at, for eight frameworks (`docs/framework-mapping.md`). In `REPORT.md`, in the
+  terminal, and as a comment block above the first `diff --git` line of `upgrade.patch`. A
+  knob a framework does not have is reported as "not mapped", never guessed.
+- **`agent.json` `volatile_suffix`** — one recorded sample of a per-request block some agents
+  regenerate on every call (a live facts block), appended at request-building time and never
+  accumulated in the history.
+- **`agent.json` `terminal_tools`** — tools whose call ends the episode, derived from the
+  capture (a `tool_use` no later request ever answered). pydantic-ai's `final_result` is the
+  canonical case; without this the replay hands the model a result the framework never
+  produced and the model calls the tool again, failing the case on the *baseline* model.
+- Live smoke: a real pydantic-ai agent, `claude-fable-5` → `claude-fable-5-1`, captured and
+  upgraded end to end — `SAFE WITH PATCH`, 3/3 restored, $0.99
+  ([reports/capture-pydantic-ai-smoke.md](reports/capture-pydantic-ai-smoke.md)). A smoke at
+  N=3, explicitly not evidence.
+
 ## v0.3.1 — 2026-09-03
 
 Pre-launch security pass over `adapt`, the runs root and the shell sandbox. Hostile input

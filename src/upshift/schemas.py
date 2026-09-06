@@ -33,6 +33,16 @@ class AgentConfig:
     tools: list[dict[str, Any]]  # chat/completions-style tool definitions
     max_turns: int
     agent_dir: str  # absolute path of the directory the config was loaded from
+    #: Text some agents regenerate and append to the trailing user turn of EVERY request (a
+    #: live dynamic-facts block: rescue-ops `cases/A-015/REPORT.md` §4). ONE recorded sample,
+    #: appended per request by agent_loop and never stored in the conversation history.
+    #: Empty for every agent that does not do this, which is nearly all of them.
+    volatile_suffix: str = ""
+    #: Tools that END the episode when the model calls one, because the framework the agent
+    #: was captured from never returned a result for them (`upshift adapt --from-capture`
+    #: derives the list from the capture: a `tool_use` no later request ever answered).
+    #: pydantic-ai's `final_result` is the canonical example. Empty for every other agent.
+    terminal_tools: list[str] = field(default_factory=list)
 
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
@@ -59,6 +69,8 @@ class AgentConfig:
             tools=json.loads((agent_dir / raw["tools_file"]).read_text()),
             max_turns=raw.get("max_turns", 12),
             agent_dir=str(agent_dir),
+            volatile_suffix=str(raw.get("volatile_suffix") or ""),
+            terminal_tools=[str(name) for name in (raw.get("terminal_tools") or [])],
         )
 
     def file_hashes(self) -> dict[str, str]:

@@ -379,3 +379,86 @@ No flex tier and $50/MTok output (thinking always on) means a full N=5 pipeline 
 pipeline on one or two agents whose candidate run 400s (rejected requests bill nothing),
 detection-only runs for the rest, every run labeled as what it is. N and thresholds are
 not lowered to fit a budget.
+
+## Capture mode (v0.4, added 2026-09-05)
+
+**Problem.** 36 of the 52 Anthropic rescue cases closed `UNSUPPORTED_FRAMEWORK` for one
+reason: the failing request is built inside opencode, litellm, pydantic-ai, langchain, the
+Claude Agent SDK or a gateway, and nothing there can be lifted into five adapter files. Ranked
+#1 of the product gaps that track found.
+
+**Decision.** upshift does not read a framework's source, ever. It stands between the
+framework and `api.anthropic.com`, records the bytes the framework actually sends, and adapts
+those. A framework upshift has never heard of is handled by the same code as one it has.
+
+### `upshift capture` — the recorder (`src/upshift/capture/`)
+
+stdlib only (`http.server` + `urllib.request`), because a recorder people will not run in the
+environment their agent already runs in is worthless. Four properties it is built around:
+
+- **Transparent.** Upstream status, body and content type go back verbatim, a 400 included.
+  The recorder must never hide the thing upshift exists to catch. Credentials pass through
+  untouched: upshift never holds one and never substitutes its own.
+- **Nothing secret on disk.** Credential headers are `REDACTED` on the way in (exact denylist
+  plus a substring rule), and so are account identifiers (`anthropic-workspace-id`) — recorded
+  as *present*, never as a value, because a capture is meant to be shared. Everything outside
+  a small allowlist is dropped entirely: a capture is evidence about a request, not a packet
+  dump of a machine. Loopback-only bind unless `--allow-remote`; per-body size cap.
+- **Conversations, not connections.** Requests are grouped by their `messages` array: a
+  request whose messages extend a previous request's messages continues it. The one tolerated
+  difference is a regenerated trailing user block, which becomes the conversation's
+  `volatile_suffix` instead of splitting it into n conversations.
+- **Streaming reassembled.** An SSE response is relayed chunk by chunk while a copy is
+  reassembled into the message the events add up to, so a capture of a streaming framework and
+  one of a non-streaming framework adapt identically. `--sim` answers from the bundled
+  simulator ($0, no key, no network) and refuses a streaming request rather than synthesising
+  frames: inventing events would put bytes in a capture no model ever sent.
+
+Paths: both `POST /v1/messages` and the bare `POST /messages` are recorded (the Vercel AI SDK
+and opencode request `baseURL + "/messages"`), and the versioned path is what goes upstream
+either way. A query string (`?beta=true`, which pydantic-ai and the Claude Agent SDK always
+send) is ignored when deciding to record and kept verbatim in the record.
+
+### `upshift adapt --from-capture` — the five files
+
+No model call and no source file read. Every value comes out of a request or a response the
+framework actually made: `agent.json` (model, max_tokens, sampling params, tool_choice,
+thinking, effort — as sent; a sampling param seen on the wire is DECLARED under `params`, and
+the loop's `extra_body` routing above decides how it travels back out, so it is sent exactly
+once and the sampling repair can drop it), `system_prompt.txt` (byte-identical), `tools.json`
+(the recorded schemas, re-wrapped chat-style per ADAPTER.md), `backend.py` +
+`recorded_tools.json` (a replay keyed by tool name and canonical arguments; unknown arguments
+fail honestly rather than answering plausibly), and one case per conversation. Checks are
+derived, never invented: `no_api_error`, `tool_called` for tools the recording shows being
+called, and `turns_at_most` at the recorded turn count plus one. No check is built from the
+recorded answer text — that would be an assertion written from the model's own output.
+Thinking blocks never reach a case: a signature is valid only for the turn that produced it, and
+replaying one is what causes the invalidation 400 in the first place. `ATTRIBUTION.md` and
+`ADAPT_EDITS.md` list every source and every deviation. Two derived `agent.json` keys are
+documented in ADAPTER.md's addendum: `volatile_suffix` and `terminal_tools`.
+
+### Framework mapping (`docs/framework-mapping.md` + `capture/mapping.py`)
+
+upshift repairs a *request*; the patch it emits edits a generated adapter directory nobody
+maintains. So when the agent came from a capture, the report and the patch header also name
+the knob that expresses the same repair in the framework itself, with the file and line the
+mapping was read at, for eight frameworks. Three rules:
+
+1. **"not mapped" is a finding, not a gap.** langchain-anthropic has no reasoning-effort
+   symbol at 0.3.22; the Claude Agent SDK exposes no `tool_choice`. Those are rows that say so
+   and cite where the absence was checked. A knob is never guessed.
+2. **A repair with no knob still prints.** "We changed X and cannot tell you where X lives
+   here" is information; silence is not.
+3. **Only a capture-derived directory gets a mapping**, because only it recorded which
+   framework it came from (`agent.json` `capture.framework`).
+
+`tests/test_capture_mapping.py` pins the table to the doc and to the repair playbook: a
+framework the recorder can detect must have a row, and a patch id the playbook can emit must
+reach a knob category, so neither can rot into silence.
+
+### Honesty
+
+A capture is a record of one session. The suite it produces is exactly as broad as what was
+recorded, and the replay backend answers only the arguments it saw — so the further a repair
+moves the model off the recorded path, the more of the suite goes unanswered, visibly. Capture
+mode changes what upshift can measure; it does not change what counts as evidence.

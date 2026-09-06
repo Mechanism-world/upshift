@@ -192,6 +192,49 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
     return lines
 
 
+def framework_mapping_lines(framework: str | None, verdict: dict[str, Any] | None) -> list[str]:
+    """Markdown for the "Framework mapping" section, or [] when there is nothing to map.
+
+    An agent directory built by `upshift adapt --from-capture` knows whose requests it was
+    built from, so an accepted repair can be reported against the knob the user actually
+    maintains rather than only as a diff against an adapter directory they will throw away.
+    Every row cites the source line the mapping was read from, and a knob a framework does not
+    have is reported as "not mapped" rather than guessed.
+    """
+    from upshift.capture import mapping
+
+    verdict = verdict or {}
+    framework = framework or verdict.get("framework")
+    patches = verdict.get("accepted_patches") or []
+    if not framework or framework == "unknown" or not patches:
+        return []
+    rows = mapping.rows(framework, patches)
+    if not rows:
+        return []
+    out = [
+        "## Framework mapping",
+        "",
+        (f"This agent directory was built from captured `{framework}` requests. Each accepted "
+        f"repair, against the knob that expresses it in `{framework}`:"),
+        "",
+        "| repair | knob | change | verified at |",
+        "| --- | --- | --- | --- |",
+    ]
+    for patch_id, category, change, citation in rows:
+        out.append(
+            f"| `{_md_cell(patch_id)}` | {_md_cell(category)} | {_md_cell(change)} | "
+            f"`{_md_cell(citation)}` |"
+        )
+    out += [
+        "",
+        (f"The full table, with the version every cell was verified against, is in "
+        f"`{mapping.DOC_PATH}`. \"{mapping.NOT_MAPPED}\" means the knob does not exist at that "
+        f"version or could not be verified — the repair is still real, and still has to be "
+        f"applied some other way."),
+    ]
+    return out
+
+
 def _repair_log(verdict: dict[str, Any]) -> list[str]:
     return [str(entry) for entry in (verdict.get("repair_log") or [])]
 
@@ -212,6 +255,7 @@ def render_diff(
     result: DiffResult,
     console: Console | None = None,
     verdict: dict[str, Any] | None = None,
+    framework: str | None = None,
 ) -> None:
     """Print the diff to a rich console (stdout by default)."""
     console = console or Console()
@@ -246,6 +290,22 @@ def render_diff(
             for entry in log:
                 body.append(f"\n  - {entry}")
         console.print(Panel(body, title="verdict", border_style=color))
+
+    if verdict and (framework or verdict.get("framework")):
+        from upshift.capture import mapping
+
+        framework = framework or verdict["framework"]
+        rows = mapping.rows(framework, verdict.get("accepted_patches") or [])
+        if rows:
+            mapped = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+            mapped.add_column("repair")
+            mapped.add_column("knob")
+            mapped.add_column(f"change in {framework}")
+            for patch_id, category, change, _citation in rows:
+                mapped.add_row(patch_id, category, _truncate(change, 70))
+            console.print()
+            console.print(f"framework mapping ({framework}) — citations in {mapping.DOC_PATH}:")
+            console.print(mapped)
 
     baseline_rate, candidate_rate = _suite_rates(result)
     console.print(f"baseline   {baseline_rate}")
@@ -293,8 +353,17 @@ def _md_cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def diff_to_markdown(result: DiffResult, verdict: dict[str, Any] | None = None) -> str:
-    """The same content as ``render_diff``, as plain markdown. No emojis."""
+def diff_to_markdown(
+    result: DiffResult,
+    verdict: dict[str, Any] | None = None,
+    framework: str | None = None,
+) -> str:
+    """The same content as ``render_diff``, as plain markdown. No emojis.
+
+    ``framework`` is the framework a capture-derived agent directory came from; when it is
+    given and a repair was accepted, the report carries a "Framework mapping" section saying
+    where each repair lives in that framework's own configuration.
+    """
     provider, simulated = _providers(result)
     out: list[str] = []
 
@@ -328,6 +397,11 @@ def diff_to_markdown(result: DiffResult, verdict: dict[str, Any] | None = None) 
             out.append("repair log:")
             out.append("")
             out += [f"- {entry}" for entry in log]
+
+    mapping_lines = framework_mapping_lines(framework, verdict)
+    if mapping_lines:
+        out.append("")
+        out += mapping_lines
 
     baseline_rate, candidate_rate = _suite_rates(result)
     out.append("")

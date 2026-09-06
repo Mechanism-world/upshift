@@ -33,6 +33,11 @@ EPHEMERAL = {"type": "ephemeral"}
 
 INVALID_ARGS_ERROR = {"error": "invalid JSON in tool call arguments"}
 
+#: Recorded as the result of a terminal tool call (AgentConfig.terminal_tools). The framework
+#: never produced one, so upshift does not invent one and does not run the replay backend: the
+#: episode ends on the call, exactly as the captured conversation did.
+TERMINAL_TOOL_RESULT = {"terminal_tool": "the framework ended the conversation on this call"}
+
 _MISSING = object()
 
 
@@ -168,6 +173,39 @@ def convert_tools_messages(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
+def append_volatile_suffix(
+    endpoint: str, items: list[dict[str, Any]], suffix: str
+) -> list[dict[str, Any]]:
+    """Append a per-request volatile block to the trailing user turn.
+
+    Some agents rebuild a live-facts block on every single request and hang it off the last
+    user turn (rescue-ops `cases/A-015/REPORT.md` §4 describes exactly this: a trailing
+    user-role message carrying `current_time` and friends, regenerated per request). Without
+    it, the eval measures an agent with no clock — a different agent than the one that runs
+    in production.
+
+    It goes on the LAST user message when there is one. On `messages` that keeps the
+    documented block ordering intact: a tool-result turn's `tool_result` blocks stay first and
+    this lands after them. Applied here, at request-building time, so it is never stored in
+    the conversation history and never accumulates as the episode grows. Returns a new list.
+    """
+    if not suffix:
+        return items
+    out = copy.deepcopy(items)
+    last = out[-1] if out else None
+    if endpoint == MESSAGES and isinstance(last, dict) and last.get("role") == "user":
+        content = last.get("content")
+        blocks: list[Any] = (
+            [{"type": "text", "text": content}] if isinstance(content, str)
+            else (list(content) if isinstance(content, list) else [])
+        )
+        blocks.append({"type": "text", "text": suffix})
+        last["content"] = blocks
+        return out
+    out.append({"role": "user", "content": suffix})
+    return out
+
+
 def build_request(
     endpoint: str,
     model: str,
@@ -176,9 +214,11 @@ def build_request(
     items: list[dict[str, Any]],
     *,
     system: str | None = None,
+    volatile_suffix: str = "",
 ) -> dict[str, Any]:
     """`system` is only used by the `messages` endpoint, where the system prompt is a
     top-level request field instead of a conversation item."""
+    items = append_volatile_suffix(endpoint, items, volatile_suffix)
     if endpoint == CHAT:
         request: dict[str, Any] = {
             "model": model,
@@ -448,11 +488,18 @@ def run_episode(
 
     segment = 0
     call_idx = 0
+    terminal_tools = frozenset(getattr(config, "terminal_tools", ()) or ())
     sim_context = {"case_id": case.id, "rep": rep, "sim": case.sim}
 
     while call_idx < config.max_turns:
         request = build_request(
-            endpoint, model, params, config.tools, items, system=config.system_prompt
+            endpoint,
+            model,
+            params,
+            config.tools,
+            items,
+            system=config.system_prompt,
+            volatile_suffix=getattr(config, "volatile_suffix", ""),
         )
         seed_key = f"{case.id}:{rep}:{call_idx}"
         try:
@@ -478,10 +525,21 @@ def run_episode(
         if turn.tool_calls:
             items.extend(copy.deepcopy(turn.assistant_items))
             pending: list[tuple[Any, dict[str, Any]]] = []
+            terminal: dict[str, Any] | None = None
             for call in turn.tool_calls:
                 name = call.get("name")
                 raw_args = call.get("arguments")
-                arguments, tool_result = _execute_call(backend, name, raw_args)
+                if name in terminal_tools:
+                    # The framework stopped here, so the backend is never asked for a result
+                    # the framework never had, and nothing is fed back to the model.
+                    arguments, tool_result = _decode_arguments(raw_args), dict(
+                        TERMINAL_TOOL_RESULT
+                    )
+                    if terminal is None:
+                        terminal = arguments
+                else:
+                    arguments, tool_result = _execute_call(backend, name, raw_args)
+                    pending.append((call.get("id"), tool_result))
                 result.tool_executions.append(
                     ToolExecution(
                         turn=call_idx,
@@ -491,9 +549,13 @@ def run_episode(
                         result=tool_result,
                     )
                 )
-                pending.append((call.get("id"), tool_result))
-            _append_tool_results(endpoint, items, pending)
             call_idx += 1
+            if terminal is not None:
+                # The episode's output is what the model passed to the terminal tool — the
+                # framework's own final answer (pydantic-ai's `.output`, for instance).
+                result.final_message = json.dumps(terminal, sort_keys=True)
+                break
+            _append_tool_results(endpoint, items, pending)
             continue
 
         # plain text turn: this segment is done
@@ -514,21 +576,25 @@ def run_episode(
     return result
 
 
+def _decode_arguments(raw_args: Any) -> dict[str, Any]:
+    """Tool-call arguments as a dict. Malformed JSON is kept verbatim under `_raw` rather than
+    raised: what the model actually emitted is the evidence."""
+    if isinstance(raw_args, dict):
+        return raw_args
+    text = raw_args if isinstance(raw_args, str) else ""
+    if text.strip() == "":
+        return {}
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError):
+        return {"_raw": text}
+    return decoded if isinstance(decoded, dict) else {"_raw": text}
+
+
 def _execute_call(backend: Any, name: Any, raw_args: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Decode arguments and run the tool. Malformed JSON never crashes the episode: nothing is
     executed and the decode error is fed back to the model as the tool result."""
-    if isinstance(raw_args, dict):
-        arguments = raw_args
-    else:
-        text = raw_args if isinstance(raw_args, str) else ""
-        if text.strip() == "":
-            arguments = {}
-        else:
-            try:
-                decoded = json.loads(text)
-            except (ValueError, TypeError):
-                return {"_raw": text}, dict(INVALID_ARGS_ERROR)
-            if not isinstance(decoded, dict):
-                return {"_raw": text}, dict(INVALID_ARGS_ERROR)
-            arguments = decoded
+    arguments = _decode_arguments(raw_args)
+    if "_raw" in arguments and not isinstance(raw_args, dict):
+        return arguments, dict(INVALID_ARGS_ERROR)
     return arguments, backend.execute(name, arguments)

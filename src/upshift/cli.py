@@ -1,7 +1,8 @@
 """upshift CLI.
 
   upshift init     — scaffold an agent directory from the packaged example
-  upshift adapt    — generate an agent directory from an existing agent codebase
+  upshift capture  — record a framework agent's real /v1/messages requests at the wire
+  upshift adapt    — generate an agent directory from an agent codebase, or from a capture
   upshift run      — execute the eval suite against one model/config, record everything
   upshift diff     — compare two recorded runs, print the behavioral diff report
   upshift upgrade  — full pipeline: baseline run, candidate run, diff, repair, verdict, patch
@@ -23,6 +24,9 @@ from rich.console import Console
 from rich.markup import escape
 
 from upshift import recorder
+from upshift.capture import mapping as capture_mapping
+from upshift.capture import record as capture_record
+from upshift.capture import server as capture_server
 from upshift.differ import diff_runs, load_diff, save_diff
 from upshift.patch import make_patch
 from upshift.providers import get_provider
@@ -454,6 +458,95 @@ def cmd_init(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# capture: the wire recorder that sits in front of a framework agent
+# ---------------------------------------------------------------------------
+
+
+def cmd_capture(args) -> int:
+    """Record what the framework actually sends, until Ctrl-C."""
+    from upshift.capture.server import DEFAULT_LISTEN, run_capture
+
+    out_dir = Path(args.out)
+    if out_dir.exists() and not out_dir.is_dir():
+        raise ValueError(f"{out_dir} already exists and is not a directory")
+    if out_dir.is_dir() and (out_dir / "index.json").exists():
+        raise ValueError(
+            f"{out_dir}/ already holds a finished capture (index.json) — pick a new directory, "
+            f"so two runs of two different agents never become one adapter"
+        )
+    if args.max_body_bytes < 1024:
+        raise ValueError(f"--max-body-bytes must be at least 1024 (got {args.max_body_bytes})")
+
+    def on_ready(host: str, port: int) -> None:
+        base = f"http://{host}:{port}"
+        target = "the bundled simulator ($0, no network)" if args.sim else args.upstream
+        console.print(f"recording {escape(base)} -> {escape(target)}")
+        console.print(
+            f"\npoint your agent at it and run it exactly as usual:\n"
+            f"  [bold]ANTHROPIC_BASE_URL={escape(base)}[/bold]\n"
+            f"[dim]per-framework settings: README, \"Framework agents (capture mode)\"[/dim]",
+            highlight=False,
+            soft_wrap=True,
+        )
+        console.print(
+            f"\nwriting to {escape(str(out_dir.resolve()))}/ · Ctrl-C to stop and write "
+            f"index.json",
+            highlight=False,
+            soft_wrap=True,
+        )
+
+    def on_record(conversation: str, index: int, status, error: str) -> None:
+        if args.quiet:
+            return
+        bad = status is None or status >= 400
+        state = f"[red]{status or 'no response'}[/red]" if bad else f"[green]{status}[/green]"
+        suffix = f" — {escape(error)}" if error else ""
+        console.print(f"  {conversation} req {index}: {state}{suffix}", highlight=False)
+
+    index_path = run_capture(
+        out_dir,
+        listen=args.listen or DEFAULT_LISTEN,
+        upstream=args.upstream,
+        allow_remote=args.allow_remote,
+        framework=args.framework,
+        sim=args.sim,
+        sim_agent=args.sim_agent,
+        max_body_bytes=args.max_body_bytes,
+        on_ready=on_ready,
+        on_record=on_record,
+    )
+    index = json.loads(index_path.read_text())
+    console.print(
+        f"\ncaptured [bold]{index['requests']}[/bold] request(s) in "
+        f"[bold]{index['conversations']}[/bold] conversation(s) · "
+        f"model(s) {escape(', '.join(index['models']) or 'none')} · "
+        f"tool(s) {escape(', '.join(index['tools']) or 'none')}",
+        highlight=False,
+        soft_wrap=True,
+    )
+    framework = (index.get("framework") or {}).get("framework")
+    if framework and framework != "unknown":
+        console.print(f"framework: {escape(framework)}", highlight=False)
+    for key, values in (index.get("params_seen") or {}).items():
+        console.print(
+            f"  [dim]{key}: {escape(json.dumps(values))}[/dim]", highlight=False, soft_wrap=True
+        )
+    if not index["requests"]:
+        console.print(
+            "[yellow]nothing was recorded — check that your framework really read the base URL "
+            "(the README table names the setting for each one)[/yellow]",
+            soft_wrap=True,
+        )
+        return 2
+    console.print(
+        f"\nnext: [bold]upshift adapt --from-capture {escape(str(out_dir))} --out my-agent[/bold]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    return 0
+
+
 ADAPT_DEFAULT_MODEL = "gpt-5.5"
 ADAPT_DEFAULT_MAX_COST = 2.00
 
@@ -502,8 +595,55 @@ def _print_extraction_rounds(extraction) -> None:
                       soft_wrap=True)
 
 
+def cmd_adapt_from_capture(args) -> int:
+    """Build the agent directory out of recorded requests — no model call, no source code."""
+    from upshift.capture.adapt import adapt_from_capture
+
+    out_dir = _adapt_out_dir(args.out)
+    result = adapt_from_capture(args.from_capture, out_dir)
+    for rel in result.files:
+        console.print(f"  wrote {escape(str((out_dir / rel).resolve()))}", highlight=False)
+    console.print(
+        f"\n{result.case_count} case(s) from {result.case_count} captured conversation(s) · "
+        f"{len(result.tool_names)} tool(s) · model {escape(result.model)}"
+        + (f" · framework {escape(result.framework)}" if result.framework else ""),
+        highlight=False,
+        soft_wrap=True,
+    )
+    for note in result.notes:
+        console.print(f"  [dim]{escape(note)}[/dim]", highlight=False, soft_wrap=True)
+    try:
+        validate_agent_dir(out_dir)
+        console.print("[green]the generated directory satisfies the ADAPTER.md contract[/green]")
+    except ValueError as exc:
+        console.print(
+            f"[yellow]incomplete agent directory:[/yellow] {escape(str(exc))}", highlight=False
+        )
+        return 2
+    console.print(
+        f"[dim]every deviation from the recorded bytes is listed in "
+        f"{escape(str((out_dir / 'ADAPT_EDITS.md').resolve()))}[/dim]",
+        highlight=False,
+        soft_wrap=True,
+    )
+    return 0
+
+
 def cmd_adapt(args) -> int:
     """Read an agent codebase, emit an agent directory plus ADAPT_REPORT.md."""
+    if args.from_capture:
+        if args.source:
+            raise ValueError(
+                "pass either a source repo or --from-capture, not both: they are two different "
+                "ways to build the same five files"
+            )
+        return cmd_adapt_from_capture(args)
+    if not args.source:
+        raise ValueError(
+            "adapt needs a source: a repo path/git URL to read, or --from-capture <dir> to "
+            "build from requests recorded by `upshift capture`"
+        )
+
     from upshift.adapt import AdaptAborted
     from upshift.adapt.extract import extract
     from upshift.adapt.generate import generate, slugify
@@ -716,6 +856,9 @@ def cmd_upgrade(args) -> int:
     recorder.safe_component(args.tag, "tag")
     provider = _make_provider(args)
     agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
+    # Only a `adapt --from-capture` directory has one; None everywhere else, and None means
+    # the report says nothing about frameworks rather than guessing at one.
+    framework = capture_mapping.framework_of(agent_dir)
     _check_models(args.provider, [args.baseline_model, args.candidate_model])
     preflight = anthropic_preflight(provider, [args.baseline_model, args.candidate_model])
     tag = args.tag
@@ -764,13 +907,24 @@ def cmd_upgrade(args) -> int:
             # Log lines carry [repair_type] tags and ['case', 'lists'] — rich would eat them.
             console.print(f"[dim]{escape(line)}[/dim]", highlight=False)
         if repair_outcome.accepted_patches:
-            patch_text = make_patch(agent_dir, work_dir, rel_prefix=_patch_prefix(agent_dir))
+            patch_text = make_patch(
+                agent_dir,
+                work_dir,
+                rel_prefix=_patch_prefix(agent_dir),
+                header=capture_mapping.patch_header(
+                    framework,
+                    [
+                        {"id": patch.id, "repair_type": patch.repair_type}
+                        for patch in repair_outcome.accepted_patches
+                    ],
+                ),
+            )
             patch_file = recorder.run_dir(runs_root, tag) / "upgrade.patch"
             patch_file.parent.mkdir(parents=True, exist_ok=True)
             patch_file.write_text(patch_text)
             patch_path = str(patch_file)
 
-    verdict = decide(diff, repair_outcome, patch_path)
+    verdict = decide(diff, repair_outcome, patch_path, framework=framework)
     console.print()
     render_diff(diff, console=console, verdict=verdict)
 
@@ -926,10 +1080,58 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("directory", help="directory to create (must not exist, or be empty)")
     p_init.set_defaults(func=cmd_init)
 
-    p_adapt = sub.add_parser(
-        "adapt", help="generate an agent directory from an existing agent codebase"
+    p_capture = sub.add_parser(
+        "capture",
+        help="record a framework agent's real /v1/messages requests, to adapt them verbatim",
     )
-    p_adapt.add_argument("source", help="path to an agent repo, or a git URL to clone")
+    p_capture.add_argument(
+        "--out", required=True, help="capture directory to write (created if absent)"
+    )
+    p_capture.add_argument(
+        "--listen", default=capture_server.DEFAULT_LISTEN,
+        help=f"host:port to bind (default {capture_server.DEFAULT_LISTEN}; loopback only "
+        f"unless --allow-remote)",
+    )
+    p_capture.add_argument(
+        "--upstream", default=capture_server.DEFAULT_UPSTREAM,
+        help=f"API every request is forwarded to (default {capture_server.DEFAULT_UPSTREAM})",
+    )
+    p_capture.add_argument(
+        "--framework", default=None,
+        help="name the framework instead of detecting it from the request headers",
+    )
+    p_capture.add_argument(
+        "--allow-remote", action="store_true",
+        help="permit a non-loopback --listen (this recorder handles your API key: don't)",
+    )
+    p_capture.add_argument(
+        "--sim", action="store_true",
+        help="answer from the bundled simulator instead of forwarding: $0, no key, no network",
+    )
+    p_capture.add_argument(
+        "--sim-agent", default=None,
+        help="agent directory whose cases supply the sim oracle plans (needs --sim)",
+    )
+    p_capture.add_argument(
+        "--max-body-bytes", type=int, default=capture_record.DEFAULT_MAX_BODY_BYTES,
+        help=f"per-body size cap (default {capture_record.DEFAULT_MAX_BODY_BYTES})",
+    )
+    p_capture.add_argument("--quiet", action="store_true", help="no per-request progress lines")
+    p_capture.set_defaults(func=cmd_capture)
+
+    p_adapt = sub.add_parser(
+        "adapt",
+        help="generate an agent directory from an agent codebase, or from a capture directory",
+    )
+    p_adapt.add_argument(
+        "source", nargs="?", default=None,
+        help="path to an agent repo, or a git URL to clone (omit with --from-capture)",
+    )
+    p_adapt.add_argument(
+        "--from-capture", default=None,
+        help="build the agent directory from an `upshift capture` directory instead of source "
+        "code: the recorded requests are the agent, verbatim",
+    )
     p_adapt.add_argument(
         "--out", required=True, help="directory to write (must not exist, or be empty)"
     )
