@@ -24,7 +24,12 @@ my_agent/
    `endpoint` is `"chat_completions"`, `"responses"` (OpenAI) or `"messages"` (Anthropic).
    `params` is passed to the API verbatim (`reasoning_effort` is mapped to `reasoning.effort`
    on `/v1/responses` and to `output_config.effort` on `/v1/messages`); `max_turns` caps
-   assistant turns per episode (default 12). `tools.json` is chat-style on every endpoint —
+   assistant turns per episode (default 12). Declare sampling params (`temperature`,
+   `top_p`, `top_k`) as plain `params` keys on every endpoint — how they TRAVEL is upshift's
+   job: on `/v1/messages` they are moved into `extra_body` when the installed `anthropic` SDK
+   no longer takes them as keywords (>= 1.1.0), which puts the same field on the wire and lets
+   the API, not the client, decide. An `extra_body` you write yourself is honoured and wins,
+   and the sampling repair can remove params from either place. `tools.json` is chat-style on every endpoint —
    upshift converts it for `responses` and `messages`.
 2. **backend.py** must expose `create_backend(initial_state: dict) -> Backend`, called once per
    episode with the case's `initial_state`.
@@ -85,7 +90,8 @@ The differ classifies each failing case into signatures that drive candidate gen
 Besides the OpenAI-era ones, it recognizes the documented Claude Fable 5 → 5.1 changes
 (DESIGN.md): `api_error_forced_tool_choice` (the 400 for `tool_choice` type `tool`/`any`) →
 drop the param and state the requirement in the prompt; `api_error_unsupported_sampling_params`
-(a 400 naming `temperature`/`top_p`/`top_k`) → drop those params; `serialized_tool_calls` (the
+(a 400 naming `temperature`/`top_p`/`top_k`) → drop those params, from `params` or from
+`params.extra_body`; `serialized_tool_calls` (the
 candidate stopped batching tool calls the baseline batched, or blew a `turns_at_most` budget the
 baseline met) → append the documented batching instruction, and raise effort; and
 `reduced_retrieval_calls` (a `tool_called` check fails for a retrieval-marked or

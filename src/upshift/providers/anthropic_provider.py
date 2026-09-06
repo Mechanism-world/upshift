@@ -11,24 +11,57 @@ to the request: what the loop built is what is sent and what the record shows.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
+from functools import cache
 from typing import Any
 
 from upshift.providers.base import Provider, ProviderAPIError
 
 MESSAGES = "messages"
 
-#: `anthropic` >= 1.3.0 removed `temperature` (and the other sampling params) from
-#: `Messages.create()`, so a request carrying one is rejected IN PROCESS with a TypeError
-#: and the documented 400 ("`temperature` is deprecated for this model") never reaches the
-#: wire. Recorded as that same 400 so the differ's sampling-params signature — which keys on
-#: a 400 whose message names temperature/top_p/top_k — still fires and its repair (drop the
-#: param) stays reachable. See DESIGN.md "Params mapping".
+#: The sampling parameters `anthropic` >= 1.1.0 removed from `Messages.create()`.
+SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+#: An SDK that refuses a request parameter raises a TypeError before anything is sent, so the
+#: API never gets to answer. Recorded as the 400 the API returns for the same request, so the
+#: differ's sampling-params signature — which keys on a 400 whose message names
+#: temperature/top_p/top_k — still fires and its repair (drop the param) stays reachable.
+#: For the sampling params themselves this is now a fallback: the loop routes them through
+#: `extra_body` on an SDK that dropped them (see `messages_create_accepts`), so the request
+#: reaches the wire and the API's own answer is what the run records. This mapping remains for
+#: any OTHER parameter a future SDK removes. See DESIGN.md "Params mapping".
 _RE_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument", re.IGNORECASE)
 SDK_REJECTED_PARAM_STATUS = 400
 TIMEOUT_S = 600.0  # thinking + long tool turns; the SDK also retries
 MAX_RETRIES = 5
+
+
+@cache
+def messages_create_accepts(name: str) -> bool:
+    """Does the INSTALLED SDK take `name` as a keyword of `Messages.create()`?
+
+    `anthropic` >= 1.1.0 dropped `temperature`/`top_p`/`top_k` from that signature — no
+    parameter and no `**kwargs` — so passing one raises TypeError in process and the request
+    never leaves the machine. That makes an upgrade undecidable: the same in-process failure
+    is recorded on BOTH models and the API, which is the thing being measured, never speaks.
+    The loop asks this once per name and routes what the SDK will not take through
+    `extra_body`, the SDK's own escape hatch, so the wire is reached and the API decides.
+    On an older pinned SDK every name is still accepted and nothing moves.
+
+    A signature that cannot be read is assumed to accept the name: that is the pre-1.1.0
+    behaviour, and a wrong guess still surfaces as the TypeError mapped above.
+    """
+    try:
+        from anthropic.resources.messages import Messages
+
+        parameters = inspect.signature(Messages.create).parameters
+    except Exception:  # noqa: BLE001 - an unreadable SDK must not break request building
+        return True
+    if name in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 class AnthropicProvider(Provider):

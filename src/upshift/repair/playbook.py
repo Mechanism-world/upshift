@@ -218,26 +218,52 @@ def _json_key_remove(text: str, key: str) -> str | None:
     return candidate
 
 
-def _agent_json_remove(agent_dir: Path, param_keys: list[str]) -> FileEdit | None:
+def _agent_json_remove(
+    agent_dir: Path, param_keys: list[str], *, also_extra_body: bool = False
+) -> FileEdit | None:
     """Remove one or more keys from ``params`` in agent.json.
 
+    With ``also_extra_body`` the same keys are removed from ``params.extra_body`` as well, and
+    an extra_body emptied by that is removed with them. That hatch is where an agent (or
+    upshift's own params mapping) puts a sampling parameter the installed SDK will not take as
+    a keyword, so a repair that could not see inside it fired its signature and produced no
+    candidate at all. What the agent DECLARES is one thing and how it TRAVELS is another; the
+    repair is about the declaration, in either spelling.
+
     Returns None when the agent declares none of them (nothing to repair, candidate dropped).
-    Minimal textual deletions are chained; any key that resists a clean textual deletion falls
-    the whole file back to a re-serialize, which is still a correct patch.
+    Minimal textual deletions are chained; any key that resists a clean textual deletion — or
+    that would leave an empty extra_body behind — falls the whole file back to a re-serialize,
+    which is still a correct patch.
     """
     text = _read(agent_dir, "agent.json")
     raw = json.loads(text)
-    present = [k for k in param_keys if k in (raw.get("params") or {})]
-    if not present:
+    params = raw.get("params")
+    params = params if isinstance(params, dict) else {}
+    extra_body = params.get("extra_body") if also_extra_body else None
+    extra_body = extra_body if isinstance(extra_body, dict) else {}
+    present = [k for k in param_keys if k in params]
+    nested = [k for k in param_keys if k in extra_body]
+    if not present and not nested:
         return None
     minimal: str | None = text
-    for key in present:
+    for key in present + nested:
         minimal = _json_key_remove(minimal, key) if minimal is not None else None
-    if minimal is not None:
+    if minimal is not None and not _leaves_an_empty_extra_body(minimal):
         return FileEdit(file="agent.json", new_content=minimal)
     for key in present:
-        raw["params"].pop(key, None)
+        params.pop(key, None)
+    for key in nested:
+        extra_body.pop(key, None)
+    if nested and not extra_body:
+        params.pop("extra_body", None)
     return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
+
+
+def _leaves_an_empty_extra_body(text: str) -> bool:
+    """True when a textual deletion emptied ``params.extra_body``; the re-serialize path drops
+    the husk instead of leaving `"extra_body": {}` in the patch."""
+    params = json.loads(text).get("params")
+    return isinstance(params, dict) and params.get("extra_body") == {}
 
 
 def _effort_ladder(endpoint: str) -> tuple[tuple[str, ...], str]:
@@ -369,7 +395,7 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 sig,
                 "Remove temperature / top_p / top_k: this model rejects non-default sampling "
                 "params (typically left over from an OpenAI-style config).",
-                [_agent_json_remove(agent_dir, list(SAMPLING_PARAMS))],
+                [_agent_json_remove(agent_dir, list(SAMPLING_PARAMS), also_extra_body=True)],
             )
         elif sig == "serialized_tool_calls":
             if "in this one response" not in prompt:

@@ -275,13 +275,21 @@ No provider-specific forks in the core: `agent_loop.py` gains a third endpoint s
   `{"type":"tool","name":...}`); an OpenAI-shaped value is translated (`"required"`→any,
   `{"type":"function","function":{"name":X}}`→tool X). `thinking` passes through (omit ⇒
   adaptive; `enabled`/`disabled` are 400s on both Fables). `temperature/top_p/top_k` are
-  passed through by the mapping but no longer reach the wire: `anthropic` >= 1.3.0 removed
-  them from `Messages.create()`, so the SDK raises `TypeError: ... got an unexpected keyword
-  argument 'temperature'` in process. The provider catches that one TypeError shape and
-  records it as the 400 the API used to return ("`temperature` is deprecated for this
-  model"), so the sampling-params detector below still fires and its repair stays reachable;
-  any other TypeError propagates. Either way non-default values fail on BOTH models (not a
-  5→5.1 regression).
+  routed to WHERE THE INSTALLED SDK WILL SEND THEM: `anthropic` >= 1.1.0 removed them from
+  `Messages.create()` (no parameter, no `**kwargs`), so `map_params` asks the SDK's own
+  signature once per name (`anthropic_provider.messages_create_accepts`, cached) and puts
+  anything it will not take into `extra_body` — the SDK's escape hatch, which lands the value
+  in the same JSON body field it always occupied. On an older pinned SDK they stay top-level
+  and nothing moves. Routing happens while the request is BUILT, not in the provider, so the
+  recorded request shows each param where it was really sent. This is what makes the pair
+  decidable: before it, the SDK raised `TypeError` in process on BOTH models and the API
+  never spoke. It speaks now — sampling-capable families accept the value, the newest ones
+  return the documented 400 ("`temperature` is deprecated for this model") — so the
+  sampling-params detector below fires on the API's answer rather than on a client-side
+  crash. The provider still maps a `TypeError: ... got an unexpected keyword argument` to
+  that same 400, now only as a fallback for some OTHER parameter a future SDK removes; any
+  other TypeError propagates. Both Fables reject non-default sampling params, so on that pair
+  the failure is still two-sided (not a 5→5.1 regression).
 - Conversation: assistant turns are stored with their FULL `content` block list (thinking +
   text + tool_use) and replayed byte-for-byte; tool results go back as a `user` message
   whose content is `tool_result` blocks FIRST (`tool_use_id`, `content` = JSON-encoded
@@ -346,7 +354,9 @@ placement fails to restore.
    search.`
 5. `api_error_unsupported_sampling_params` — 400 mentioning temperature/top_p/top_k.
    Repair: drop those params (both Fables reject non-defaults; this catches agents
-   migrating from OpenAI-style configs).
+   migrating from OpenAI-style configs). The removal reads `params` AND `params.extra_body`,
+   because the same declared intent can be spelled either way and transport is the provider's
+   business, not the repair's; an extra_body emptied by the removal goes with it.
 6. Effort calibration is a first-class `model_params` repair: raise-one-rung and
    set-to-`high` candidates exist for behavioral signatures on any endpoint, using the
    endpoint's legal ladder. Lowering effort is never a regression repair.
