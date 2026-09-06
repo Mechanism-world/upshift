@@ -308,6 +308,7 @@ def write_agent(
     *,
     endpoint: str = "messages",
     params: dict[str, Any] | None = None,
+    turn_params: list[dict[str, Any]] | None = None,
     prompt: str = "You are a helpful assistant.",
     one_line: bool = True,
 ) -> Path:
@@ -318,6 +319,7 @@ def write_agent(
         "endpoint": endpoint,
         "model": "claude-fable-5-1",
         "params": params if params is not None else {},
+        **({"turn_params": turn_params} if turn_params is not None else {}),
         "system_prompt_file": "system_prompt.txt",
         "tools_file": "tools.json",
         "max_turns": 12,
@@ -646,3 +648,56 @@ def test_a_restored_case_is_not_refused() -> None:
 def test_no_candidate_is_generated_for_thinking_block_invalid(tmp_path) -> None:
     agent_dir = write_agent(tmp_path, params={"tool_choice": {"type": "any"}})
     assert generate_candidates(agent_dir, [SIG_THINKING_BLOCK_INVALID]) == []
+
+
+def test_the_forced_tool_choice_repair_reaches_a_per_turn_sequence(tmp_path):
+    """A capture-derived agent can carry its forced `tool_choice` in `turn_params` — that is
+    the whole point of the sequence. A repair that only looked at `params` would find nothing
+    to remove, drop its own candidate, and leave the agent forcing a tool on turn 1 against a
+    model that 400s it: STAY PINNED with an empty repair log for a break upshift knows how to
+    fix."""
+    agent_dir = write_agent(
+        tmp_path,
+        params={"max_tokens": 512},
+        turn_params=[{"tool_choice": {"type": "any"}}, {"tool_choice": {"type": "auto"}}],
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_forced_tool_choice"]),
+        "remove-forced-tool-choice",
+    )
+
+    raw = json.loads(patch.edits[0].new_content)
+    assert raw["params"] == {"max_tokens": 512}
+    # Every trace of the forced choice is gone; an all-empty sequence goes with it rather
+    # than staying behind as `[{}, {}]`.
+    assert "turn_params" not in raw
+    assert appended(agent_dir, patch.edits[1]) == "\n\n" + playbook.FORCED_ANY_INSTRUCTION + "\n"
+
+
+def test_a_per_turn_sequence_keeps_the_params_it_still_needs(tmp_path):
+    agent_dir = write_agent(
+        tmp_path,
+        params={},
+        turn_params=[
+            {"tool_choice": {"type": "any"}, "max_tokens": 512},
+            {"tool_choice": None, "max_tokens": 1024},
+        ],
+    )
+    patch = only(
+        generate_candidates(agent_dir, ["api_error_forced_tool_choice"]),
+        "remove-forced-tool-choice",
+    )
+
+    assert json.loads(patch.edits[0].new_content)["turn_params"] == [
+        {"max_tokens": 512}, {"max_tokens": 1024}
+    ]
+
+
+def test_no_candidate_when_the_sequence_forces_nothing(tmp_path):
+    agent_dir = write_agent(
+        tmp_path,
+        params={},
+        turn_params=[{"tool_choice": {"type": "auto"}}, {"tool_choice": None}],
+    )
+    ids = [p.id for p in generate_candidates(agent_dir, ["api_error_forced_tool_choice"])]
+    assert "remove-forced-tool-choice" not in ids

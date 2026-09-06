@@ -495,3 +495,94 @@ def test_empty_user_messages_is_a_no_op():
     assert result.api_calls == []
     assert result.final_message == ""
     assert result.final_state == {"executed": []}
+
+
+# ---------------------------------------------------------------------------
+# Per-turn params (agent.json `turn_params`)
+# ---------------------------------------------------------------------------
+
+
+def test_without_turn_params_every_turn_sends_the_same_params():
+    """The default, and what every hand-written agent does."""
+    provider = ScriptedProvider([chat_tools([("search_flights", {})]), chat_text("done")])
+
+    run_episode(make_config(), make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    assert [c["request"]["reasoning_effort"] for c in provider.calls] == ["medium", "medium"]
+
+
+def test_turn_params_are_applied_by_turn_index_and_the_last_entry_repeats():
+    """A framework that forces a tool on turn 1 and goes `auto` afterwards (pydantic-ai,
+    litellm) is a DIFFERENT agent from one that forces on every turn: under a forced choice
+    the model can never answer in text, so the episode runs to max_turns and fails its own
+    `turns_at_most` on the BASELINE model. One episode-level value cannot express it."""
+    provider = ScriptedProvider(
+        [
+            chat_tools([("search_flights", {})]),
+            chat_tools([("book_flight", {})]),
+            chat_tools([("book_flight", {"again": True})]),
+            chat_text("done"),
+        ]
+    )
+    config = make_config(
+        params={"max_tokens": 512, "tool_choice": "required"},
+        turn_params=[{"tool_choice": "required"}, {"tool_choice": "auto"}],
+    )
+
+    run_episode(config, make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    assert [c["request"]["tool_choice"] for c in provider.calls] == [
+        "required",
+        "auto",
+        "auto",  # the last entry repeats for every later turn
+        "auto",
+    ]
+    # A param the sequence does not mention keeps its `params` value on every turn.
+    assert {c["request"]["max_tokens"] for c in provider.calls} == {512}
+
+
+def test_a_turn_param_of_null_unsets_the_param_for_that_turn():
+    """A framework that sends `tool_choice` on the forced turn and OMITS the field afterwards
+    is not the same as one that sends `"auto"`; `null` is how the sequence says "not sent"."""
+    provider = ScriptedProvider([chat_tools([("search_flights", {})]), chat_text("done")])
+    config = make_config(
+        params={"tool_choice": "required"},
+        turn_params=[{"tool_choice": "required"}, {"tool_choice": None}],
+    )
+
+    run_episode(config, make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    assert provider.calls[0]["request"]["tool_choice"] == "required"
+    assert "tool_choice" not in provider.calls[1]["request"]
+
+
+def test_turn_params_ride_on_top_of_a_params_override():
+    """The repair loop and `--endpoint` overrides replace `params`; the per-turn shape is a
+    property of the agent and must still apply over whatever params are in force."""
+    provider = ScriptedProvider([chat_tools([("search_flights", {})]), chat_text("done")])
+    config = make_config(
+        params={"tool_choice": "required", "max_tokens": 512},
+        turn_params=[{"tool_choice": "required"}, {"tool_choice": "auto"}],
+    )
+
+    run_episode(
+        config, make_case(), provider, StubBackend(), rep=0, seed=0,
+        params_override={"max_tokens": 99},
+    )
+
+    assert provider.calls[0]["request"]["max_tokens"] == 99
+    assert provider.calls[0]["request"]["tool_choice"] == "required"
+    assert provider.calls[1]["request"]["tool_choice"] == "auto"
+
+
+def test_turn_params_never_mutate_the_agents_own_params():
+    provider = ScriptedProvider([chat_tools([("search_flights", {})]), chat_text("done")])
+    config = make_config(
+        params={"tool_choice": "required"},
+        turn_params=[{"tool_choice": "required"}, {"tool_choice": {"type": "auto"}}],
+    )
+
+    run_episode(config, make_case(), provider, StubBackend(), rep=0, seed=0)
+
+    assert config.params == {"tool_choice": "required"}
+    assert config.turn_params == [{"tool_choice": "required"}, {"tool_choice": {"type": "auto"}}]

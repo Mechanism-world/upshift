@@ -22,7 +22,7 @@ from typing import Any
 
 from upshift import stats
 from upshift.checks import DEFAULT_CONFIRMATION_PATTERN, assistant_turns, count_state_entries
-from upshift.schemas import LABEL_STABLE_PASS, RepRecord, label, outcome
+from upshift.schemas import LABEL_STABLE_PASS, OUTCOME_PASS, RepRecord, label, outcome
 
 # ---------------------------------------------------------------------------
 # Failure signature taxonomy (contract with repair/playbook.py — keep in sync)
@@ -150,6 +150,16 @@ class DiffResult:
 
     def non_stable_pass(self) -> list[CaseDiff]:
         return [c for c in self.cases if c.label != LABEL_STABLE_PASS]
+
+    def baseline_passing_cases(self) -> int:
+        """Cases the BASELINE model passed. Zero means nothing was measured.
+
+        A regression needs a case that passed on the baseline, so a suite where the baseline
+        passes nothing produces zero regressed cases and every downstream count agrees the
+        upgrade is clean — which is a false pass, not a result (rescue-ops `A-075` §6.3(a)).
+        `verdict.decide` turns a zero here into `BASELINE_BROKEN`.
+        """
+        return sum(1 for case in self.cases if case.baseline_outcome == OUTCOME_PASS)
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +523,28 @@ def _require_reps(run_dir: Path, run_id: str, case_id: str, role: str) -> list[R
     return records
 
 
+def passing_cases(run_directory: str | Path) -> int:
+    """How many cases PASS in ONE recorded run, recomputed from its rep files.
+
+    `DiffResult.baseline_passing_cases` asks this of a finished diff; this asks it of a single
+    run, so `upshift upgrade` can say "the baseline passed nothing" between the two legs —
+    before the candidate run spends money on a comparison that cannot mean anything.
+    """
+    run_directory = Path(run_directory)
+    thresholds = _load_manifest(run_directory).get("thresholds", {})
+    pass_threshold = float(thresholds.get("pass", 0.8))
+    fail_threshold = float(thresholds.get("fail", 0.4))
+    total = 0
+    for case_id in sorted(_case_ids(run_directory)):
+        records = _load_reps(run_directory, case_id)
+        if not records:
+            continue
+        passes = sum(1 for record in records if record.passed)
+        if outcome(passes, len(records), pass_threshold, fail_threshold) == OUTCOME_PASS:
+            total += 1
+    return total
+
+
 # ---------------------------------------------------------------------------
 # The diff
 # ---------------------------------------------------------------------------
@@ -626,5 +658,6 @@ __all__ = [
     "failing_details",
     "failure_signatures",
     "load_diff",
+    "passing_cases",
     "save_diff",
 ]

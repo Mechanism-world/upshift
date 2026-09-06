@@ -63,6 +63,13 @@ class CaptureAdaptResult:
     volatile_suffix: str | None = None
     terminal_tools: list[str] = field(default_factory=list)
     max_turns: int = 12
+    #: The derived per-turn param sequence (agent.json `turn_params`), empty when every
+    #: recorded turn of every conversation sent the same params.
+    turn_params: list[dict[str, Any]] = field(default_factory=list)
+    #: The subset of `notes` where the capture disagreed with ITSELF and the adapter had to
+    #: choose — a value some recorded request will not reproduce. `--strict` exits non-zero
+    #: on any of these, because a note is not a gate.
+    conflicts: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -81,20 +88,158 @@ def _bodies(conversations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _most_common(values: list[Any], notes: list[str], what: str) -> Any:
-    """The most frequently sent value, recording every other one it beat."""
+def _ranked(counts: Counter) -> list[tuple[str, int]]:
+    """Recorded values, most frequent first, TIES BROKEN BY THE CANONICAL TEXT.
+
+    `Counter.most_common` breaks a tie by insertion order, so the same traffic recorded in a
+    different order produced a different agent — and, when the tied values were a forced and
+    an unforced `tool_choice`, an agent that silently did not reproduce the capture at all
+    (rescue-ops `A-075` §6.3(a)). Which turn the recorder happened to start on is not
+    evidence, so it never decides anything.
+    """
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _variant_listing(counts: Counter) -> str:
+    return ", ".join(f"{blob} ({n}x)" for blob, n in _ranked(counts))
+
+
+def _most_common(
+    values: list[Any], notes: list[str], what: str, conflicts: list[str] | None = None
+) -> Any:
+    """The most frequently sent value, recording every other one it beat.
+
+    A capture that sent more than one value for `what` cannot be reproduced by a single
+    value, so every discarded variant is both noted and recorded as a CONFLICT: the note is
+    for the reader, the conflict is what `--strict` refuses on.
+    """
     usable = [v for v in values if v is not None]
     if not usable:
         return None
     counts = Counter(canonical(v) for v in usable)
-    winner, hits = counts.most_common(1)[0]
+    winner, hits = _ranked(counts)[0]
     if len(counts) > 1:
-        others = ", ".join(f"{blob} ({n}x)" for blob, n in counts.most_common()[1:])
-        notes.append(
-            f"{what} varied across the capture: kept the most common value ({hits} of "
-            f"{len(usable)} requests), variants not written: {others}"
+        tied = sum(1 for count in counts.values() if count == hits) > 1
+        note = (
+            f"CONFLICT: {what} varied across the capture and is not a per-turn shape the "
+            f"sequence can express. Kept {winner} ({hits} of {len(usable)} requests"
+            + (", chosen by canonical order because the count was TIED" if tied else "")
+            + f"), variants not written: {_variant_listing(counts)}"
         )
+        notes.append(note)
+        if conflicts is not None:
+            conflicts.append(note)
     return json.loads(winner)
+
+
+# ---------------------------------------------------------------------------
+# Per-turn params: the shape the framework actually sent, turn by turn
+# ---------------------------------------------------------------------------
+
+#: Request fields read off the wire into agent.json. `tool_choice` heads the list because it
+#: is the one that decides CONTROL FLOW: under a forced choice the model cannot answer in
+#: text, so a framework that forces turn 1 and then goes `auto` has a completely different
+#: episode from one that forces every turn.
+CAPTURED_PARAMS = (
+    "max_tokens", "temperature", "top_p", "top_k", "tool_choice", "thinking",
+    "output_config", "service_tier",
+)
+
+
+def _conversation_bodies(conversations: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Usable request bodies per conversation, in request order — the turn index."""
+    out: list[list[dict[str, Any]]] = []
+    for conversation in conversations:
+        bodies = [
+            body
+            for turn in conversation["turns"]
+            if isinstance(body := (turn.get("request") or {}).get("body"), dict)
+            and isinstance(body.get("messages"), list)
+        ]
+        if bodies:
+            out.append(bodies)
+    return out
+
+
+def _varies_by_turn(sequences: list[list[dict[str, Any]]], key: str) -> bool:
+    """True when any ONE conversation sent more than one value for `key` across its turns.
+
+    Scoped to a single conversation on purpose: that is a per-turn shape, which the sequence
+    reproduces. Two conversations that each held one value but disagreed with each other are
+    a conflict, not a shape, and `_most_common` reports them as one.
+    """
+    return any(len({canonical(body.get(key)) for body in bodies}) > 1 for bodies in sequences)
+
+
+def _agreed_turn_value(
+    values: list[Any], notes: list[str], conflicts: list[str], what: str
+) -> Any:
+    """The one value every conversation sent at this turn, or a reported choice between them.
+
+    `None` means the field was not sent on that turn, which is a different request from any
+    value it could have carried — so it is carried through as `null` rather than smoothed
+    into the neighbouring turn's value.
+    """
+    counts = Counter(canonical(value) for value in values)
+    if not counts:
+        return None
+    winner, hits = _ranked(counts)[0]
+    if len(counts) > 1:
+        note = (
+            f"CONFLICT: {what} — the captured conversations disagree, and no per-turn "
+            f"sequence can hold both. Variants, most frequent first: "
+            f"{_variant_listing(counts)}. Wrote {winner} ({hits} of {len(values)} "
+            f"conversations that reached this turn), chosen by count then by canonical order "
+            f"— never by which conversation the recorder saw first. Check it against the "
+            f"framework before trusting a run built on this directory."
+        )
+        notes.append(note)
+        conflicts.append(note)
+    return json.loads(winner)
+
+
+def _turn_entry(raw: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+    """One turn's overrides, canonicalised exactly the way `params` is.
+
+    `None` (the framework did not send the field on this turn) is carried around
+    `build_params`, which is about values; on the way back out it is what tells the agent
+    loop to UNSET the param for that turn.
+    """
+    unset = [key for key, value in raw.items() if value is None]
+    sent = {key: value for key, value in raw.items() if value is not None}
+    fresh: list[str] = []
+    entry = build_params(sent, ENDPOINT, fresh) if sent else {}
+    # The same canonicalisation note would otherwise land once per turn.
+    notes.extend(note for note in fresh if note not in notes)
+    for key in unset:
+        entry[key] = None
+    return entry
+
+
+def _derive_turn_params(
+    sequences: list[list[dict[str, Any]]], keys: list[str], notes: list[str],
+    conflicts: list[str],
+) -> list[dict[str, Any]]:
+    """The `turn_params` sequence for the params that vary by turn.
+
+    Trailing duplicates are dropped because the last entry repeats for every later turn, so
+    `[force, auto, auto]` and `[force, auto]` describe the same agent and the shorter one is
+    the one a human can read.
+    """
+    length = max(len(bodies) for bodies in sequences)
+    entries: list[dict[str, Any]] = []
+    for index in range(length):
+        raw = {
+            key: _agreed_turn_value(
+                [bodies[index].get(key) for bodies in sequences if index < len(bodies)],
+                notes, conflicts, f"the {key!r} parameter at turn {index + 1}",
+            )
+            for key in keys
+        }
+        entries.append(_turn_entry(raw, notes))
+    while len(entries) > 1 and entries[-1] == entries[-2]:
+        entries.pop()
+    return entries
 
 
 def _system_text(body: dict[str, Any]) -> str | None:
@@ -587,6 +732,13 @@ def _adapt_edits(result: CaptureAdaptResult, index: dict[str, Any]) -> str:
         "never evidence."),
         ("6. **The backend is a replay, not a re-implementation.** Unknown arguments return "
         f"`{{\"error\": \"{NO_RECORD_ERROR}\"}}` rather than a plausible answer."),
+        ("7. **A param that varies by turn is a sequence, not an average.** When one "
+        "conversation sent different values for the same param on different turns, they are "
+        "written as `turn_params` (below) and NOT as one episode-level value. Collapsing "
+        "them is what turns a framework that forces a tool on turn 1 and then goes `auto` "
+        "into one that forces every turn — an agent that can never answer in text, "
+        "stable-fails its own `turns_at_most` on the BASELINE model, and gets a `SAFE` "
+        "verdict over a suite that never worked (rescue-ops `A-075` §6.3(a))."),
         "",
         "## Deviations specific to this capture",
         "",
@@ -595,6 +747,37 @@ def _adapt_edits(result: CaptureAdaptResult, index: dict[str, Any]) -> str:
         lines += [f"- {note}" for note in result.notes]
     else:
         lines.append("- none: every request in the capture had the same shape.")
+    if result.turn_params:
+        lines += [
+            "",
+            "## Per-turn parameters (`agent.json` `turn_params`)",
+            "",
+            ("These params were not constant across the turns of a conversation, so they are "
+            "replayed by TURN INDEX rather than collapsed to one value. The last entry "
+            "repeats for every later turn, and `null` means the framework did not send that "
+            "field on that turn at all (which is a different request from sending a default)."),
+            "",
+            "```json",
+            json.dumps(result.turn_params, indent=2),
+            "```",
+            "",
+        ]
+    if result.conflicts:
+        lines += [
+            "",
+            "## \u26a0 CONFLICTS — the capture disagrees with itself",
+            "",
+            (f"{len(result.conflicts)} value(s) below could not be reproduced from the "
+            "recording: two or more requests sent different things and no single value (and "
+            "no per-turn sequence) can hold both. Every variant is listed; the one written "
+            "was chosen by count and then by canonical text, never by which request the "
+            "recorder happened to see first. **`upshift adapt --from-capture --strict` exits "
+            "non-zero on this section**, because a run built on a directory that does not "
+            "reproduce its own capture measures an agent nobody has."),
+            "",
+        ]
+        lines += [f"- {conflict}" for conflict in result.conflicts]
+        lines.append("")
     lines += [
         "",
         "## Not deviations, but read before trusting a run",
@@ -636,6 +819,7 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
     index, conversations = load_capture(capture_dir)
     result = CaptureAdaptResult(out_dir=out_dir)
     notes = result.notes
+    conflicts = result.conflicts
 
     bodies = _bodies(conversations)
     if not bodies:
@@ -644,7 +828,10 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
         )
 
     # -- system_prompt.txt --------------------------------------------------
-    prompt = _most_common([_system_text(b) for b in bodies], notes, "the system prompt") or ""
+    prompt = (
+        _most_common([_system_text(b) for b in bodies], notes, "the system prompt", conflicts)
+        or ""
+    )
     block_counts = {
         len(b["system"]) for b in bodies if isinstance(b.get("system"), list)
     }
@@ -663,21 +850,33 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
                     {k: v for k, v in tool.items() if k != "cache_control"}
                 )
     tools = [
-        _most_common(variants, notes, f"the definition of tool {name!r}")
+        _most_common(variants, notes, f"the definition of tool {name!r}", conflicts)
         for name, variants in by_name.items()
     ]
     chat_tools = _tools_chat_style(tools)
     result.tool_names = [t["function"]["name"] for t in chat_tools]
 
-    # -- params -------------------------------------------------------------
-    model = _most_common([b.get("model") for b in bodies], notes, "the model") or ""
+    # -- params, and the per-turn sequence ----------------------------------
+    model = _most_common([b.get("model") for b in bodies], notes, "the model", conflicts) or ""
+    sequences = _conversation_bodies(conversations)
+    by_turn = [key for key in CAPTURED_PARAMS if _varies_by_turn(sequences, key)]
     raw_params: dict[str, Any] = {}
-    for key in ("max_tokens", "temperature", "top_p", "top_k", "tool_choice", "thinking",
-                "output_config", "service_tier"):
-        value = _most_common([b.get(key) for b in bodies], notes, f"the {key!r} parameter")
+    for key in CAPTURED_PARAMS:
+        if key in by_turn:
+            continue  # its value belongs to the turn it was sent on, not to the episode
+        value = _most_common([b.get(key) for b in bodies], notes, f"the {key!r} parameter",
+                             conflicts)
         if value is not None:
             raw_params[key] = value
     params = build_params(raw_params, ENDPOINT, notes)
+    if by_turn:
+        result.turn_params = _derive_turn_params(sequences, by_turn, notes, conflicts)
+        notes.append(
+            f"param(s) {by_turn} were sent with different values on different turns of one "
+            f"conversation, so they are written as agent.json `turn_params` (applied by turn "
+            f"index, last entry repeating) instead of one episode-level value: "
+            f"{json.dumps(result.turn_params)}"
+        )
 
     # -- cases --------------------------------------------------------------
     cases: list[dict[str, Any]] = []
@@ -742,6 +941,7 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
         "endpoint": ENDPOINT,
         "model": model,
         "params": params,
+        **({"turn_params": result.turn_params} if result.turn_params else {}),
         "system_prompt_file": "system_prompt.txt",
         "tools_file": "tools.json",
         "max_turns": result.max_turns,

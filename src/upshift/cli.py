@@ -28,13 +28,14 @@ from upshift.capture import mapping as capture_mapping
 from upshift.capture import record as capture_record
 from upshift.capture import server as capture_server
 from upshift.differ import diff_runs, load_diff, save_diff
+from upshift.differ import passing_cases as differ_passing_cases
 from upshift.patch import make_patch
 from upshift.providers import get_provider
 from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
-from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case
-from upshift.verdict import SAFE_WITH_PATCH, decide
+from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case, validate_turn_params
+from upshift.verdict import BASELINE_BROKEN, SAFE_WITH_PATCH, decide
 
 console = Console()
 
@@ -226,6 +227,7 @@ def validate_agent_dir(agent_dir: Path) -> dict:
             raise ValueError(
                 f"{config_path}: {key} points at {raw[key]!r}, which does not exist in {agent_dir}"
             )
+    validate_turn_params(raw.get("turn_params"), str(config_path))
     tools = _read_json(agent_dir / str(raw["tools_file"]))
     # An empty list is legal: a plain completion agent (one system prompt, no tool loop) is
     # still a plain API agent, and the loop already handles it — `_mark_last_tool_cacheable`
@@ -611,7 +613,14 @@ def cmd_adapt_from_capture(args) -> int:
         soft_wrap=True,
     )
     for note in result.notes:
-        console.print(f"  [dim]{escape(note)}[/dim]", highlight=False, soft_wrap=True)
+        style = "yellow" if note.startswith("CONFLICT:") else "dim"
+        console.print(f"  [{style}]{escape(note)}[/{style}]", highlight=False, soft_wrap=True)
+    if result.turn_params:
+        console.print(
+            f"  [cyan]per-turn params derived[/cyan]: {escape(json.dumps(result.turn_params))} "
+            f"— applied by turn index, last entry repeating",
+            highlight=False, soft_wrap=True,
+        )
     try:
         validate_agent_dir(out_dir)
         console.print("[green]the generated directory satisfies the ADAPTER.md contract[/green]")
@@ -626,6 +635,21 @@ def cmd_adapt_from_capture(args) -> int:
         highlight=False,
         soft_wrap=True,
     )
+    if result.conflicts:
+        console.print(
+            f"[yellow]{len(result.conflicts)} value(s) in this capture disagree with each "
+            f"other; the adapter had to choose, so the generated directory does not "
+            f"reproduce every recorded request[/yellow]",
+            highlight=False, soft_wrap=True,
+        )
+        if args.strict:
+            console.print(
+                "[red]--strict: refusing a capture the adapter could not reproduce[/red] — "
+                "read the CONFLICTS section of ADAPT_EDITS.md, then either re-capture the "
+                "one shape you mean to measure or drop --strict to accept the choices above.",
+                highlight=False, soft_wrap=True,
+            )
+            return 3
     return 0
 
 
@@ -638,6 +662,12 @@ def cmd_adapt(args) -> int:
                 "ways to build the same five files"
             )
         return cmd_adapt_from_capture(args)
+    if args.strict:
+        raise ValueError(
+            "--strict applies to --from-capture only: it refuses a capture whose recorded "
+            "requests disagree with each other. Reading a repo has its own honesty gate "
+            "(the mechanical verbatim gate; see ADAPT_REPORT.md)"
+        )
     if not args.source:
         raise ValueError(
             "adapt needs a source: a repo path/git URL to read, or --from-capture <dir> to "
@@ -873,6 +903,18 @@ def cmd_upgrade(args) -> int:
         notes=_with_notes("upgrade pipeline baseline", preflight),
         on_rep_done=None if args.quiet else _progress,
     )
+    if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
+        # Said here, between the legs, because the candidate run is the one that costs money
+        # and a comparison against a baseline that passed nothing cannot mean anything.
+        console.print(
+            f"\n[bold white on red] {BASELINE_BROKEN} [/bold white on red] the baseline model "
+            f"{escape(args.baseline_model)} passed 0 cases: this suite does not work on the "
+            f"model it is supposed to work on, so nothing measured against "
+            f"{escape(args.candidate_model)} will mean anything. The pipeline will report "
+            f"{BASELINE_BROKEN}, never SAFE. Stop it now (Ctrl-C; completed reps are kept) "
+            f"and fix the agent directory or the eval suite first.\n",
+            highlight=False, soft_wrap=True,
+        )
     console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
     run_suite(
         agent_dir, provider, candidate_id, n_reps=args.n,
@@ -1134,6 +1176,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_adapt.add_argument(
         "--out", required=True, help="directory to write (must not exist, or be empty)"
+    )
+    p_adapt.add_argument(
+        "--strict", action="store_true",
+        help="--from-capture only: exit non-zero when the recorded requests disagree with "
+        "each other, so the generated directory cannot reproduce the capture",
     )
     p_adapt.add_argument(
         "--model", default=ADAPT_DEFAULT_MODEL,

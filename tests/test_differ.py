@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from upshift import differ, report
+from upshift import differ, report, verdict
 from upshift.differ import (
     SIG_ACTING_PAST_GOAL,
     SIG_API_ERROR_OTHER,
@@ -761,3 +761,72 @@ def test_report_detail_truncation() -> None:
     assert len(report._truncate(long)) == report.DETAIL_WIDTH
     assert report._truncate(long).endswith("...")
     assert report._truncate("short") == "short"
+
+
+# ---------------------------------------------------------------------------
+# A baseline that never worked is not a SAFE upgrade
+# ---------------------------------------------------------------------------
+
+
+def test_a_baseline_with_no_passing_case_is_baseline_broken_not_safe(tmp_path: Path) -> None:
+    """The safety net under rescue-ops `A-075` §6.3(a).
+
+    When the baseline model passes 0 of N on every case, nothing was measured: there is no
+    regression to find, so the differ counts zero and the verdict read `SAFE` — "the
+    candidate model is a drop-in replacement" — over a suite that never worked once. That is
+    a false pass in the one direction the product must never fail. `BASELINE_BROKEN` is what
+    the runbook already calls it, and it is terminal.
+    """
+    baseline = write_run(tmp_path, "base", {"a": reps("a", 0, 5), "b": reps("b", 0, 5)})
+    candidate = write_run(tmp_path, "cand", {"a": reps("a", 0, 5), "b": reps("b", 0, 5)})
+    result = diff_runs(baseline, candidate)
+
+    assert result.counts == {LABEL_STABLE_FAIL: 2}
+    assert result.baseline_passing_cases() == 0
+    assert verdict.decide(result)["verdict"] == verdict.BASELINE_BROKEN
+
+
+def test_one_passing_baseline_case_is_enough_to_have_measured_something(tmp_path: Path) -> None:
+    """The guard is "nothing worked", not "something failed": a suite with one working case
+    and one broken one still measures the candidate against the working one."""
+    baseline = write_run(tmp_path, "base", {"a": reps("a", 5, 5), "b": reps("b", 0, 5)})
+    candidate = write_run(tmp_path, "cand", {"a": reps("a", 5, 5), "b": reps("b", 0, 5)})
+    result = diff_runs(baseline, candidate)
+
+    assert result.baseline_passing_cases() == 1
+    assert verdict.decide(result)["verdict"] == verdict.SAFE
+
+
+def test_baseline_broken_says_so_instead_of_drop_in_replacement(tmp_path: Path) -> None:
+    baseline = write_run(tmp_path, "base", {"a": reps("a", 0, 5)})
+    candidate = write_run(tmp_path, "cand", {"a": reps("a", 0, 5)})
+    result = diff_runs(baseline, candidate)
+    decided = verdict.decide(result)
+
+    markdown = report.diff_to_markdown(result, verdict=decided)
+    assert "drop-in replacement" not in markdown
+    assert verdict.BASELINE_BROKEN in markdown
+    console = Console(file=StringIO(), width=100, no_color=True)
+    report.render_diff(result, console=console, verdict=decided)
+    assert "drop-in replacement" not in console.file.getvalue()
+
+
+def test_a_regression_still_outranks_the_baseline_guard(tmp_path: Path) -> None:
+    """A suite with a regression has a passing baseline case by definition, so the guard can
+    never mask a STAY PINNED."""
+    baseline = write_run(tmp_path, "base", {"a": reps("a", 5, 5)})
+    candidate = write_run(tmp_path, "cand", {"a": reps("a", 0, 5)})
+    result = diff_runs(baseline, candidate)
+
+    assert verdict.decide(result)["verdict"] == verdict.STAY_PINNED
+
+
+def test_passing_cases_counts_one_run_the_way_the_diff_would(tmp_path: Path) -> None:
+    """`upshift upgrade` asks this between the two legs, so it must agree with the diff that
+    is computed after them."""
+    run = write_run(tmp_path, "base", {"a": reps("a", 5, 5), "b": reps("b", 2, 5),
+                                       "c": reps("c", 0, 5)})
+    assert differ.passing_cases(run) == 1
+
+    broken = write_run(tmp_path, "broken", {"a": reps("a", 0, 5)})
+    assert differ.passing_cases(broken) == 0

@@ -9,6 +9,8 @@ as the five files below, upshift cannot run it — that is a scope decision, not
 ```
 my_agent/
   agent.json          # {name, endpoint, model, params{}, system_prompt_file, tools_file, max_turns}
+                      # optional: turn_params[] (per-turn param overrides), volatile_suffix,
+                      #           terminal_tools[]
   system_prompt.txt   # the system message, verbatim
   tools.json          # OpenAI chat-style tools: [{"type": "function", "function": {...}}]
   backend.py          # create_backend(initial_state) -> object with .execute()/.state()
@@ -31,6 +33,27 @@ my_agent/
    the API, not the client, decide. An `extra_body` you write yourself is honoured and wins,
    and the sampling repair can remove params from either place. `tools.json` is chat-style on every endpoint —
    upshift converts it for `responses` and `messages`.
+
+   **`turn_params` (optional): params that change from turn to turn.** `params` is what every
+   assistant turn sends. When your agent sends something different on different turns — the
+   common one is a `tool_choice` that forces a tool on turn 1 and then goes `"auto"`, which is
+   what every structured-output and routing agent does — declare the sequence:
+
+   ```json
+   "params": {"max_tokens": 512},
+   "turn_params": [{"tool_choice": {"type": "any"}}, {"tool_choice": {"type": "auto"}}]
+   ```
+
+   Each entry is applied **over** `params` for that assistant-turn index (0-based), and the
+   **last entry repeats** for every later turn, so a two-entry list reads "turn 1 like this,
+   everything after it like that". A value of `null` **unsets** that param for that turn —
+   "the field was not sent" is a different request from "the field was sent with a default",
+   and a capture knows which happened. Absent or empty means every turn sends `params`, which
+   is what nearly every hand-written agent wants. This is not cosmetic: under a forced
+   `tool_choice` the model cannot answer in text, so an agent that forces on *every* turn
+   calls tools until `max_turns` and fails its own `turns_at_most` **on the baseline model** —
+   a suite that never worked, which the differ used to score as `SAFE`. The repair loop sees
+   `turn_params`: removing a forced `tool_choice` removes it from the sequence too.
 2. **backend.py** must expose `create_backend(initial_state: dict) -> Backend`, called once per
    episode with the case's `initial_state`.
    - `Backend.execute(name: str, arguments: dict) -> dict` runs one tool call and **never
@@ -139,8 +162,16 @@ is domain-neutral and is appended or applied verbatim to whatever agent is under
 ## Addendum: agent directories built by `upshift adapt --from-capture` (v0.4)
 
 A capture-derived directory satisfies the contract above exactly — runner, differ, repair loop,
-patch and verdict do not know where it came from. Three optional `agent.json` keys are what it
+patch and verdict do not know where it came from. Four optional `agent.json` keys are what it
 adds, and every one of them is read out of the recorded bytes, never inferred:
+
+- **`turn_params`** (list of param objects) — the contract above, derived. A param is written
+  here, and left out of `params` entirely, exactly when one recorded conversation sent
+  different values for it on different turns. Where the recorded conversations disagree with
+  each other in a way no sequence can express, `adapt` does **not** pick a winner quietly: it
+  lists every variant with its count in `ADAPT_EDITS.md` under CONFLICTS, and
+  `adapt --from-capture --strict` exits non-zero. A tie is broken by canonical text and
+  reported — never by which request the recorder happened to see first.
 
 - **`volatile_suffix`** (string) — text the agent regenerates on every request and hangs off
   the trailing user turn (a live facts block: `current_time`, a session id). ONE recorded
@@ -160,8 +191,8 @@ adds, and every one of them is read out of the recorded bytes, never inferred:
   mapping" section possible (`docs/framework-mapping.md`); a hand-written agent directory has
   no framework and gets no such section.
 
-Both `volatile_suffix` and `terminal_tools` are legal in a hand-written `agent.json` too. Both
-default to absent, which is what nearly every agent wants.
+`turn_params`, `volatile_suffix` and `terminal_tools` are all legal in a hand-written
+`agent.json` too. All default to absent, which is what nearly every agent wants.
 
 The generated `backend.py` is a **replay, not a re-implementation**: it looks up (tool name,
 canonical arguments) in `recorded_tools.json` and returns the result the real tool really
