@@ -385,6 +385,48 @@ def test_a_capture_with_nothing_to_adapt_is_a_clean_error(tmp_path: Path) -> Non
         adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
 
 
+def test_tool_fields_that_cannot_be_carried_are_reported_not_dropped_silently(
+    tmp_path: Path,
+) -> None:
+    """A recorded tool is more than {name, description, input_schema}.
+
+    `_tools_chat_style` keeps those three and drops everything else, so a server tool
+    (`{"type": "bash_20250124"}`, a computer tool's `display_width_px`, a web-search tool's
+    `max_uses`) silently becomes an ordinary custom tool with an empty schema — a different
+    agent from the captured one, with nothing anywhere saying so. Found on the first real
+    capture-mode case (rescue-ops `A-075`), where `"type": "custom"` was dropped from the
+    replayed wire body while ADAPT_EDITS.md claimed it was the recorded one.
+    """
+    store = CaptureStore(tmp_path / "cap", listen="127.0.0.1:0", upstream="x", mode="forward")
+    store.add(
+        headers={}, body={
+            "model": "claude-fable-5", "max_tokens": 8, "system": "s",
+            "messages": [{"role": "user", "content": "look at my screen"}],
+            "tools": [
+                {"type": "custom", "name": "note", "description": "Write a note.",
+                 "input_schema": {"type": "object", "properties": {}}},
+                {"type": "computer_20241022", "name": "computer",
+                 "display_width_px": 1024, "display_height_px": 768},
+            ],
+        },
+        raw_body_bytes=200, path="/v1/messages", status=200,
+        response_body={"id": "m", "type": "message", "role": "assistant",
+                       "model": "claude-fable-5",
+                       "content": [{"type": "tool_use", "id": "t1", "name": "note",
+                                    "input": {}}],
+                       "stop_reason": "tool_use"},
+        events=None, streamed=False, latency_s=0.1,
+    )
+    store.close()
+    result = adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
+
+    edits = (tmp_path / "agent" / "ADAPT_EDITS.md").read_text()
+    # The server tool is the one that matters: it changes what the tool IS.
+    assert "computer_20241022" in edits
+    assert "display_width_px" in edits
+    assert any("computer_20241022" in note for note in result.notes)
+
+
 def test_a_recorded_failure_is_reported_rather_than_hidden(tmp_path: Path) -> None:
     store = CaptureStore(tmp_path / "cap", listen="127.0.0.1:0", upstream="x", mode="forward")
     store.add(headers={}, body={"model": "m", "max_tokens": 4, "system": "s",

@@ -256,17 +256,54 @@ def _system_text(body: dict[str, Any]) -> str | None:
     return None
 
 
-def _tools_chat_style(tools: Any) -> list[dict[str, Any]]:
+#: The three fields the chat-style shape has a slot for, plus the one dropped by design.
+#: `cache_control` is structural deviation 3 (upshift places its own breakpoints) and
+#: `type: "custom"` is Anthropic's default for a plain tool, so neither is worth a note.
+#: Anything else on a recorded tool is a field this shape cannot carry.
+CARRIED_TOOL_FIELDS = frozenset({"name", "description", "input_schema"})
+SILENT_TOOL_FIELDS = frozenset({"cache_control"})
+
+
+def _uncarried_tool_fields(tool: dict[str, Any]) -> list[str]:
+    """Recorded tool keys the chat-style shape has nowhere to put."""
+    dropped = set(tool) - CARRIED_TOOL_FIELDS - SILENT_TOOL_FIELDS
+    if tool.get("type") == "custom":
+        dropped.discard("type")
+    return sorted(dropped)
+
+
+def _tools_chat_style(tools: Any, notes: list[str] | None = None) -> list[dict[str, Any]]:
     """Anthropic `{name, description, input_schema}` -> the chat-style shape ADAPTER.md wants.
 
-    `agent_loop.convert_tools_messages` converts it straight back before the request goes out,
-    so the wire body is the recorded one. `cache_control` marks are dropped here because
-    upshift places its own breakpoints (`agent_loop._mark_last_tool_cacheable`).
+    `agent_loop.convert_tools_messages` converts those three fields back before the request
+    goes out. Everything else a recorded tool carried has no slot in this shape and is
+    dropped — so it is REPORTED, per case, rather than lost quietly. That matters most for a
+    server tool: `{"type": "computer_20241022", "display_width_px": 1024}` has no
+    `input_schema` at all, and dropping its type turns it into an ordinary custom tool with an
+    empty schema — a different agent from the captured one.
+
+    `cache_control` marks are dropped without a note because upshift places its own
+    breakpoints (`agent_loop._mark_last_tool_cacheable`), and so is `type: "custom"`, which is
+    the default for a plain tool and reproduces exactly.
     """
     out = []
     for tool in tools or []:
         if not isinstance(tool, dict) or not tool.get("name"):
             continue
+        dropped = _uncarried_tool_fields(tool)
+        if dropped and notes is not None:
+            detail = ", ".join(f"{key}={canonical(tool[key])}" for key in dropped)
+            notes.append(
+                f"tool {tool['name']!r} was recorded with field(s) the adapter cannot carry, "
+                f"and they are NOT in tools.json: {detail}. The replayed request declares "
+                f"this tool as a plain custom tool, so it is not the recorded tool"
+                + (
+                    " — a server tool whose behaviour is supplied by the API, which this "
+                    "adapter cannot express."
+                    if tool.get("type") not in (None, "custom")
+                    else "."
+                )
+            )
         out.append(
             {
                 "type": "function",
@@ -718,8 +755,17 @@ def _adapt_edits(result: CaptureAdaptResult, index: dict[str, Any]) -> str:
         "(ADAPTER.md); capture mode does not try to route around it."),
         ("2. **Tool schemas are re-wrapped.** Recorded `{name, description, input_schema}` is "
         "written chat-style, because ADAPTER.md requires that shape on every endpoint; "
-        "`agent_loop.convert_tools_messages` converts it back before the request goes out, so "
-        "the wire body is the recorded one."),
+        "`agent_loop.convert_tools_messages` converts those three fields back before the "
+        "request goes out. Any OTHER field a recorded tool carried has no slot in that shape "
+        "and is dropped — each one is listed below, per tool, because a dropped `type` or "
+        "`display_width_px` means the replayed request declares a different tool than the one "
+        "captured. Two are dropped without a line of their own: `cache_control` (see 3) and "
+        "`type: \"custom\"`, which is what a tool carrying an `input_schema` means anyway, so "
+        "the replayed request omits the field and declares the same tool."),
+        ("2b. **A user turn is replayed as a plain string.** A recorded "
+        "`content: [{\"type\": \"text\", ...}]` block list becomes `content: \"...\"`. The "
+        "text is byte-identical and the API treats the two as the same request; the JSON is "
+        "not byte-identical, so a diff of captured vs replayed bodies will show it."),
         ("3. **`cache_control` marks are dropped** from the system and tool definitions. "
         "upshift places its own cache breakpoints (`agent_loop._mark_last_tool_cacheable`), "
         "so keeping the framework's would double them."),
@@ -853,7 +899,7 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
         _most_common(variants, notes, f"the definition of tool {name!r}", conflicts)
         for name, variants in by_name.items()
     ]
-    chat_tools = _tools_chat_style(tools)
+    chat_tools = _tools_chat_style(tools, notes)
     result.tool_names = [t["function"]["name"] for t in chat_tools]
 
     # -- params, and the per-turn sequence ----------------------------------
