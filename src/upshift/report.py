@@ -48,7 +48,10 @@ _LABEL_COLOR = {
     LABEL_STABLE_PASS: "dim green",
 }
 
-_VERDICT_COLOR = {"SAFE": "green", "SAFE WITH PATCH": "yellow", "STAY PINNED": "red"}
+_VERDICT_COLOR = {
+    "SAFE": "green", "SAFE WITH PATCH": "yellow", "STAY PINNED": "red",
+    "BASELINE_BROKEN": "red",
+}
 
 DETAIL_WIDTH = 60
 
@@ -164,7 +167,18 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
     broken = verdict.get("broken_by_patch", 0)
     lines: list[str] = []
 
-    if name == "SAFE":
+    if name == "BASELINE_BROKEN":
+        total = verdict.get("cases_total", len(result.cases))
+        lines.append(
+            f"the BASELINE model passed 0 of {total} case(s): this run measured nothing about "
+            "the candidate."
+        )
+        lines.append(
+            "a regression needs a case that passed on the baseline, so there is no SAFE, no "
+            "STAY PINNED and no repair to attempt here — fix the agent directory or the eval "
+            "suite until the baseline passes, then run the upgrade again."
+        )
+    elif name == "SAFE":
         lines.append("no regressed cases; the candidate model is a drop-in replacement.")
     elif name == "SAFE WITH PATCH":
         lines.append(

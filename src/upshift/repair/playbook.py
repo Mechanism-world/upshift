@@ -230,6 +230,11 @@ def _agent_json_remove(
     candidate at all. What the agent DECLARES is one thing and how it TRAVELS is another; the
     repair is about the declaration, in either spelling.
 
+    The same keys are removed from every ``turn_params`` entry too, because a param declared
+    per turn is still declared: a capture-derived agent typically carries its forced
+    `tool_choice` there and nowhere else, and half a removal is not a repair. A sequence left
+    with nothing to say is dropped rather than kept as ``[{}, {}]``.
+
     Returns None when the agent declares none of them (nothing to repair, candidate dropped).
     Minimal textual deletions are chained; any key that resists a clean textual deletion — or
     that would leave an empty extra_body behind — falls the whole file back to a re-serialize,
@@ -241,11 +246,13 @@ def _agent_json_remove(
     params = params if isinstance(params, dict) else {}
     extra_body = params.get("extra_body") if also_extra_body else None
     extra_body = extra_body if isinstance(extra_body, dict) else {}
+    turn_params = [e for e in (raw.get("turn_params") or []) if isinstance(e, dict)]
     present = [k for k in param_keys if k in params]
     nested = [k for k in param_keys if k in extra_body]
-    if not present and not nested:
+    per_turn = [k for k in param_keys if any(k in entry for entry in turn_params)]
+    if not present and not nested and not per_turn:
         return None
-    minimal: str | None = text
+    minimal: str | None = None if per_turn else text
     for key in present + nested:
         minimal = _json_key_remove(minimal, key) if minimal is not None else None
     if minimal is not None and not _leaves_an_empty_extra_body(minimal):
@@ -256,6 +263,11 @@ def _agent_json_remove(
         extra_body.pop(key, None)
     if nested and not extra_body:
         params.pop("extra_body", None)
+    for entry in turn_params:
+        for key in per_turn:
+            entry.pop(key, None)
+    if turn_params and not any(turn_params):
+        raw.pop("turn_params", None)
     return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
 
 
@@ -344,6 +356,27 @@ def _forced_tool_choice_instruction(tool_choice) -> str | None:
     return None
 
 
+def _declared_forced_tool_choice(raw_config: dict) -> str | None:
+    """The prompt sentence for whatever forced `tool_choice` the agent declares, anywhere.
+
+    A capture-derived agent may hold it in `turn_params` rather than `params` — that is what
+    the sequence is FOR, since a framework typically forces the first turn only. A repair
+    that read `params` alone would find nothing, drop its own candidate, and leave a break
+    upshift knows how to fix looking unfixable.
+    """
+    declared = [(raw_config.get("params") or {}).get("tool_choice")]
+    declared += [
+        entry.get("tool_choice")
+        for entry in (raw_config.get("turn_params") or [])
+        if isinstance(entry, dict)
+    ]
+    for value in declared:
+        instruction = _forced_tool_choice_instruction(value)
+        if instruction is not None:
+            return instruction
+    return None
+
+
 def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Patch]:
     """Ordered repair candidates for the observed failure signatures, computed against the
     CURRENT contents of agent_dir (so candidates stack across repair iterations)."""
@@ -373,9 +406,7 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
 
     for sig in signatures:
         if sig == "api_error_forced_tool_choice":
-            instruction = _forced_tool_choice_instruction(
-                raw_config.get("params", {}).get("tool_choice")
-            )
+            instruction = _declared_forced_tool_choice(raw_config)
             removal = (
                 _agent_json_remove(agent_dir, ["tool_choice"]) if instruction is not None else None
             )

@@ -434,8 +434,45 @@ called, and `turns_at_most` at the recorded turn count plus one. No check is bui
 recorded answer text — that would be an assertion written from the model's own output.
 Thinking blocks never reach a case: a signature is valid only for the turn that produced it, and
 replaying one is what causes the invalidation 400 in the first place. `ATTRIBUTION.md` and
-`ADAPT_EDITS.md` list every source and every deviation. Two derived `agent.json` keys are
-documented in ADAPTER.md's addendum: `volatile_suffix` and `terminal_tools`.
+`ADAPT_EDITS.md` list every source and every deviation. Three derived `agent.json` keys are
+documented in ADAPTER.md's addendum: `turn_params`, `volatile_suffix` and `terminal_tools`.
+
+### Per-turn params, and why one value per episode was a false SAFE (v0.4.1, 2026-09-05)
+
+The first version wrote ONE `tool_choice` for the whole episode, chosen by frequency over the
+recorded requests. A framework that forces a tool on turn 1 and then goes `"auto"` — pydantic-ai
+and litellm both do, and so does every structured-output and routing agent — became an adapter
+that forced a tool on *every* turn. Under a forced choice the model cannot answer in text, so
+the replayed episode called tools until `max_turns` and failed its own `turns_at_most` **on the
+baseline model**; with no case passing on the baseline there was no regression to find, and the
+verdict read `SAFE` — "the candidate model is a drop-in replacement" — over a suite that never
+worked once. Measured at $0 on a two-turn capture in rescue-ops `cases/A-075/REPORT.md` §6.3(a),
+where a 3-3 tie in that frequency count was also being broken by insertion order, so the same
+traffic recorded in a different order produced a different agent.
+
+Three changes, cause first:
+
+1. **`agent.json` gains `turn_params`** (ADAPTER.md): params applied over `params` by turn
+   index, last entry repeating, `null` meaning the field was not sent on that turn. `agent_loop`
+   applies turn N's overrides when it builds turn N's request, so the recorded shape reaches the
+   wire; the repair loop reads the sequence too, and removing a forced `tool_choice` removes it
+   from every entry.
+2. **`adapt --from-capture` derives the sequence** for exactly those params that one recorded
+   conversation sent differently on different turns, and leaves them out of `params`. Where the
+   conversations disagree with each other in a way no sequence can express, it does not choose
+   quietly: every variant and its count go into `ADAPT_EDITS.md` under CONFLICTS, and
+   `--strict` exits non-zero. Ties break on canonical text, never on recording order, so the
+   same traffic always produces the same agent.
+3. **`BASELINE_BROKEN`** (verdict.py): a run whose baseline model passed **no** case measured
+   nothing about the candidate, and can never be `SAFE`. Checked before every other verdict and
+   unable to mask one — a regression needs a case the baseline passed, so the verdict it
+   replaces was always the vacuous SAFE. `upshift upgrade` also says it between the two legs,
+   before the candidate run spends money on a comparison that cannot mean anything. It is
+   terminal: no repair the loop can generate would change it.
+
+The guard is deliberately independent of the cause. Capture mode is one way to end up with an
+agent directory that does not work on its own baseline; a hand-written adapter with a wrong
+tool schema is another, and both now stop at the same place.
 
 ### Framework mapping (`docs/framework-mapping.md` + `capture/mapping.py`)
 

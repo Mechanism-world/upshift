@@ -20,6 +20,25 @@ from typing import Any
 ENDPOINTS = ("chat_completions", "responses", "messages")
 
 
+def validate_turn_params(raw: Any, where: str) -> list[dict[str, Any]]:
+    """`agent.json`'s optional `turn_params`, checked. Absent -> []; anything else is an
+    authoring error, which is a ValueError everywhere in upshift."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(  # noqa: TRY004 - authoring errors are ValueError throughout
+            f"{where}: turn_params must be a list of param objects, one per assistant turn "
+            f"(got {type(raw).__name__}); see ADAPTER.md"
+        )
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(  # noqa: TRY004
+                f"{where}: turn_params[{index}] must be an object of param overrides "
+                f"(got {type(entry).__name__}); see ADAPTER.md"
+            )
+    return [dict(entry) for entry in raw]
+
+
 @dataclass
 class AgentConfig:
     """Resolved agent configuration loaded from an agent dir (agent.json +
@@ -43,6 +62,13 @@ class AgentConfig:
     #: derives the list from the capture: a `tool_use` no later request ever answered).
     #: pydantic-ai's `final_result` is the canonical example. Empty for every other agent.
     terminal_tools: list[str] = field(default_factory=list)
+    #: Per-turn param overrides, applied over `params` by assistant-turn index; the LAST entry
+    #: repeats for every later turn, and a `None` value unsets that param for that turn.
+    #: Empty means `params` is what every turn sends, which is what nearly every agent does.
+    #: A framework that forces a tool on turn 1 and then goes `auto` (pydantic-ai, litellm)
+    #: is a different agent from one that forces on every turn — under a forced choice the
+    #: model can never answer in text — so one episode-level value cannot express it.
+    turn_params: list[dict[str, Any]] = field(default_factory=list)
 
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
@@ -71,6 +97,7 @@ class AgentConfig:
             agent_dir=str(agent_dir),
             volatile_suffix=str(raw.get("volatile_suffix") or ""),
             terminal_tools=[str(name) for name in (raw.get("terminal_tools") or [])],
+            turn_params=validate_turn_params(raw.get("turn_params"), str(path)),
         )
 
     def file_hashes(self) -> dict[str, str]:

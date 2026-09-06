@@ -65,6 +65,34 @@ class EpisodeResult:
 # ---------------------------------------------------------------------------
 
 
+def params_for_turn(
+    params: dict[str, Any], turn_params: list[dict[str, Any]] | None, index: int
+) -> dict[str, Any]:
+    """`params` with assistant turn `index`'s overrides applied over it.
+
+    The sequence is read by INDEX and its last entry repeats, so a two-entry list describes
+    "turn 1 like this, every turn after it like that" — the force-then-`auto` shape every
+    structured-output and routing agent has (`AgentConfig.turn_params`). A `None` override
+    UNSETS the param for that turn, because "the framework did not send this field" is a
+    different request from "the framework sent `auto`", and a capture records which.
+
+    An empty/absent sequence returns `params` unchanged: the identity every hand-written
+    agent takes.
+    """
+    if not turn_params:
+        return params
+    overrides = turn_params[index] if index < len(turn_params) else turn_params[-1]
+    if not overrides:
+        return params
+    merged = dict(params or {})
+    for key, value in overrides.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
 def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """Canonical params -> endpoint-specific request fields. Unknown keys pass through."""
     out: dict[str, Any] = {}
@@ -489,13 +517,14 @@ def run_episode(
     segment = 0
     call_idx = 0
     terminal_tools = frozenset(getattr(config, "terminal_tools", ()) or ())
+    turn_params = list(getattr(config, "turn_params", ()) or ())
     sim_context = {"case_id": case.id, "rep": rep, "sim": case.sim}
 
     while call_idx < config.max_turns:
         request = build_request(
             endpoint,
             model,
-            params,
+            params_for_turn(params, turn_params, call_idx),
             config.tools,
             items,
             system=config.system_prompt,

@@ -597,3 +597,196 @@ def test_the_capture_derived_param_is_dropped_by_the_repair(sampling_agent: Path
     request = build_request("messages", "claude-fable-5-1", params, [], [], system="Be brief.")
     assert "temperature" not in request
     assert "temperature" not in (request.get("extra_body") or {})
+
+
+# ---------------------------------------------------------------------------
+# Per-turn params: the shape a framework actually sends, turn by turn
+# ---------------------------------------------------------------------------
+
+
+def _text_response(text: str, model: str = "claude-fable-5") -> dict:
+    return {
+        "id": "msg_x", "type": "message", "role": "assistant", "model": model,
+        "content": [{"type": "text", "text": text}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 4},
+    }
+
+
+def _tool_response(name: str, call_id: str, model: str = "claude-fable-5") -> dict:
+    return {
+        "id": "msg_x", "type": "message", "role": "assistant", "model": model,
+        "content": [{"type": "tool_use", "id": call_id, "name": name, "input": {"city": "Oslo"}}],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 10, "output_tokens": 4},
+    }
+
+
+WEATHER_TOOL = {
+    "name": "get_weather", "description": "Weather for a city.",
+    "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+
+
+def _two_turn_capture(
+    out_dir: Path, *, shapes: list[list[dict]], question: str = "weather in Oslo?"
+) -> Path:
+    """One conversation per entry in `shapes`; one recorded request per tool_choice in it.
+
+    Turn 1 calls the tool, turn 2 answers in text — the force-then-`auto` shape pydantic-ai
+    and litellm both produce, and the one an episode-level `tool_choice` cannot express.
+    """
+    store = CaptureStore(out_dir, listen="127.0.0.1:0", upstream="x", mode="forward")
+    for conversation, choices in enumerate(shapes, start=1):
+        messages: list[dict] = [{"role": "user", "content": f"{question} ({conversation})"}]
+        for turn, choice in enumerate(choices):
+            last = turn == len(choices) - 1
+            call_id = f"toolu_{conversation}_{turn}"
+            body = {
+                "model": "claude-fable-5", "max_tokens": 512,
+                "system": "You are a weather assistant.",
+                "messages": [dict(m) for m in messages],
+                "tools": [dict(WEATHER_TOOL)],
+            }
+            if choice is not None:
+                body["tool_choice"] = choice
+            response = (
+                _text_response("It is cold.") if last else _tool_response("get_weather", call_id)
+            )
+            store.add(headers={"user-agent": "litellm/1.83.9"}, body=body, raw_body_bytes=400,
+                      path="/v1/messages", status=200, response_body=response,
+                      events=None, streamed=False, latency_s=0.1)
+            if not last:
+                messages.append({"role": "assistant", "content": response["content"]})
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": call_id,
+                                 "content": '{"temp_c": 3}'}],
+                })
+    store.close()
+    return out_dir
+
+
+FORCE_THEN_AUTO = [{"type": "any"}, {"type": "auto"}]
+
+
+def test_a_forced_then_auto_capture_becomes_a_per_turn_sequence(tmp_path: Path) -> None:
+    """The false-SAFE bug, at its cause (rescue-ops `A-075` §6.3(a)).
+
+    One episode-level `tool_choice` chosen by frequency turns a framework that forces a tool
+    on turn 1 and then goes `auto` into one that forces on EVERY turn. The model can then
+    never answer in text, so it calls the tool until `max_turns` and the case fails its own
+    `turns_at_most` on the BASELINE model — and with a 0-passing baseline the differ printed
+    `SAFE`: "the candidate model is a drop-in replacement", over a suite that never worked.
+    """
+    _two_turn_capture(tmp_path / "cap", shapes=[FORCE_THEN_AUTO, FORCE_THEN_AUTO])
+    adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
+
+    config = json.loads((tmp_path / "agent" / "agent.json").read_text())
+    assert config["turn_params"] == [
+        {"tool_choice": {"type": "any"}},
+        {"tool_choice": {"type": "auto"}},
+    ]
+    # A param that varies by turn belongs to the sequence alone: leaving a frequency-picked
+    # copy in `params` would be the same wrong single value, one level down.
+    assert "tool_choice" not in config["params"]
+    assert config["params"]["max_tokens"] == 512
+    edits = (tmp_path / "agent" / "ADAPT_EDITS.md").read_text()
+    assert "turn_params" in edits
+
+
+def test_a_param_the_framework_stopped_sending_is_unset_not_guessed(tmp_path: Path) -> None:
+    """Omitting `tool_choice` and sending `"auto"` are different requests; a capture knows
+    which happened, so the sequence records `null` rather than inventing a value."""
+    _two_turn_capture(tmp_path / "cap", shapes=[[{"type": "any"}, None]])
+    adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
+
+    config = json.loads((tmp_path / "agent" / "agent.json").read_text())
+    assert config["turn_params"] == [{"tool_choice": {"type": "any"}}, {"tool_choice": None}]
+
+
+def test_the_replayed_episode_sends_the_recorded_shape_turn_by_turn(tmp_path: Path) -> None:
+    """End of the chain: the adapter's sequence has to reach the wire, or it is decoration."""
+    _two_turn_capture(tmp_path / "cap", shapes=[FORCE_THEN_AUTO])
+    agent_dir = tmp_path / "agent"
+    adapt_from_capture(tmp_path / "cap", agent_dir)
+
+    runs = tmp_path / "runs"
+    run_suite(agent_dir, SimProvider(), "shape", n_reps=1, model_override="sim-fable-5",
+              runs_root=runs, workers=1)
+    record = json.loads(
+        next((run_dir(runs, "shape") / "cases").glob("*/rep_01.json")).read_text()
+    )
+    assert [call["request"].get("tool_choice") for call in record["api_calls"]] == [
+        {"type": "any"},
+        {"type": "auto"},
+    ]
+    assert record["passed"] is True
+
+
+def test_a_capture_that_never_varies_writes_no_sequence(adapted: Path) -> None:
+    """The one-shot shape (`A-075`, the pydantic-ai smoke, the cookbook fixture) is unchanged:
+    no `turn_params` key at all, and `params` exactly as before."""
+    config = json.loads((adapted / "agent.json").read_text())
+    assert "turn_params" not in config
+    assert config["params"] == {"max_tokens": 4096, "tool_choice": {"type": "any"}}
+
+
+def test_conversations_that_disagree_at_a_turn_are_reported_not_silently_resolved(
+    tmp_path: Path,
+) -> None:
+    """A disagreement the sequence cannot express is a finding, not something to average."""
+    _two_turn_capture(
+        tmp_path / "cap",
+        shapes=[[{"type": "any"}, {"type": "auto"}], [{"type": "auto"}, {"type": "auto"}]],
+    )
+    result = adapt_from_capture(tmp_path / "cap", tmp_path / "agent")
+
+    assert result.conflicts, "a disagreement between conversations must be recorded"
+    edits = (tmp_path / "agent" / "ADAPT_EDITS.md").read_text()
+    assert "CONFLICT" in edits
+    # Both variants are named, with their counts: the reader decides, not the tool.
+    assert '{"type":"any"}' in edits
+    assert '{"type":"auto"}' in edits
+
+
+def test_a_tie_is_not_broken_by_the_order_the_capture_started_in(tmp_path: Path) -> None:
+    """`Counter.most_common` broke a 3-3 tie by insertion order, so the same traffic recorded
+    in a different order produced a different agent — silently unreproducible either way
+    (`A-075` §6.3(a)). The choice must not depend on which turn the recorder started on."""
+    first = [{"type": "any"}, {"type": "auto"}]
+    second = [{"type": "auto"}, {"type": "auto"}]
+    _two_turn_capture(tmp_path / "a", shapes=[first, second])
+    _two_turn_capture(tmp_path / "b", shapes=[second, first])
+    a = adapt_from_capture(tmp_path / "a", tmp_path / "agent-a")
+    b = adapt_from_capture(tmp_path / "b", tmp_path / "agent-b")
+
+    def shape(out: Path) -> tuple:
+        config = json.loads((out / "agent.json").read_text())
+        return config["params"], config.get("turn_params")
+
+    assert shape(tmp_path / "agent-a") == shape(tmp_path / "agent-b")
+    assert a.conflicts and b.conflicts
+
+
+def test_strict_refuses_a_capture_the_adapter_could_not_reproduce(tmp_path: Path) -> None:
+    """`--strict` is the gate the note was not: a capture whose variants were discarded is
+    not something to build a run on without a human looking at it first."""
+    from upshift import cli
+
+    _two_turn_capture(
+        tmp_path / "cap",
+        shapes=[[{"type": "any"}, {"type": "auto"}], [{"type": "auto"}, {"type": "auto"}]],
+    )
+    argv = ["adapt", "--from-capture", str(tmp_path / "cap"), "--out", str(tmp_path / "agent")]
+    assert cli.main(argv) == 0
+    assert cli.main([*argv[:-1], str(tmp_path / "agent-strict"), "--strict"]) == 3
+
+
+def test_strict_is_happy_with_a_capture_that_reproduces_exactly(tmp_path: Path) -> None:
+    from upshift import cli
+
+    _two_turn_capture(tmp_path / "cap", shapes=[FORCE_THEN_AUTO, FORCE_THEN_AUTO])
+    assert cli.main([
+        "adapt", "--from-capture", str(tmp_path / "cap"),
+        "--out", str(tmp_path / "agent"), "--strict",
+    ]) == 0
