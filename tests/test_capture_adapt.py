@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from upshift.agent_loop import build_request, convert_tools_messages
+from upshift.capture import mapping as capture_mapping
 from upshift.capture.adapt import NO_RECORD_ERROR, adapt_from_capture
 from upshift.capture.record import CaptureStore, load_capture
 from upshift.cli import validate_agent_dir
@@ -23,6 +24,7 @@ from upshift.differ import diff_runs
 from upshift.providers.sim import SimProvider
 from upshift.recorder import run_dir
 from upshift.repair.loop import repair
+from upshift.report import diff_to_markdown
 from upshift.runner import load_backend_factory, run_suite
 from upshift.schemas import LABEL_REGRESSED, AgentConfig, Case
 from upshift.verdict import SAFE_WITH_PATCH, decide
@@ -202,7 +204,9 @@ class Upgrade:
             budget=6,
             workers=1,
         )
-        self.verdict = decide(self.diff, self.outcome, patch_path=str(root / "upgrade.patch"))
+        self.framework = capture_mapping.framework_of(agent_dir)
+        self.verdict = decide(self.diff, self.outcome, patch_path=str(root / "upgrade.patch"),
+                              framework=self.framework)
 
 
 @pytest.fixture(scope="module")
@@ -229,6 +233,16 @@ def test_the_repair_restores_it_and_the_verdict_is_safe_with_patch(upgrade: Upgr
     assert upgrade.verdict["verdict"] == SAFE_WITH_PATCH
     assert upgrade.verdict["restored"] == 3
     assert upgrade.verdict["broken_by_patch"] == 0
+
+
+def test_the_report_says_where_the_repair_lives_in_the_framework(upgrade: Upgrade) -> None:
+    """The whole point of the capture path: the patch edits an adapter directory, so the
+    report has to name the setting in the code the user actually maintains."""
+    assert upgrade.framework == "anthropic-sdk-python"
+    report = diff_to_markdown(upgrade.diff, verdict=upgrade.verdict)
+    assert "## Framework mapping" in report
+    assert "`client.messages.create()`" in report
+    assert "anthropic/resources/messages/messages.py:137 @1.4.0" in report
 
 
 # ---------------------------------------------------------------------------

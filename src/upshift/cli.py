@@ -24,6 +24,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from upshift import recorder
+from upshift.capture import mapping as capture_mapping
 from upshift.capture import record as capture_record
 from upshift.capture import server as capture_server
 from upshift.differ import diff_runs, load_diff, save_diff
@@ -855,6 +856,9 @@ def cmd_upgrade(args) -> int:
     recorder.safe_component(args.tag, "tag")
     provider = _make_provider(args)
     agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
+    # Only a `adapt --from-capture` directory has one; None everywhere else, and None means
+    # the report says nothing about frameworks rather than guessing at one.
+    framework = capture_mapping.framework_of(agent_dir)
     _check_models(args.provider, [args.baseline_model, args.candidate_model])
     preflight = anthropic_preflight(provider, [args.baseline_model, args.candidate_model])
     tag = args.tag
@@ -903,13 +907,24 @@ def cmd_upgrade(args) -> int:
             # Log lines carry [repair_type] tags and ['case', 'lists'] — rich would eat them.
             console.print(f"[dim]{escape(line)}[/dim]", highlight=False)
         if repair_outcome.accepted_patches:
-            patch_text = make_patch(agent_dir, work_dir, rel_prefix=_patch_prefix(agent_dir))
+            patch_text = make_patch(
+                agent_dir,
+                work_dir,
+                rel_prefix=_patch_prefix(agent_dir),
+                header=capture_mapping.patch_header(
+                    framework,
+                    [
+                        {"id": patch.id, "repair_type": patch.repair_type}
+                        for patch in repair_outcome.accepted_patches
+                    ],
+                ),
+            )
             patch_file = recorder.run_dir(runs_root, tag) / "upgrade.patch"
             patch_file.parent.mkdir(parents=True, exist_ok=True)
             patch_file.write_text(patch_text)
             patch_path = str(patch_file)
 
-    verdict = decide(diff, repair_outcome, patch_path)
+    verdict = decide(diff, repair_outcome, patch_path, framework=framework)
     console.print()
     render_diff(diff, console=console, verdict=verdict)
 
