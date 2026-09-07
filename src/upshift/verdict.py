@@ -376,6 +376,12 @@ def decide(
             ]
             if r
         ]
+    # The repair loop reports its own cost stop, and it must be honoured even when the caller
+    # did not see the exception: the loop CATCHES `CostCeilingExceeded` around an adjudication
+    # run so that a stopped pipeline still produces a verdict, and the verdict it produces has
+    # to be INCONCLUSIVE. A candidate whose contested cases were never adjudicated is not a
+    # candidate that passed (DESIGN.md §D; rescue-ops ghisdk-052).
+    cost_stopped = cost_stopped or bool(getattr(repair_outcome, "cost_stopped", False))
     issues = evidence_integrity(
         diff, runs_root=runs_root, extra_run_ids=extra_runs, cost_stopped=cost_stopped
     )
@@ -451,6 +457,12 @@ def decide(
         "broken_by_patch": len(broken_cases),
         "broken_by_patch_cases": broken_cases,
         "collateral": collateral,
+        # Suspect cases a candidate's adjudication run could not measure. Non-empty means a
+        # candidate was rejected for lack of evidence rather than for failing, which is a
+        # different thing for a reader deciding whether to rerun with a higher ceiling.
+        "adjudication_skipped": list(
+            getattr(repair_outcome, "adjudication_skipped", None) or []
+        ),
         "flaky": flaky,
         "improved": improved,
         "patch_path": patch_path if verdict == SAFE_WITH_PATCH else None,

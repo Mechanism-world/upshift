@@ -629,6 +629,17 @@ the cost ceiling; or a required run is missing. None of these can produce SAFE o
 PATCH. Simulator evidence and live evidence never mix: a verdict whose runs disagree on
 provider realness is INCONCLUSIVE (`mixed_evidence`).
 
+Adjudication cannot be SKIPPED. When a verify run leaves a protected or earlier-restored
+case below PASS, the N adjudication reps that settle it are part of the acceptance test, not
+an optional extra: if they cannot be run — the cost ceiling stops the pipeline, the operator
+interrupts it — the candidate is REJECTED and the run ends INCONCLUSIVE(cost_ceiling). It
+never ends SAFE WITH PATCH on the strength of the sample that raised the suspicion
+(rescue-ops `ghisdk-052`, whose hunk 2 sat at 2/5 and 3/5 unadjudicated because the case went
+over budget). `verdict.json` carries `adjudication_skipped: [case ids]` so the reason for the
+rejection is legible. The same bar applies to the restoration side: a case is restored only
+when screen+verify COMBINED reach the pass threshold, so 2/5 + 3/5 = 5/10 is not a
+restoration at any point in the loop.
+
 Collateral protection is reported, never assumed: verdict.json gains `collateral:
 {"protected_cases": n, "checks_executed": m, "exercised": bool}`; when `protected_cases == 0`
 the report says "collateral protection was not exercised on this run: no case passed on the
