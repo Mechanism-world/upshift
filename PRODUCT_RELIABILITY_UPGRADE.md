@@ -68,3 +68,7 @@ Total ≈ $2.50. Everything else in this sprint is offline (sim, mocked transpor
 - runner.py: transient provider errors (429/5xx) are retried per rep with a bounded policy and never recorded as permanent behavioural failures; `--retry-errored` on resume.
 - adapt/generate.py: `response_format` is not "owned by upshift" — carry it as a param.
 - agent_loop/providers: reasoning items on the responses read side are recorded, not ignored; service_tier/prompt_cache_key injected only on the endpoints that accept them.
+- schemas/agent.json: no request-header surface — `parallel_tool_calls: false` delivered via a header (ghi56-036/022) cannot be reproduced; decide whether headers become part of the adapter contract.
+- repair/loop.py: derive the loop's signature priority from `differ.SIGNATURE_PRIORITY` / `SIGNATURES_WITHOUT_REPAIRS` instead of a private copy (the token-cap regression's root cause).
+- verdict.py: flex capacity 429s ("Flex does not have sufficient resources") and other transient provider errors are non-behavioural → INCONCLUSIVE, never a failure.
+- playbook.py: a generic drop-unsupported-param repair (e.g. `prompt_cache_retention is not supported on this model`) and a structured-output JSON-Schema repair are open design decisions, not implemented.
