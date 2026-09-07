@@ -21,8 +21,9 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from upshift import recorder
+from upshift import differ, recorder
 from upshift.budget import CostCeiling
 from upshift.differ import SIG_THINKING_BLOCK_INVALID, DiffResult, failure_signatures
 from upshift.providers import Provider
@@ -34,23 +35,18 @@ from upshift.schemas import (
     outcome,
 )
 
-# Priority order for signature-driven candidate generation (hard API breaks first).
+#: Priority order for signature-driven candidate generation, DERIVED from the differ's own
+#: taxonomy (hard API breaks first) minus the signatures the differ documents as having no
+#: repair. It used to be a hand-maintained copy, which meant a signature added to differ.py
+#: was silently invisible to the repair loop — a new break would be detected, reported, and
+#: then not even attempted. There is one list, and `SIGNATURES_WITHOUT_REPAIRS` is the only
+#: legitimate way to be absent from it (differ.py holds the reason for each).
 _SIGNATURE_PRIORITY = [
-    "api_error_forced_tool_choice",
-    "api_error_unsupported_sampling_params",
-    "api_error_unsupported_token_cap",
-    "api_error_tools_reasoning",
-    "api_error_other",
-    "duplicate_tool_calls",
-    "acting_past_goal",
-    "skipped_tool_hallucination",
-    "serialized_tool_calls",
-    "reduced_retrieval_calls",
-    "wrong_or_missing_tool_call",
-    "other_behavioral",
+    sig for sig in differ.SIGNATURE_PRIORITY if sig not in differ.SIGNATURES_WITHOUT_REPAIRS
 ]
-# thinking_block_invalid is deliberately ABSENT from that list: no repair of an allowed type
-# fixes it, so the loop refuses instead of burning budget on candidates that cannot work.
+# thinking_block_invalid and harness_error are absent by that rule: no repair of an allowed
+# type fixes either, so the loop refuses instead of burning budget on candidates that cannot
+# work.
 THINKING_REFUSAL = (
     "no repair candidate exists within the allowed repair types for thinking_block_invalid "
     "(400 'Invalid `signature` in `thinking` block'). The fix is runtime history handling, "
@@ -206,6 +202,8 @@ def repair(
     workers: int = 4,
     cost_ceiling: CostCeiling | None = None,
     final_verify: bool = True,
+    runner_options: Any = None,
+    capture_session: Any = None,
 ) -> RepairOutcome:
     """``final_verify`` (DESIGN.md §D): after the last accepted candidate, re-run the stacked
     patch on the FULL suite at fresh seeds as ``<run_prefix>-final`` and let the verdict rest
@@ -214,6 +212,12 @@ def repair(
     original_agent_dir = Path(original_agent_dir)
     work_dir = Path(work_dir)
     _copy_agent_dir(original_agent_dir, work_dir)
+
+    # Forwarded verbatim to every run this loop makes, so a repair run executes under exactly
+    # the authorization and wire-capture the CLI granted the baseline and candidate runs — a
+    # screen run that quietly ran unauthorized, or without the capture, would not be evidence
+    # about the same thing. Empty for an ordinary adapter agent.
+    execution = {"runner_options": runner_options, "capture_session": capture_session}
 
     # Late import: runner imports checks.py/agent_loop.py which other components own.
     from upshift.runner import run_suite
@@ -287,6 +291,7 @@ def repair(
                     case_ids=sorted(unrestored),
                     workers=workers,
                     notes=f"repair screen for candidate {patch.id}",
+**execution,
                     cost_ceiling=cost_ceiling,
                 )
                 selection_runs.append(screen_id)
@@ -319,6 +324,7 @@ def repair(
                     runs_root=runs_root,
                     workers=workers,
                     notes=f"repair full verification for candidate {patch.id}",
+**execution,
                     cost_ceiling=cost_ceiling,
                 )
                 selection_runs.append(verify_id)
@@ -366,6 +372,7 @@ def repair(
                         case_ids=suspects,
                         workers=workers,
                         notes=f"adjudication of contested cases for candidate {patch.id}",
+**execution,
                         cost_ceiling=cost_ceiling,
                     )
                     selection_runs.append(adj_id)
@@ -451,6 +458,7 @@ def repair(
                     "rests on this run, not on the screen/verify runs that selected it"
                 ),
                 cost_ceiling=cost_ceiling,
+                **execution,
                 **seed_kwargs,
             )
         final_counts = _case_pass_counts(recorder.run_dir(runs_root, final_run_id), all_case_ids)

@@ -250,6 +250,36 @@ def test_a_behavioural_400_in_a_run_does_not_make_it_inconclusive(tmp_path: Path
     assert decided["reasons"] == []
 
 
+@pytest.mark.parametrize(
+    ("error_type", "reason"),
+    [
+        ("runner_error", V.REASON_RUNNER_ERROR),
+        ("continuation_exhausted", V.REASON_CONTINUATION_EXHAUSTED),
+    ],
+)
+def test_a_non_behavioural_runner_failure_in_a_run_reaches_inconclusive(
+    tmp_path: Path, error_type, reason
+) -> None:
+    """The whole chain, not just the classifier: the native runner and the capture
+    continuation policy write these with `native.protocol.error_payload`, the differ calls
+    them `harness_error` rather than any model signature, and the verdict must refuse to
+    conclude anything from a run containing one."""
+    from upshift.differ import SIG_HARNESS_ERROR, _api_error_signature
+    from upshift.native.protocol import error_payload
+
+    payload = error_payload("the application's command exited 1", error_type=error_type)
+    assert _api_error_signature(payload) == SIG_HARNESS_ERROR
+
+    for run_id in ("base", "cand"):
+        _write_rep(tmp_path / run_id, "healthy", 1, api_error=None)
+    _write_rep(tmp_path / "cand", "healthy", 2, api_error=payload)
+
+    decided = V.decide(_diff([HEALTHY]), runs_root=tmp_path)
+    assert decided["verdict"] == V.INCONCLUSIVE
+    assert reason in decided["reasons"]
+    assert decided["inconclusive_reason"]
+
+
 def test_integrity_checked_says_whether_rep_records_were_read(tmp_path: Path) -> None:
     assert V.decide(_diff([HEALTHY]))["integrity_checked"] is False
     for run_id in ("base", "cand"):

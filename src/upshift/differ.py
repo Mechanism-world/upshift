@@ -22,6 +22,7 @@ from typing import Any
 
 from upshift import stats
 from upshift.checks import DEFAULT_CONFIRMATION_PATTERN, assistant_turns, count_state_entries
+from upshift.native import protocol as native_protocol
 from upshift.providers.base import ERROR_SDK_VALIDATION
 from upshift.schemas import LABEL_STABLE_PASS, OUTCOME_PASS, RepRecord, label, outcome
 
@@ -140,7 +141,9 @@ SIGNATURE_DESCRIPTIONS = {
 #: ERROR_SDK_VALIDATION) or was never built (agent_loop.TranslationError). Both are
 #: harness failures and hit BOTH models of an upgrade pair identically, so neither can
 #: distinguish them; see SIG_HARNESS_ERROR.
-HARNESS_ERROR_TYPES = frozenset({ERROR_SDK_VALIDATION, "translation_error"})
+HARNESS_ERROR_TYPES = frozenset(
+    {ERROR_SDK_VALIDATION, "translation_error", *native_protocol.NON_BEHAVIOURAL_ERROR_TYPES}
+)
 
 _RE_FUNCTION_TOOLS = re.compile(r"function tools", re.IGNORECASE)
 _RE_REASONING_EFFORT = re.compile(r"reasoning[_ ]effort", re.IGNORECASE)
@@ -259,7 +262,11 @@ def _api_error_signature(err: dict[str, Any]) -> str:
     thinking-block 400 is not also reported as ``api_error_other``.
     """
     message = str(err.get("message", ""))
-    if err.get("type") in HARNESS_ERROR_TYPES:
+    # BEFORE any wording check: a runner_error carries whatever text the application printed,
+    # and a `continuation_exhausted` message mentions turns and parameters. Either could match
+    # a 400 pattern by accident and be reported as a model break that never happened. The
+    # class is decided by the recorded error TYPE, which is upshift's own (native.protocol).
+    if native_protocol.is_non_behavioural(err) or err.get("type") in HARNESS_ERROR_TYPES:
         # No status_code and no provider answer: the call died locally. Classifying it as a
         # model signature would credit a config/SDK fault to the candidate model and send the
         # repair loop after a break the model never produced.
