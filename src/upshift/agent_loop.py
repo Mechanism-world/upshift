@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from upshift.capture import continuation
 from upshift.providers.anthropic_provider import SAMPLING_PARAMS, messages_create_accepts
 from upshift.providers.base import ProviderAPIError
 from upshift.schemas import AgentConfig, APICall, Case, ToolExecution
@@ -992,6 +993,12 @@ def run_episode(
     sim_context = {"case_id": case.id, "rep": rep, "sim": case.sim}
 
     while call_idx < config.max_turns:
+        # DESIGN.md §F. Inert unless agent.json carries `recorded_turns` (capture-derived
+        # agents only); all of the policy lives in capture/continuation.py.
+        exhausted = continuation.before_turn(config, result, call_idx)
+        if exhausted is not None:
+            result.api_error = exhausted
+            break
         try:
             request, translation = build_request_with_translation(
                 endpoint,
