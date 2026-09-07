@@ -71,9 +71,17 @@ RUNNER_ERROR = "runner_error"
 #: evidence ran out, the model did not misbehave.
 CONTINUATION_EXHAUSTED = "continuation_exhausted"
 
+#: The provider could not answer for a reason that is about its capacity, not about the model:
+#: 429 (including flex's "Flex does not have sufficient resources"), 5xx, a timeout, a dropped
+#: connection. `runner.py` retries these per rep with a bounded backoff and records this type
+#: only when the retries are exhausted. Non-behavioural for the same reason as the two above:
+#: nothing about the model was measured, and counting it as a failing rep moves the pass rate
+#: the verdict is computed from (rescue-ops ghi56-019, ghi56-006, ghi56-021).
+TRANSIENT_PROVIDER_ERROR = "transient_provider_error"
+
 #: Every error type in this tuple is NON-BEHAVIOURAL. differ.py may map any of them to one
 #: signature; verdict.py must never let one produce SAFE or SAFE WITH PATCH.
-NON_BEHAVIOURAL_ERROR_TYPES = (RUNNER_ERROR, CONTINUATION_EXHAUSTED)
+NON_BEHAVIOURAL_ERROR_TYPES = (RUNNER_ERROR, CONTINUATION_EXHAUSTED, TRANSIENT_PROVIDER_ERROR)
 
 #: `episode_source` values recorded on every rep (DESIGN.md §A companion field).
 SOURCE_RECORDED_PLAYBACK = "recorded_playback"

@@ -63,6 +63,7 @@ REASON_COST_CEILING = "cost_ceiling"
 REASON_MISSING_RUN = "missing_run"
 REASON_MODEL_UNAVAILABLE = "model_unavailable"
 REASON_MIXED_EVIDENCE = "mixed_evidence"
+REASON_TRANSIENT_PROVIDER = "transient_provider_error"
 
 INCONCLUSIVE_REASONS = (
     REASON_EMPTY_SUITE,
@@ -75,6 +76,7 @@ INCONCLUSIVE_REASONS = (
     REASON_MISSING_RUN,
     REASON_MODEL_UNAVAILABLE,
     REASON_MIXED_EVIDENCE,
+    REASON_TRANSIENT_PROVIDER,
 )
 
 #: One line per reason, printed by the report so the reader does not have to look the code up.
@@ -109,6 +111,11 @@ REASON_DESCRIPTIONS = {
     REASON_MIXED_EVIDENCE: (
         "the runs disagree on provider realness: simulator output and live output never mix, "
         "because one of them costs money and means something and the other does not."
+    ),
+    REASON_TRANSIENT_PROVIDER: (
+        "a rep exhausted its retries against a provider that was rate-limited, out of "
+        "capacity or unreachable (429/5xx/timeout). The queue was full; nothing about the "
+        "model was measured. Rerun with `--retry-errored` to re-run just those reps."
     ),
 }
 
@@ -151,6 +158,7 @@ NON_BEHAVIOURAL_ERROR_TYPES = {
     "model_unavailable": REASON_MODEL_UNAVAILABLE,
     "not_found_error": REASON_MODEL_UNAVAILABLE,
     "cost_ceiling": REASON_COST_CEILING,
+    "transient_provider_error": REASON_TRANSIENT_PROVIDER,
 }
 
 

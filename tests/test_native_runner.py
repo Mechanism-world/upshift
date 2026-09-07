@@ -154,9 +154,16 @@ def test_the_case_request_is_stable_json_the_child_can_rely_on() -> None:
     }
 
 
-def test_runner_error_and_continuation_exhausted_are_the_non_behavioural_pair() -> None:
-    """The constants stream 1's differ and stream 3's verdict consume."""
-    assert protocol.NON_BEHAVIOURAL_ERROR_TYPES == ("runner_error", "continuation_exhausted")
+def test_the_non_behavioural_error_types_are_the_closed_set_the_differ_consumes() -> None:
+    """The constants stream 1's differ and stream 3's verdict consume.
+
+    `transient_provider_error` joined the pair when the runner started retrying capacity 429s
+    (rescue-ops ghi56-019); it is the same claim as the other two — the harness did not
+    observe the model — so it belongs to the same closed set.
+    """
+    assert protocol.NON_BEHAVIOURAL_ERROR_TYPES == (
+        "runner_error", "continuation_exhausted", "transient_provider_error",
+    )
     payload = protocol.error_payload("boom")
     # `type` for every existing reader, `error_type` for DESIGN.md §C. One value.
     assert payload["type"] == payload["error_type"] == "runner_error"

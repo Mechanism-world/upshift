@@ -44,6 +44,7 @@ from upshift.providers import get_provider
 from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
+from upshift.runner_cli import add_retry_args, retry_errored
 from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case, validate_turn_params
 from upshift.verdict import (
     BASELINE_BROKEN,
@@ -1048,6 +1049,7 @@ def cmd_run(args) -> int:
                 notes=notes,
                 on_rep_done=None if args.quiet else _progress,
                 cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
                 **native_kwargs,
             )
     except CostCeilingExceeded as stop:
@@ -1177,6 +1179,7 @@ def cmd_upgrade(args) -> int:
                 notes=_with_notes("upgrade pipeline baseline", preflight),
                 on_rep_done=None if args.quiet else _progress,
                 cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
                 **native_kwargs,
             )
             if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
@@ -1201,6 +1204,7 @@ def cmd_upgrade(args) -> int:
                 notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
                 on_rep_done=None if args.quiet else _progress,
                 cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
                 **native_kwargs,
             )
 
@@ -1522,6 +1526,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_run.add_argument("--case", action="append", help="run only these case ids (repeatable)")
     p_run.add_argument("--notes", default="", help="free text stored in the run manifest")
+    add_retry_args(p_run)
     native_cli.add_runner_args(p_run)
     p_run.set_defaults(func=cmd_run)
 
@@ -1544,6 +1549,7 @@ def main(argv: list[str] | None = None) -> int:
         "--candidate-model", required=True, help="model version you want to upgrade to"
     )
     p_up.add_argument("--tag", required=True, help="name for this upgrade experiment")
+    add_retry_args(p_up)
     p_up.add_argument(
         "--budget", type=int, default=24,
         help="max repair candidates the loop may TRY, counted per candidate SCREENED "

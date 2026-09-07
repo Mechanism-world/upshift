@@ -652,6 +652,21 @@ on that run, not on the screening/verify runs that selected the candidates. Scre
 selection evidence is listed separately as `selection_runs`. `--no-final-verify` skips it
 and the verdict is then labelled `selection_evidence_only`.
 
+Transient provider failures are not reps. A 429 (rate limit, or flex's "Flex does not have
+sufficient resources"), a 5xx, a timeout or a dropped connection is the provider's capacity
+answering, not the model: `runner.py` retries the whole episode up to
+`RETRY_MAX_ATTEMPTS` (3) with exponential, jittered backoff bounded by `RETRY_MAX_TOTAL_S`
+(90s) — the outer layer around the SDK's own retries — and records
+`type`/`error_type: "transient_provider_error"` only when those are exhausted. That type is in
+`native.protocol.NON_BEHAVIOURAL_ERROR_TYPES`, so the differ files it under `harness_error`
+and the verdict is INCONCLUSIVE(transient_provider_error). Billing and auth are never retried:
+a quota 429 is a fact about the account and still aborts the run (`BillingError`), and a 400
+is the regression upshift exists to find and is never retried or reclassified. `--retry-errored`
+on `run`/`upgrade` re-runs, on a resume, exactly the reps whose recorded error was
+non-behavioural; the rep file is replaced only on a pass or a new non-transient outcome, and
+the new record carries `retried_from`. (rescue-ops `ghi56-019`, `ghi56-006`, `ghi56-021`: the
+same capacity 429 recorded three times as a permanently failing rep.)
+
 Statistics wording: N=5 detects a 5/5→0/5 collapse (p≈0.004); the report states the
 smallest effect the run could have detected at its N and that a non-significant difference
 is not equivalence. stats.py gets reference-value tests (Fisher exact and Wilson against

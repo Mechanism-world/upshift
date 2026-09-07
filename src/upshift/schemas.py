@@ -261,6 +261,10 @@ class RepRecord:
     wire_requests: list[dict[str, Any]] = field(default_factory=list)
     #: Native runs only: command, exit code, timing, isolation, stderr tail.
     runner: dict[str, Any] = field(default_factory=dict)
+    #: Set on a rep re-run by `--retry-errored`: `{"api_error": <the non-behavioural error
+    #: this attempt replaced>}`. Empty on a first attempt. It is what lets a reader of a
+    #: resumed run see that a green rep was not green the first time, and why.
+    retried_from: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1, sort_keys=True)
