@@ -173,6 +173,22 @@ DETERMINISM_BEST_EFFORT = "best_effort"
 #: translation untouched and is not reported as a passthrough (it is not the agent's config).
 UPSHIFT_OWNED_PARAMS = ("prompt_cache_key",)
 
+#: Request fields upshift BUILDS, per endpoint: the conversation, the tools, the model, and
+#: `store` on /v1/responses (pinned false — the transcript stays on the operator's machine).
+#: A params key of the same name is not a parameter, it is an attempt to replace the request
+#: under test, so the managed value wins and the override is recorded as a drop. `max_tokens`
+#: on `messages` is deliberately NOT here: it is a real parameter that `_max_tokens` only
+#: defaults, so a translated output cap must be able to land on it.
+MANAGED_REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
+    CHAT: ("model", "messages", "tools"),
+    RESPONSES: ("model", "input", "tools", "store"),
+    MESSAGES: ("model", "messages", "tools", "system"),
+}
+MANAGED_REASON = (
+    "managed by upshift: this field is the request upshift builds (conversation, tools, model, "
+    "and `store: false` so the provider retains nothing), not a parameter of the agent"
+)
+
 
 @dataclass(frozen=True)
 class ParamRow:
@@ -296,6 +312,10 @@ class Translation:
     #: "best_effort" when the request carries a seed; None when it does not. Never
     #: "deterministic" — no provider documents seeded sampling as reproducible.
     determinism: str | None = None
+
+    def dropped_params_names(self) -> list[str]:
+        """Just the names of the dropped params, in drop order."""
+        return [str(entry.get("name")) for entry in self.dropped_params]
 
     def record(self) -> dict[str, Any]:
         """The translation note for the run record. Empty dict when there is nothing to say,
@@ -749,8 +769,30 @@ def build_request_with_translation(
     else:
         raise ValueError(f"unknown endpoint {endpoint!r}")
     translation = translate_params(endpoint, params)
-    request.update(translation.request_fields)
+    _merge_translated(endpoint, request, translation)
     return request, translation
+
+
+def _merge_translated(endpoint: str, request: dict[str, Any], translation: Translation) -> None:
+    """Fold the translated params into the request the builder made — managed fields WIN.
+
+    The obvious `request.update(fields)` is wrong in one specific, silent way: it lets a params
+    key overwrite a field upshift manages. `store: true` in an agent's params used to turn
+    server-side retention back on after `build_request` had pinned it off, and a stray `tools`
+    or `messages` key would replace the suite's own conversation. The override is not honoured
+    and not ignored either: it is dropped, with a reason, into the same `dropped_params` list
+    every other drop lands in (DESIGN §G — nothing is silently dropped).
+    """
+    managed = MANAGED_REQUEST_FIELDS.get(endpoint, ())
+    already = set(translation.dropped_params_names())
+    for key, value in translation.request_fields.items():
+        if key in managed:
+            if key not in already:
+                translation.dropped_params.append({"name": key, "reason": MANAGED_REASON})
+            if key in translation.passthrough_params:
+                translation.passthrough_params.remove(key)
+            continue
+        request[key] = value
 
 
 def _mark_last_tool_cacheable(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

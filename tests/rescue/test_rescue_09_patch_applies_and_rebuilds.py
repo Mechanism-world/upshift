@@ -167,7 +167,14 @@ def test_the_product_entry_point_runs_the_same_comparison(repaired):
     assert verify_patch is not None, (
         "interface not yet integrated: upshift.verify_patch.verify_patch"
     )
-    block = verify_patch(agent_dir=agent, patch_text=patch_text, run_dir=run_dir(
-        runs, outcome.final_verify_run_id))
+    # DESIGN §E takes the patch as the exported FILE (`upshift verify-patch --patch <file>`),
+    # so the in-memory text this fixture carries is written out first.
+    patch_file = agent.parent / "upgrade.patch"
+    patch_file.write_text(patch_text)
+    block = verify_patch(
+        agent_dir=agent,
+        patch_path=patch_file,
+        run_dir=run_dir(runs, outcome.final_verify_run_id),
+    )
     assert block["applies_cleanly"] is True
     assert block["scope"] in ("request_contract", "adapted_agent", "native_application")

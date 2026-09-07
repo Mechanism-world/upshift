@@ -66,18 +66,24 @@ def translation_report(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """The DESIGN §G translation record for one params dict.
 
     Accepts either spelling the translation stream may land on:
-    `agent_loop.translate_params(endpoint, params)` returning a mapping/dataclass with
-    `params`, `dropped_params` and `passthrough_params`, or `map_params(endpoint, params,
-    report=<dict>)` filling that dict. Skips, naming both, when neither exists.
+    `agent_loop.translate_params(endpoint, params)` returning a mapping/dataclass with the
+    mapped request fields, `dropped_params` and `passthrough_params`, or `map_params(endpoint,
+    params, report=<dict>)` filling that dict. Skips, naming both, when neither exists.
+
+    Normalised to one shape for the tests: `params` is the mapped request body fields (the
+    landed spelling of `Translation.request_fields`), `dropped_params` keeps the DESIGN §G
+    element shape `{name, reason}`, and `dropped_param_names` is the same list flattened to
+    names for the membership assertions.
     """
     from upshift import agent_loop
 
     translate = getattr(agent_loop, "translate_params", None)
     if translate is not None:
         result = translate(endpoint, params)
-        if hasattr(result, "__dict__") and not isinstance(result, dict):
-            return dict(vars(result))
-        return dict(result)
+        report = dict(vars(result)) if not isinstance(result, dict) else dict(result)
+        report.setdefault("params", report.get("request_fields") or {})
+        report["dropped_param_names"] = dropped_names(report)
+        return report
 
     report: dict[str, Any] = {}
     try:
@@ -90,7 +96,17 @@ def translation_report(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
             "upshift.agent_loop.map_params(endpoint, params, report=dict))"
         )
     report.setdefault("params", mapped)
+    report["dropped_param_names"] = dropped_names(report)
     return report
+
+
+def dropped_names(report: dict[str, Any]) -> list[str]:
+    """The names in a translation record's `dropped_params`, whose DESIGN §G element shape is
+    `{"name": ..., "reason": ...}` (a bare string is accepted too)."""
+    out: list[str] = []
+    for entry in report.get("dropped_params") or []:
+        out.append(str(entry.get("name")) if isinstance(entry, dict) else str(entry))
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -469,6 +469,27 @@ def test_state_linking_negative_a_dropped_store_does_not_unpin_the_responses_def
     assert request["store"] is False
 
 
+def test_managed_request_fields_win_over_a_params_key_of_the_same_name():
+    """`build_request` used to fold the translated params in LAST, so a params key could
+    overwrite a field upshift builds: `tools` could replace the suite's tool definitions and
+    (before `store` became a state-linking drop) `store: true` could re-enable retention.
+    Managed fields win, and the override is recorded as a drop rather than ignored."""
+    hijack = [{"type": "function", "function": {"name": "not_the_agents_tool"}}]
+    real = [{"type": "function", "function": {"name": "search_flights", "parameters": {}}}]
+
+    request, translation = agent_loop.build_request_with_translation(
+        CHAT, "gpt-5.6-sol", {"tools": hijack, "model": "some-other-model"}, real, []
+    )
+
+    assert request["model"] == "gpt-5.6-sol"
+    assert [t["function"]["name"] for t in request["tools"]] == ["search_flights"]
+    dropped_names = {entry["name"] for entry in translation.dropped_params}
+    assert {"tools", "model"} <= dropped_names
+    assert all("managed by upshift" in entry["reason"] for entry in translation.dropped_params)
+    # and it is no longer reported as a param that reached the provider
+    assert translation.passthrough_params == []
+
+
 def test_state_linking_negative_upshifts_own_params_are_not_swept_up():
     """`prompt_cache_key` is a routing hint upshift injects, not the agent's state linking; it
     survives translation and is not reported as the agent's passthrough."""

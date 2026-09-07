@@ -15,7 +15,7 @@ the managed `store: false` cannot be overridden. Nothing is silently dropped.
 from __future__ import annotations
 
 import pytest
-from _support import incident, translation_report
+from _support import dropped_names, incident, translation_report
 
 from upshift.agent_loop import build_request
 
@@ -33,9 +33,14 @@ def test_state_linking_params_are_dropped_and_recorded():
 
     report = translation_report("responses", params)
 
-    dropped = set(report.get("dropped_params") or [])
+    # DESIGN §G element shape: `dropped_params: [{name, reason}]` — the names are asserted
+    # here, and `every drop carries a reason` below.
+    dropped = set(dropped_names(report))
     assert {"previous_response_id", "conversation", "store"} <= dropped, (
         f"state-linking params must be dropped and listed; got {sorted(dropped)}"
+    )
+    assert all(entry.get("reason") for entry in report["dropped_params"]), (
+        "every drop must say why: DESIGN §G, nothing is silently dropped"
     )
     mapped = report.get("params") or {}
     assert "previous_response_id" not in mapped

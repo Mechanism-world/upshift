@@ -428,6 +428,11 @@ def decide(
     return {
         "verdict": verdict,
         "reasons": reasons,
+        # The single reason code a reader (or a script) asks for first. `reasons` stays the
+        # authority — an INCONCLUSIVE run can have several — this is its first entry, and
+        # None when the verdict is not INCONCLUSIVE, so `if v["inconclusive_reason"]` reads
+        # as "was this run inconclusive, and why".
+        "inconclusive_reason": reasons[0] if reasons else None,
         "reason_details": {r: issues[r] for r in reasons} if reasons else {},
         "integrity_checked": runs_root is not None,
         "scope": scope_of(diff),

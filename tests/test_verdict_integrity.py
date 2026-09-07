@@ -281,7 +281,7 @@ def test_safe_no_longer_claims_a_drop_in_replacement() -> None:
 
     body = " ".join(report._verdict_summary(_diff([HEALTHY]), decided))
     assert "drop-in replacement" not in body
-    assert "no regression detected on these 1 case(s) at 5 reps" in body
+    assert "no regression detected on 1 case(s) at 5 reps" in body
 
 
 def test_every_verdict_carries_the_detectable_effect_sentence() -> None:

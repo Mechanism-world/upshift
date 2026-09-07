@@ -383,9 +383,9 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
         total = verdict.get("cases_total", len(result.cases))
         n_reps = verdict.get("n_reps", _n_reps(result))
         lines.append(
-            f"no regression detected on these {total} case(s) at {n_reps} reps. That is the "
-            f"whole claim: cases outside this suite, and effects too small for this N, were "
-            f"not measured."
+            f"no regression detected on {total} case(s) at {n_reps} reps. That is the whole "
+            f"claim: cases outside this suite, and effects too small for this N, were not "
+            f"measured."
         )
     elif name == "SAFE WITH PATCH":
         lines.append(

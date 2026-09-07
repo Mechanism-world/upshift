@@ -221,7 +221,7 @@ def rebuild_first_request(
 def verify_patch(
     agent_dir: str | Path,
     patch_path: str | Path,
-    run_directory: str | Path,
+    run_dir: str | Path,
     *,
     verdict_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -229,7 +229,7 @@ def verify_patch(
     a RESULT, recorded in the block — but raises ``VerificationError`` when the patch cannot
     be applied at all, because then there is nothing to compare."""
     agent_dir, patch_path = Path(agent_dir), Path(patch_path)
-    run_directory = Path(run_directory)
+    run_directory = Path(run_dir)
     if not (agent_dir / "agent.json").is_file():
         raise VerificationError(f"{agent_dir} is not an agent directory (no agent.json)")
     if not patch_path.is_file():
