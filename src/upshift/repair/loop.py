@@ -34,6 +34,7 @@ from upshift.schemas import (
 _SIGNATURE_PRIORITY = [
     "api_error_forced_tool_choice",
     "api_error_unsupported_sampling_params",
+    "api_error_unsupported_token_cap",
     "api_error_tools_reasoning",
     "api_error_other",
     "duplicate_tool_calls",

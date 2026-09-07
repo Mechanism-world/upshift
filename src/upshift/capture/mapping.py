@@ -27,6 +27,12 @@ EFFORT = "effort"
 SYSTEM_PROMPT = "system_prompt"
 TOOLS = "tools"
 ENDPOINT = "endpoint"
+#: The output-token cap (`max_tokens` / `max_completion_tokens` / `max_output_tokens`). A
+#: `model_params` knob like the three above, and a separate setting from all of them. No
+#: FRAMEWORKS entry names it yet, so it renders as "not mapped" — which is the honest answer
+#: until each framework's spelling has been verified in its source, not a reason to leave the
+#: repair unclassified.
+TOKEN_CAP = "token_cap"
 
 CATEGORY_TITLES = {
     TOOL_CHOICE: "forced tool_choice",
@@ -35,6 +41,7 @@ CATEGORY_TITLES = {
     SYSTEM_PROMPT: "system prompt",
     TOOLS: "tool schemas",
     ENDPOINT: "endpoint",
+    TOKEN_CAP: "output-token cap",
 }
 
 #: patch id (repair/playbook.py) -> the categories that patch touches, in order.
@@ -45,6 +52,8 @@ PATCH_CATEGORIES: dict[str, tuple[str, ...]] = {
     "reasoning-effort-high": (EFFORT,),
     "reasoning-effort-none": (EFFORT,),
     "route-to-responses": (ENDPOINT,),
+    "rename-token-cap-param": (TOKEN_CAP,),
+    "drop-token-cap-param": (TOKEN_CAP,),
 }
 
 #: repair_type -> categories, for a patch id this table does not name.

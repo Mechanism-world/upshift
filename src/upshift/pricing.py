@@ -16,10 +16,12 @@ the reference lists it as an active legacy model but carries no per-MTok rate fo
 guessed rate is worse than an honest "unknown rate".
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
-pricing effective through 2026-11-21), and the whole gpt-5.6 family re-verified 2026-09-03
-against https://developers.openai.com/api/docs/pricing. USD per 1M tokens, standard sync
-tier. Flex and Batch bill at 50% of standard; cached input tokens bill at 10% of the
-applicable input rate (90% caching discount, which stacks with flex).
+pricing effective through 2026-11-21), the whole gpt-5.6 family re-verified 2026-09-03, and
+gpt-4o-mini and gpt-4.1-nano verified 2026-09-05, all against
+https://developers.openai.com/api/docs/pricing. USD per 1M tokens, standard sync tier. Flex
+and Batch bill at 50% of standard; cached input tokens bill at 10% of the applicable input
+rate on the gpt-5 era models (90% caching discount, which stacks with flex) — the two
+pre-gpt-5 models carry their own published cached fractions instead.
 """
 
 from __future__ import annotations
@@ -52,6 +54,14 @@ RATES: dict[str, tuple[float, float]] = {
     "gpt-5.2": (1.75, 14.00),
     "gpt-5.2-pro": (21.00, 168.00),
     "gpt-5-mini": (0.25, 2.00),
+    # Pre-gpt-5 OpenAI models a target repo still ships as its configured default, which a
+    # migration case therefore runs as the BASELINE leg. $0.15/$0.60 and $0.10/$0.40 per
+    # MTok, per https://developers.openai.com/api/docs/pricing (Standard tier), verified
+    # 2026-09-05. Their cached-input rates are NOT the 10% default (see
+    # MODEL_CACHED_INPUT_FRACTION): $0.075 = 50% of input on gpt-4o-mini, $0.025 = 25% on
+    # gpt-4.1-nano.
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1-nano": (0.10, 0.40),
     "claude-fable-5": (10.00, 50.00),
     "claude-fable-5-1": (10.00, 50.00),
     # Legacy Anthropic model still served, and still the model some target harnesses pin.
@@ -92,6 +102,11 @@ CACHE_WRITE_MULTIPLIER = 1.25
 MODEL_CACHED_INPUT_FRACTION: dict[str, float] = {
     "claude-fable-5": 0.1,
     "claude-fable-5-1": 0.025,
+    # The 90% caching discount is a gpt-5-era rate. The published cached-input prices for
+    # these two are $0.075 of $0.15 and $0.025 of $0.10, so the default 0.1 would
+    # UNDER-report a cache-heavy baseline leg by 4-8x on the cached part.
+    "gpt-4o-mini": 0.5,
+    "gpt-4.1-nano": 0.25,
 }
 
 

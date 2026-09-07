@@ -31,6 +31,7 @@ from upshift.schemas import LABEL_STABLE_PASS, OUTCOME_PASS, RepRecord, label, o
 SIG_API_ERROR_TOOLS_REASONING = "api_error_tools_reasoning"
 SIG_API_ERROR_FORCED_TOOL_CHOICE = "api_error_forced_tool_choice"
 SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS = "api_error_unsupported_sampling_params"
+SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP = "api_error_unsupported_token_cap"
 SIG_API_ERROR_OTHER = "api_error_other"
 SIG_THINKING_BLOCK_INVALID = "thinking_block_invalid"
 SIG_DUPLICATE_TOOL_CALLS = "duplicate_tool_calls"
@@ -47,6 +48,7 @@ SIG_OTHER_BEHAVIORAL = "other_behavioral"
 SIGNATURE_PRIORITY = (
     SIG_API_ERROR_FORCED_TOOL_CHOICE,
     SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS,
+    SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP,
     SIG_API_ERROR_TOOLS_REASONING,
     SIG_THINKING_BLOCK_INVALID,
     SIG_API_ERROR_OTHER,
@@ -66,6 +68,10 @@ SIGNATURE_DESCRIPTIONS = {
     ),
     SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS: (
         "400: the model rejects non-default temperature / top_p / top_k."
+    ),
+    SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP: (
+        "400: the model rejects the output-token cap parameter this endpoint used to accept "
+        "(e.g. max_tokens -> max_completion_tokens)."
     ),
     SIG_API_ERROR_TOOLS_REASONING: (
         "400: function tools plus reasoning_effort are not supported on this endpoint."
@@ -102,6 +108,14 @@ _RE_CONFIRMATION_ID = re.compile(DEFAULT_CONFIRMATION_PATTERN)
 FORCED_TOOL_CHOICE_400 = 'tool_choice: type "tool" and "any" are not supported for this model.'
 THINKING_BLOCK_400 = "Invalid `signature` in `thinking` block"
 _RE_SAMPLING_PARAMS = re.compile(r"\b(temperature|top_p|top_k)\b", re.IGNORECASE)
+#: The gpt-5-era rejection of a token-cap parameter the endpoint renamed, matched on the
+#: API's own wording so a message merely *mentioning* a cap is not swept up:
+#: "Unsupported parameter: 'max_tokens' is not supported with this model. Use
+#: 'max_completion_tokens' instead."
+_RE_TOKEN_CAP_PARAM = re.compile(
+    r"'(max_tokens|max_completion_tokens|max_output_tokens)'\s+is not supported",
+    re.IGNORECASE,
+)
 
 #: A tool whose name looks like retrieval when the case did not mark it (DESIGN item 4).
 _RE_RETRIEVAL_TOOL_NAME = re.compile(r"search|retriev|lookup|query|fetch|find", re.IGNORECASE)
@@ -197,6 +211,8 @@ def _api_error_signature(err: dict[str, Any]) -> str:
             return SIG_THINKING_BLOCK_INVALID
         if _api_error_matches_tools_reasoning(err):
             return SIG_API_ERROR_TOOLS_REASONING
+        if _RE_TOKEN_CAP_PARAM.search(message):
+            return SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP
         if _RE_SAMPLING_PARAMS.search(message):
             return SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS
     return SIG_API_ERROR_OTHER

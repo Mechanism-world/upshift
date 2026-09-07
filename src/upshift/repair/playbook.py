@@ -102,6 +102,17 @@ EFFORT_WHEN_UNSET = {"messages": "high", "chat_completions": "medium", "response
 #: Params both Fables reject at non-default values (item 5).
 SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
 
+#: Every spelling of "cap the generated tokens" upshift may find in an agent's params. An
+#: agent authored against an older model carries the name its endpoint used to accept.
+TOKEN_CAP_PARAMS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+#: The spelling each endpoint accepts today. The gpt-5 family's 400 names the replacement
+#: itself ("Use 'max_completion_tokens' instead"), and this table is that instruction.
+TOKEN_CAP_FOR_ENDPOINT = {
+    "chat_completions": "max_completion_tokens",
+    "responses": "max_output_tokens",
+    "messages": "max_tokens",
+}
+
 
 def _read(agent_dir: Path, rel: str) -> str:
     return (agent_dir / rel).read_text()
@@ -278,6 +289,29 @@ def _leaves_an_empty_extra_body(text: str) -> bool:
     return isinstance(params, dict) and params.get("extra_body") == {}
 
 
+def _agent_json_rename_param(agent_dir: Path, old: str, new: str) -> FileEdit | None:
+    """Rename one key inside ``params`` in agent.json, keeping its value.
+
+    Returns None when the agent does not declare ``old``, or already declares ``new`` (there
+    would be nothing to rename, or renaming would collide with a value the author chose).
+    A minimal textual rewrite of the key is preferred so the emitted git diff is the one line
+    a maintainer would change; anything else falls back to a re-serialize.
+    """
+    text = _read(agent_dir, "agent.json")
+    raw = json.loads(text)
+    params = raw.get("params") or {}
+    if old not in params or new in params:
+        return None
+    needle = json.dumps(old) + ":"
+    if text.count(needle) == 1:
+        return FileEdit(
+            file="agent.json", new_content=text.replace(needle, json.dumps(new) + ":")
+        )
+    params[new] = params.pop(old)
+    raw["params"] = params
+    return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
+
+
 def _effort_ladder(endpoint: str) -> tuple[tuple[str, ...], str]:
     """(ladder, value-an-absent-param-means) for an endpoint; empty ladder if unknown."""
     return EFFORT_LADDERS.get(endpoint, ()), EFFORT_WHEN_UNSET.get(endpoint, "")
@@ -428,6 +462,36 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 "params (typically left over from an OpenAI-style config).",
                 [_agent_json_remove(agent_dir, list(SAMPLING_PARAMS), also_extra_body=True)],
             )
+        elif sig == "api_error_unsupported_token_cap":
+            wanted = TOKEN_CAP_FOR_ENDPOINT.get(raw_config["endpoint"])
+            declared = [
+                k for k in TOKEN_CAP_PARAMS if k in (raw_config.get("params") or {})
+            ]
+            if wanted is not None:
+                for stale in declared:
+                    if stale == wanted:
+                        continue
+                    rename = _agent_json_rename_param(agent_dir, stale, wanted)
+                    if rename is not None:
+                        add(
+                            "rename-token-cap-param",
+                            "model_params",
+                            sig,
+                            f"Rename the {stale!r} param to {wanted!r}, keeping its value: "
+                            f"this model rejects {stale!r} on /{raw_config['endpoint']} and "
+                            "names the replacement in the 400 itself.",
+                            [rename],
+                        )
+            if declared:
+                add(
+                    "drop-token-cap-param",
+                    "model_params",
+                    sig,
+                    "Remove the output-token cap entirely, so the model applies its own "
+                    "default (fallback for an endpoint that accepts no cap under this "
+                    "model).",
+                    [_agent_json_remove(agent_dir, declared)],
+                )
         elif sig == "serialized_tool_calls":
             if "in this one response" not in prompt:
                 add(

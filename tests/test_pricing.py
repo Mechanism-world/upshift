@@ -2,7 +2,7 @@
 
 import pytest
 
-from upshift.pricing import price
+from upshift.pricing import cached_input_fraction, price
 
 
 def test_standard_sync_rates():
@@ -197,3 +197,32 @@ def test_gpt_52_snapshot_and_flex_rows():
     # published cached-input row is exactly 10% of input: $0.175 / $0.025 per 1M
     assert abs(price("openai", "gpt-5.2", 1_000_000, 0, 1_000_000) - 0.175) < 1e-9
     assert abs(price("openai", "gpt-5-mini", 1_000_000, 0, 1_000_000) - 0.025) < 1e-9
+
+
+def test_pre_gpt5_baseline_models_have_known_rates():
+    """A target repo's shipped default model is what a migration case runs as its BASELINE
+    leg, so it must price. Without a rate, `upshift cost` says "unknown rate" and the
+    ceiling charges the leg at the most expensive rate upshift knows — which stopped a real
+    lab run (ghc-223) at a reported $1.53 over a leg that actually cost about a cent.
+
+    $0.15/$0.60 (gpt-4o-mini) and $0.10/$0.40 (gpt-4.1-nano) per MTok, Standard tier, per
+    https://developers.openai.com/api/docs/pricing, verified 2026-09-05.
+    """
+    assert abs(price("openai", "gpt-4o-mini", 1_000_000, 1_000_000, 0) - 0.75) < 1e-9
+    assert abs(price("openai", "gpt-4.1-nano", 1_000_000, 1_000_000, 0) - 0.50) < 1e-9
+    # snapshot ids resolve by prefix
+    assert abs(price("openai", "gpt-4o-mini-2024-07-18", 1_000_000, 0, 0) - 0.15) < 1e-9
+    # flex halves it like every other OpenAI row
+    assert abs(price("openai-flex", "gpt-4o-mini", 1_000_000, 0, 0) - 0.075) < 1e-9
+
+
+def test_pre_gpt5_cached_input_is_not_the_ten_percent_default():
+    """These two publish their own cached-input prices ($0.075 of $0.15, $0.025 of $0.10).
+    Applying the gpt-5-era 90% discount would under-report a cache-heavy baseline leg."""
+    assert cached_input_fraction("gpt-4o-mini") == 0.5
+    assert cached_input_fraction("gpt-4.1-nano") == 0.25
+    # 1M fully cached input -> the published cached-input price, not $0.015/$0.010
+    assert abs(price("openai", "gpt-4o-mini", 1_000_000, 0, 1_000_000) - 0.075) < 1e-9
+    assert abs(price("openai", "gpt-4.1-nano", 1_000_000, 0, 1_000_000) - 0.025) < 1e-9
+    # a gpt-5-era model is untouched by the override table
+    assert cached_input_fraction("gpt-5.5") == 0.1
