@@ -150,7 +150,12 @@ Field notes:
       It may be a plain string or a list of text blocks; when it is a list, report one
       chunk per block (they are joined with a single newline) and cite each block.
 - system_prompt.chunks: the pieces that make up the system message, in the order they are
-  concatenated; they are joined with a single newline. Prefer one chunk per source literal —
+  concatenated. They are re-joined the way the source joins them: adjacent string literals
+  of one expression (implicit concatenation) are joined with nothing at all, exactly as
+  Python does, and chunks from separate statements are joined with a single newline. Report
+  each chunk's characters exactly as they appear, including a trailing space or "\\n" if the
+  literal has one — that is what makes the join reconstructible. Prefer one chunk per source
+  literal —
   a chunk is only "verbatim" if its exact characters are in one file, so a prompt built by
   concatenating three literals is three verbatim chunks, not one. If the prompt is a
   template with placeholders that the code fills from config with a known default, use kind

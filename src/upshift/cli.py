@@ -24,6 +24,13 @@ from rich.console import Console
 from rich.markup import escape
 
 from upshift import recorder
+from upshift.budget import (
+    CostCeiling,
+    CostCeilingExceeded,
+    clear_stopped_marker,
+    startup_warning,
+    write_stopped_marker,
+)
 from upshift.capture import mapping as capture_mapping
 from upshift.capture import record as capture_record
 from upshift.capture import server as capture_server
@@ -109,6 +116,70 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="reps executed concurrently (default 4)",
     )
     p.add_argument("--quiet", action="store_true", help="no per-rep progress lines")
+    p.add_argument(
+        "--max-cost-usd", type=float, default=None,
+        help="spend ceiling for everything this command records. The priced cost of the "
+        "records already on disk is checked before every rep (and, for `upgrade`, between "
+        "phases and repair candidates); on reaching it the command stops before the next "
+        "API call, leaves every record resumable, and exits "
+        f"{EXIT_COST_STOPPED} without a verdict. Default: no ceiling.",
+    )
+
+
+#: Distinct from 1 (a STAY PINNED verdict) and 2 (a usage/API error): the pipeline never
+#: finished, so neither a verdict nor its absence says anything about the upgrade.
+EXIT_COST_STOPPED = 3
+
+
+def _cost_ceiling(args, prefix: str, models: list[str], *, descendants: bool) -> CostCeiling | None:
+    """Build the ceiling for this command, warning up front about models we cannot price."""
+    limit = getattr(args, "max_cost_usd", None)
+    if limit is None:
+        return None
+    if limit <= 0:
+        raise ValueError(f"--max-cost-usd must be positive (got {limit})")
+    warning = startup_warning(args.provider, models)
+    if warning:
+        console.print(f"[bold yellow]WARNING:[/bold yellow] {escape(warning)}", soft_wrap=True)
+    ceiling = CostCeiling(
+        runs_root=args.runs_root, prefix=prefix, limit_usd=limit, descendants=descendants
+    )
+    if ceiling.spent_usd:
+        console.print(
+            f"[dim]${ceiling.spent_usd:.4f} of the ${limit:.2f} ceiling is already recorded "
+            f"on disk for this {'tag' if descendants else 'run'}[/dim]",
+            highlight=False,
+        )
+    return ceiling
+
+
+def _report_cost_stop(stop: CostCeilingExceeded, marker: Path) -> int:
+    console.print("\n[red]stopped: cost ceiling reached[/red]")
+    console.print(
+        f"  phase        {escape(stop.phase)}\n"
+        f"  spent        ${stop.spent_usd:.4f} (priced from the records on disk)\n"
+        f"  ceiling      ${stop.limit_usd:.2f}",
+        highlight=False,
+    )
+    if stop.unpriced_models:
+        console.print(
+            f"  [yellow]note[/yellow]  {escape(', '.join(stop.unpriced_models))} has no "
+            f"published rate; its usage was charged at the highest rate upshift knows, so "
+            f"the total above is an upper bound",
+            highlight=False,
+            soft_wrap=True,
+        )
+    console.print(
+        f"  no verdict was produced — this pipeline did not finish ({escape(str(marker))})",
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print(
+        "  every completed rep is on disk: rerun the same command with a higher "
+        "--max-cost-usd to resume, or price what is there with `upshift cost`.",
+        soft_wrap=True,
+    )
+    return EXIT_COST_STOPPED
 
 
 def _make_provider(args):
@@ -834,19 +905,30 @@ def cmd_run(args) -> int:
     model = args.model or str(raw_config["model"])
     _check_models(args.provider, [model])
     notes = _with_notes(args.notes, anthropic_preflight(provider, [model]))
-    run_directory = run_suite(
-        agent_dir,
-        provider,
-        args.run_id,
-        n_reps=args.n,
-        model_override=args.model,
-        endpoint_override=args.endpoint,
-        runs_root=args.runs_root,
-        case_ids=args.case or None,
-        workers=args.workers,
-        notes=notes,
-        on_rep_done=None if args.quiet else _progress,
-    )
+    ceiling = _cost_ceiling(args, args.run_id, [model], descendants=False)
+    if ceiling is not None:
+        ceiling.set_phase(f"run {args.run_id}")
+    try:
+        run_directory = run_suite(
+            agent_dir,
+            provider,
+            args.run_id,
+            n_reps=args.n,
+            model_override=args.model,
+            endpoint_override=args.endpoint,
+            runs_root=args.runs_root,
+            case_ids=args.case or None,
+            workers=args.workers,
+            notes=notes,
+            on_rep_done=None if args.quiet else _progress,
+            cost_ceiling=ceiling,
+        )
+    except CostCeilingExceeded as stop:
+        marker = write_stopped_marker(
+            recorder.run_dir(args.runs_root, args.run_id), stop, extra={"run_id": args.run_id}
+        )
+        return _report_cost_stop(stop, marker)
+    clear_stopped_marker(run_directory)
     summary = json.loads((run_directory / "summary.json").read_text())
     passes = sum(1 for s in summary.values() if s["n"] and s["passes"] / s["n"] >= 0.8)
     console.print(
@@ -896,55 +978,87 @@ def cmd_upgrade(args) -> int:
     baseline_id = f"{tag}-baseline"
     candidate_id = f"{tag}-candidate"
 
-    console.rule(f"[bold]1/4 baseline run: {args.baseline_model}")
-    run_suite(
-        agent_dir, provider, baseline_id, n_reps=args.n,
-        model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
-        notes=_with_notes("upgrade pipeline baseline", preflight),
-        on_rep_done=None if args.quiet else _progress,
+    # One ceiling for the whole pipeline: every run id here is derived from --tag, so the
+    # baseline, the candidate and every repair screen/verify/adjudication run count against
+    # the same budget. It is re-checked between phases as well as before every rep, so a
+    # phase that lands exactly on the line does not start the next one.
+    ceiling = _cost_ceiling(
+        args, tag, [args.baseline_model, args.candidate_model], descendants=True
     )
-    if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
-        # Said here, between the legs, because the candidate run is the one that costs money
-        # and a comparison against a baseline that passed nothing cannot mean anything.
-        console.print(
-            f"\n[bold white on red] {BASELINE_BROKEN} [/bold white on red] the baseline model "
-            f"{escape(args.baseline_model)} passed 0 cases: this suite does not work on the "
-            f"model it is supposed to work on, so nothing measured against "
-            f"{escape(args.candidate_model)} will mean anything. The pipeline will report "
-            f"{BASELINE_BROKEN}, never SAFE. Stop it now (Ctrl-C; completed reps are kept) "
-            f"and fix the agent directory or the eval suite first.\n",
-            highlight=False, soft_wrap=True,
-        )
-    console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
-    run_suite(
-        agent_dir, provider, candidate_id, n_reps=args.n,
-        model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
-        notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
-        on_rep_done=None if args.quiet else _progress,
-    )
+    out_dir = recorder.run_dir(runs_root, tag)
 
-    console.rule("[bold]3/4 behavioral diff")
-    diff = diff_runs(recorder.run_dir(runs_root, baseline_id),
-                     recorder.run_dir(runs_root, candidate_id))
-    regressed = [c for c in diff.cases if c.label == LABEL_REGRESSED]
-
-    repair_outcome = None
-    patch_path = None
-    if regressed and not args.no_repair:
-        console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
-        work_dir = recorder.run_dir(runs_root, tag) / "patched_agent"
-        repair_outcome = repair(
-            original_agent_dir=agent_dir,
-            work_dir=work_dir,
-            provider=provider,
-            candidate_model=args.candidate_model,
-            baseline_diff=diff,
-            n_reps=args.n,
-            runs_root=runs_root,
-            run_prefix=tag,
-            budget=args.budget,
-            workers=args.workers,
+    def stopped(stop: CostCeilingExceeded) -> int:
+        marker = write_stopped_marker(
+            out_dir,
+            stop,
+            extra={"tag": tag, "baseline_run_id": baseline_id, "candidate_run_id": candidate_id},
         )
+        return _report_cost_stop(stop, marker)
+
+    try:
+        console.rule(f"[bold]1/4 baseline run: {args.baseline_model}")
+        if ceiling is not None:
+            ceiling.check("1/4 baseline run")
+        run_suite(
+            agent_dir, provider, baseline_id, n_reps=args.n,
+            model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
+            notes=_with_notes("upgrade pipeline baseline", preflight),
+            on_rep_done=None if args.quiet else _progress,
+            cost_ceiling=ceiling,
+        )
+        if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
+            # Said here, between the legs, because the candidate run is the one that costs
+            # money and a comparison against a baseline that passed nothing cannot mean
+            # anything.
+            console.print(
+                f"\n[bold white on red] {BASELINE_BROKEN} [/bold white on red] the baseline "
+                f"model {escape(args.baseline_model)} passed 0 cases: this suite does not "
+                f"work on the model it is supposed to work on, so nothing measured against "
+                f"{escape(args.candidate_model)} will mean anything. The pipeline will report "
+                f"{BASELINE_BROKEN}, never SAFE. Stop it now (Ctrl-C; completed reps are "
+                f"kept) and fix the agent directory or the eval suite first.\n",
+                highlight=False, soft_wrap=True,
+            )
+        console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
+        if ceiling is not None:
+            ceiling.check("2/4 candidate run")
+        run_suite(
+            agent_dir, provider, candidate_id, n_reps=args.n,
+            model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
+            notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
+            on_rep_done=None if args.quiet else _progress,
+            cost_ceiling=ceiling,
+        )
+
+        console.rule("[bold]3/4 behavioral diff")
+        diff = diff_runs(recorder.run_dir(runs_root, baseline_id),
+                         recorder.run_dir(runs_root, candidate_id))
+        regressed = [c for c in diff.cases if c.label == LABEL_REGRESSED]
+
+        repair_outcome = None
+        patch_path = None
+        if regressed and not args.no_repair:
+            console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
+            if ceiling is not None:
+                ceiling.check("4/4 repair loop")
+            work_dir = out_dir / "patched_agent"
+            repair_outcome = repair(
+                original_agent_dir=agent_dir,
+                work_dir=work_dir,
+                provider=provider,
+                candidate_model=args.candidate_model,
+                baseline_diff=diff,
+                n_reps=args.n,
+                runs_root=runs_root,
+                run_prefix=tag,
+                budget=args.budget,
+                workers=args.workers,
+                cost_ceiling=ceiling,
+            )
+    except CostCeilingExceeded as stop:
+        return stopped(stop)
+
+    if repair_outcome is not None:
         for line in repair_outcome.log:
             # Log lines carry [repair_type] tags and ['case', 'lists'] — rich would eat them.
             console.print(f"[dim]{escape(line)}[/dim]", highlight=False)
@@ -970,8 +1084,9 @@ def cmd_upgrade(args) -> int:
     console.print()
     render_diff(diff, console=console, verdict=verdict)
 
-    out_dir = recorder.run_dir(runs_root, tag)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The pipeline finished, so a marker from an earlier cost-stopped attempt is stale.
+    clear_stopped_marker(out_dir)
     save_diff(diff, out_dir / "diff.json")
     (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=1, sort_keys=True))
     (out_dir / "REPORT.md").write_text(diff_to_markdown(diff, verdict=verdict))
@@ -1283,6 +1398,11 @@ def main(argv: list[str] | None = None) -> int:
     _install_interrupt_handler()
     try:
         return args.func(args)
+    except CostCeilingExceeded as e:
+        # Safety net: both commands that can set a ceiling already report the stop with
+        # their own artifacts. This keeps the exit code distinct if one ever escapes.
+        console.print(f"[red]stopped:[/red] {escape(str(e))}")
+        return EXIT_COST_STOPPED
     except ValueError as e:
         console.print(f"[red]error:[/red] {escape(str(e))}")
         return 2

@@ -44,6 +44,57 @@ this product must never fail.
   empty schema, with nothing anywhere saying so. Structural deviation 2 stops claiming
   byte-identity and names the two fields dropped on purpose.
 
+Also unreleased, from the OpenAI migration-rescue track (product gaps the lab hit while
+running 54 cases):
+
+- Endpoint routing translates the output-token cap. `/v1/responses` spells it
+  `max_output_tokens`; an agent written against `/v1/chat/completions` carries `max_tokens`
+  (classic families) or `max_completion_tokens` (gpt-5*/o-series), and passing either to the
+  Responses SDK raises `TypeError: Responses.create() got an unexpected keyword argument
+  'max_completion_tokens'` before a request is sent — crashing the whole run rather than
+  recording a failed rep. Since endpoint routing is the documented repair for the gpt-5.5+ /
+  gpt-5.6 "function tools ... in /v1/chat/completions" 400, the untranslated cap made that
+  repair unusable for any agent that sets one. `map_params` now maps both spellings to
+  `max_output_tokens` on `responses`; an explicitly-spelled `max_output_tokens` wins.
+
+- Pricing for the rest of the gpt-5.6 family. `upshift cost` reported "unknown rate" for
+  gpt-5.6-terra and gpt-5.6-luna. Standard-tier rates per 1M tokens, from
+  https://developers.openai.com/api/docs/pricing (fetched 2026-09-03): sol $4.00 in /
+  $0.40 cached / $20.00 out (unchanged), terra $2.00 / $0.20 / $12.00, luna $0.20 / $0.02 /
+  $1.20. The published flex and batch rows are exactly half of standard and the cached rows
+  exactly 10% of input, which is what the existing tier and cache multipliers already do.
+
+- `upshift run` and `upshift upgrade` take `--max-cost-usd`. Only `adapt`, which makes one
+  paid call, had a spend ceiling; `run` and `upgrade` make thousands — baseline reps,
+  candidate reps, then a screen and a full-suite verify per repair candidate — and a lab
+  overran a $5 per-case cap inside a single `upgrade`. The ceiling is priced, not estimated:
+  it sums the recorded token usage under this run id (for `upgrade`, the whole `--tag`
+  family) through the same `pricing` module `upshift cost` uses, and is checked before every
+  rep is dispatched and again between phases and repair candidates. On reaching it the
+  command stops before the next API call, leaves every completed rep on disk (rerun the same
+  command with a higher ceiling to resume), prints the priced total and the phase that
+  stopped, and exits 3 — distinct from a STAY PINNED verdict (1) and a usage error (2).
+  No verdict is emitted, and a `COST_STOPPED.json` marker lands beside `diff.json` so a
+  partial pipeline can never be read as a finished one; it is deleted when one finishes.
+  Unpriced models fail closed: a model with no published rate warns loudly at startup and
+  its usage is charged at the highest rate in the table, never at $0.
+
+- Pricing for the gpt-5.2 family and gpt-5-mini. `upshift cost` reported "unknown rate" for
+  every model outside the 5.5/5.6 families, and an unpriced leg is exactly what a spend
+  ceiling must not treat as free. Standard-tier rates per 1M tokens, from
+  https://developers.openai.com/api/docs/pricing (fetched 2026-09-03): gpt-5.2 $1.75 in /
+  $0.175 cached / $14.00 out, gpt-5.2-pro $21.00 / — / $168.00, gpt-5-mini $0.25 / $0.025 /
+  $2.00. gpt-5.2-pro is listed separately because longest-prefix matching would otherwise
+  price a `-pro` run at the `gpt-5.2` rate and understate it twelvefold.
+
+- `adapt` reconstructs prompts written as Python implicit string concatenation correctly.
+  `("You are a screener. " "Return JSON with keys a, b.")` is one string to the interpreter,
+  and adapt was inserting a newline between the two literals while labelling both verbatim —
+  a generated agent that sends a prompt the upstream agent never sends. The gate now records
+  each chunk's span inside the source literal it came from, and chunks that sit end to end
+  inside one literal are joined with "" exactly as Python joins them; chunks from separate
+  statements, from non-Python sources, or that cannot be placed keep the newline join.
+
 ## v0.4.0-dev — unreleased
 
 Framework agents, without reading a framework. If the failing request is built inside

@@ -38,6 +38,10 @@ INVALID_ARGS_ERROR = {"error": "invalid JSON in tool call arguments"}
 #: episode ends on the call, exactly as the captured conversation did.
 TERMINAL_TOOL_RESULT = {"terminal_tool": "the framework ended the conversation on this call"}
 
+#: chat/completions spellings of the output-token cap. On `/v1/responses` the field is
+#: `max_output_tokens`; both of these are rejected there, so map_params translates them.
+TOKEN_CAP_PARAMS = ("max_tokens", "max_completion_tokens")
+
 _MISSING = object()
 
 
@@ -98,6 +102,7 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     effort = _MISSING
     sampling: dict[str, Any] = {}
+    cap = _MISSING
     for key, value in (params or {}).items():
         if endpoint == RESPONSES and key == "reasoning_effort":
             out["reasoning"] = {"effort": value}
@@ -107,6 +112,12 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
             out["tool_choice"] = _messages_tool_choice(value)
         elif endpoint == MESSAGES and key in SAMPLING_PARAMS:
             sampling[key] = copy.deepcopy(value)  # placed below, once extra_body has landed
+        elif endpoint == RESPONSES and key == "tool_choice":
+            out["tool_choice"] = _responses_tool_choice(value)
+        elif endpoint == RESPONSES and key in TOKEN_CAP_PARAMS:
+            # Translated below, after every explicitly-spelled value has landed.
+            if key == "max_completion_tokens" or cap is _MISSING:
+                cap = value
         else:
             out[key] = copy.deepcopy(value)
     if effort is not _MISSING:
@@ -117,6 +128,15 @@ def map_params(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         out["output_config"] = config
     if sampling:
         _place_sampling_params(out, sampling)
+    if cap is not _MISSING:
+        # /v1/responses spells the output cap `max_output_tokens` and rejects the
+        # chat/completions spellings outright (the SDK raises TypeError before any request
+        # is sent). Without this translation `endpoint_routing` — the one repair for the
+        # documented gpt-5.5+/gpt-5.6 "function tools ... in /v1/chat/completions" 400 —
+        # cannot be applied to any agent that sets an output cap, which is most of them.
+        # An explicit `max_output_tokens` in the agent's params is the right spelling
+        # already and wins over a translated one.
+        out.setdefault("max_output_tokens", copy.deepcopy(cap))
     return out
 
 
@@ -144,6 +164,29 @@ def _place_sampling_params(out: dict[str, Any], sampling: dict[str, Any]) -> Non
             extra_body.setdefault(key, value)
     if extra_body:
         out["extra_body"] = extra_body
+
+
+def _responses_tool_choice(value: Any) -> Any:
+    """Responses-shaped tool_choice, flattening a chat-shaped one on the way.
+
+    `/v1/responses` takes forced tool choice flat — `{"type": "function", "name": X}` —
+    just like its flat tool definitions, while chat/completions nests it under `function`.
+    An agent written against chat/completions therefore carries the nested shape (it is what
+    `ChatOpenAI.bind_tools(..., tool_choice="X")` produces), and routing it to `/v1/responses`
+    without this translation returns `400 Missing required parameter: 'tool_choice.name'` —
+    on the very repair (endpoint routing) that the gpt-5.6-family break calls for.
+
+    Strings (`"auto"`, `"none"`, `"required"`) are valid on both endpoints and pass through,
+    as does anything already flat or unrecognised, so a bad value produces the API's own 400
+    rather than a silent rewrite here.
+    """
+    if isinstance(value, dict) and value.get("type") == "function" and "name" not in value:
+        function = value.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            flattened = {k: v for k, v in value.items() if k != "function"}
+            flattened["name"] = function["name"]
+            return flattened
+    return copy.deepcopy(value)
 
 
 def _messages_tool_choice(value: Any) -> Any:

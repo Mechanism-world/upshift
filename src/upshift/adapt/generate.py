@@ -139,6 +139,14 @@ def build_system_prompt(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
     there would change the prompt the agent under test actually sends. A chunk that needs a
     blank line after it carries it in its own text.
 
+    The exception is implicit string concatenation. `("You are a screener. " "Return JSON.")`
+    is one string to the interpreter — the compiler joins adjacent literals with NOTHING —
+    so a newline there would also change the prompt. The gate records where each chunk sits
+    inside the source literal it came from (`source_span`, set by
+    `verify.locate_chunks_in_source`), and two chunks that sit end to end inside the same
+    literal are joined with "" exactly as Python joins them. Chunks from separate statements,
+    from a non-Python source, or that the gate could not place keep the newline join.
+
     Text that the gate could not find ANYWHERE in the source repo is omitted rather than
     written into the prompt: an invented rule in a system prompt silently changes the agent
     under test, which is the exact failure this feature must not have. The omission is
@@ -146,14 +154,29 @@ def build_system_prompt(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
     citation merely wrong.
     """
     chunks = (data.get("system_prompt") or {}).get("chunks") or []
-    pieces: list[str] = []
+    assembled = ""
+    wrote_any = False
+    previous_span: list[Any] | None = None
     provenance: list[dict[str, Any]] = []
-    line = 1
     for chunk in chunks:
         text = str(chunk.get("text") or "")
         if not text:
             continue
         omitted = bool(chunk.get("omitted"))
+        span_of = chunk.get("source_span")
+        span_of = span_of if isinstance(span_of, list) and len(span_of) == 4 else None
+        contiguous = (
+            wrote_any
+            and previous_span is not None
+            and span_of is not None
+            and previous_span[0] == span_of[0]  # same source file
+            and previous_span[1] == span_of[1]  # same string literal
+            and previous_span[3] == span_of[2]  # this chunk starts where the last one ended
+        )
+        if not omitted:
+            if wrote_any and not contiguous:
+                assembled = assembled.rstrip("\n") + "\n"
+            line = assembled.count("\n") + 1
         span = text.rstrip("\n").count("\n") + 1
         provenance.append(
             {
@@ -170,11 +193,12 @@ def build_system_prompt(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
         )
         if omitted:
             continue
-        pieces.append(text)
-        line += span
-    if not pieces:
+        assembled += text
+        wrote_any = True
+        previous_span = span_of
+    if not wrote_any:
         return PLACEHOLDER_PROMPT + "\n", provenance
-    return "\n".join(piece.rstrip("\n") for piece in pieces).rstrip() + "\n", provenance
+    return assembled.rstrip() + "\n", provenance
 
 
 # ---------------------------------------------------------------------------
