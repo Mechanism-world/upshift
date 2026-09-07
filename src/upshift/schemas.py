@@ -19,6 +19,20 @@ from typing import Any
 #: `messages` is Anthropic's Messages API (DESIGN.md, "Anthropic provider").
 ENDPOINTS = ("chat_completions", "responses", "messages")
 
+#: Verification scope (DESIGN.md §A). Derived from the agent directory, never declared by the
+#: user, and the ONLY thing that licenses the phrase "verified in the application".
+SCOPE_REQUEST_CONTRACT = "request_contract"
+SCOPE_ADAPTED_AGENT = "adapted_agent"
+SCOPE_NATIVE_APPLICATION = "native_application"
+SCOPES = (SCOPE_REQUEST_CONTRACT, SCOPE_ADAPTED_AGENT, SCOPE_NATIVE_APPLICATION)
+
+#: What a capture-derived episode does when it needs more assistant turns than the recording
+#: provided (DESIGN.md §F). Default `fail`, because silently recycling the last recorded turn
+#: is how a recording of 2 turns becomes "evidence" about turn 9.
+CONTINUATION_FAIL = "fail"
+CONTINUATION_REPEAT_LAST = "repeat_last"
+CONTINUATIONS = (CONTINUATION_FAIL, CONTINUATION_REPEAT_LAST)
+
 
 def validate_turn_params(raw: Any, where: str) -> list[dict[str, Any]]:
     """`agent.json`'s optional `turn_params`, checked. Absent -> []; anything else is an
@@ -69,6 +83,26 @@ class AgentConfig:
     #: is a different agent from one that forces on every turn — under a forced choice the
     #: model can never answer in text — so one episode-level value cannot express it.
     turn_params: list[dict[str, Any]] = field(default_factory=list)
+    #: The `runner` block (DESIGN.md §C): present ⇒ this agent runs ITSELF and upshift only
+    #: supplies the case, the reps and the checks. `system_prompt`, `tools` and `backend.py`
+    #: are not used for execution — the application's own code builds the request. Kept as the
+    #: raw dict so `agent.json` round-trips; `runner_spec()` is the validated view.
+    #: Absent for every adapter agent, which is what makes this backwards-compatible.
+    runner: dict[str, Any] | None = None
+    #: Capture continuation policy (DESIGN.md §F), read only when `recorded_turns` is set.
+    continuation: str = CONTINUATION_FAIL
+    #: How many assistant turns the RECORDING that produced this agent actually contained.
+    #: Written by `adapt --from-capture`; `None` for a hand-written agent, which is what makes
+    #: the continuation policy inert for every agent that was not built from a recording.
+    recorded_turns: int | None = None
+
+    def runner_spec(self) -> Any:
+        """The validated `runner` block, or None. Raises ValueError on a malformed one."""
+        if self.runner is None:
+            return None
+        from upshift.native.protocol import RunnerSpec
+
+        return RunnerSpec.from_dict(self.runner, f"{self.agent_dir}/agent.json")
 
     @staticmethod
     def load(agent_dir: str | Path) -> AgentConfig:
@@ -77,35 +111,60 @@ class AgentConfig:
         if not path.is_file():
             raise ValueError(f"agent dir {agent_dir} has no agent.json (see ADAPTER.md)")
         raw = json.loads(path.read_text())
-        missing = [
-            key
-            for key in ("name", "endpoint", "model", "system_prompt_file", "tools_file")
-            if key not in raw
-        ]
+        native = raw.get("runner") is not None
+        # A native agent (DESIGN.md §C) builds its own requests, so the three patchable files
+        # are not part of its contract: `runner` + `cases/` is the whole authoring surface.
+        required = ("name", "model") if native else (
+            "name", "endpoint", "model", "system_prompt_file", "tools_file"
+        )
+        missing = [key for key in required if key not in raw]
         if missing:
             raise ValueError(f"{path} is missing required key(s): {', '.join(missing)}")
-        if raw["endpoint"] not in ENDPOINTS:
-            raise ValueError(f"unknown endpoint {raw['endpoint']!r}")
+        endpoint = raw.get("endpoint", "chat_completions" if native else None)
+        if endpoint not in ENDPOINTS:
+            raise ValueError(f"unknown endpoint {endpoint!r}")
+        continuation = str(raw.get("continuation") or CONTINUATION_FAIL)
+        if continuation not in CONTINUATIONS:
+            raise ValueError(
+                f"{path}: unknown continuation policy {continuation!r} "
+                f"(expected one of {CONTINUATIONS}); see ADAPTER.md"
+            )
+        recorded_turns = raw.get("recorded_turns")
+        if recorded_turns is not None and (
+            isinstance(recorded_turns, bool) or not isinstance(recorded_turns, int)
+            or recorded_turns < 1
+        ):
+            raise ValueError(f"{path}: `recorded_turns` must be a positive integer or absent")
+        prompt_file = raw.get("system_prompt_file")
+        tools_file = raw.get("tools_file")
         return AgentConfig(
             name=raw["name"],
-            endpoint=raw["endpoint"],
+            endpoint=endpoint,
             model=raw["model"],
             params=raw.get("params", {}),
-            system_prompt=(agent_dir / raw["system_prompt_file"]).read_text(),
-            tools=json.loads((agent_dir / raw["tools_file"]).read_text()),
+            system_prompt=(agent_dir / prompt_file).read_text() if prompt_file else "",
+            tools=json.loads((agent_dir / tools_file).read_text()) if tools_file else [],
             max_turns=raw.get("max_turns", 12),
             agent_dir=str(agent_dir),
             volatile_suffix=str(raw.get("volatile_suffix") or ""),
             terminal_tools=[str(name) for name in (raw.get("terminal_tools") or [])],
             turn_params=validate_turn_params(raw.get("turn_params"), str(path)),
+            runner=dict(raw["runner"]) if isinstance(raw.get("runner"), dict) else raw.get("runner"),
+            continuation=continuation,
+            recorded_turns=recorded_turns,
         )
 
     def file_hashes(self) -> dict[str, str]:
-        """sha256 of every patchable file, recorded in run manifests."""
+        """sha256 of every patchable file, recorded in run manifests.
+
+        A native agent has only `agent.json` here: its behaviour comes from the application
+        checkout, whose identity is the commit sha the run records instead (DESIGN.md §B/§E).
+        """
         agent_dir = Path(self.agent_dir)
         raw = json.loads((agent_dir / "agent.json").read_text())
         out = {}
-        for rel in ("agent.json", raw["system_prompt_file"], raw["tools_file"]):
+        names = ["agent.json", raw.get("system_prompt_file"), raw.get("tools_file")]
+        for rel in [name for name in names if name]:
             out[rel] = hashlib.sha256((agent_dir / rel).read_bytes()).hexdigest()
         return out
 
@@ -186,6 +245,22 @@ class RepRecord:
     api_error: dict[str, Any] | None
     usage: dict[str, int]  # accumulated {input_tokens, output_tokens}
     latency_s: float
+    #: How this episode's behaviour was produced (DESIGN.md §A companion). One of
+    #: `recorded_playback` (the tool backend replays captured results, so nothing about the
+    #: real world was exercised), `live_model` (upshift built the requests and a provider
+    #: answered) and `native_application` (the application's own entry point ran). Defaults to
+    #: `live_model`, which is what every record written before this field existed was.
+    episode_source: str = "live_model"
+    #: Verification scope of the run this rep belongs to; also written to the manifest.
+    scope: str = ""
+    #: True when the episode ran past the recorded turns under `continuation: "repeat_last"`
+    #: (DESIGN.md §F): the last recorded turn's params were reused, which is a fact about the
+    #: evidence, not about the model.
+    continuation_used: bool = False
+    #: Requests the application itself serialized, recorded by `--capture` on a native run.
+    wire_requests: list[dict[str, Any]] = field(default_factory=list)
+    #: Native runs only: command, exit code, timing, isolation, stderr tail.
+    runner: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1, sort_keys=True)
