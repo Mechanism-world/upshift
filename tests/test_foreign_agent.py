@@ -102,7 +102,10 @@ class Pipeline:
             n_reps=N_REPS,
             runs_root=self.runs,
             run_prefix="foreign",
-            budget=6,
+            # Sibling screening (repair/loop.rank_screened) spends one unit of budget per
+            # candidate SCREENED, not per candidate verified, so a round costs as many units
+            # as the playbook offers siblings. Same default the CLI now carries.
+            budget=24,
             workers=1,
         )
         self.verdict = decide(self.diff, self.outcome, patch_path=str(root / "upgrade.patch"))

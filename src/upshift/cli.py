@@ -1544,7 +1544,14 @@ def main(argv: list[str] | None = None) -> int:
         "--candidate-model", required=True, help="model version you want to upgrade to"
     )
     p_up.add_argument("--tag", required=True, help="name for this upgrade experiment")
-    p_up.add_argument("--budget", type=int, default=6, help="max repair candidates (default 6)")
+    p_up.add_argument(
+        "--budget", type=int, default=24,
+        help="max repair candidates the loop may TRY, counted per candidate SCREENED "
+        "(default 24). Every sibling candidate a signature round produces is screened on "
+        "the still-broken cases before any of them is verified, so a round costs one unit "
+        "of budget per sibling — which is what stops the loop accepting the first candidate "
+        "that happens to work and never measuring the one that works better.",
+    )
     p_up.add_argument(
         "--no-repair", action="store_true",
         help="stop after the behavioral diff; do not try to repair the regressions",

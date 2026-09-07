@@ -126,11 +126,39 @@ Failure signatures drive candidate order (playbook.py):
 - fallback → temperature/reasoning_effort nudges
 
 Candidates are structured `Patch` objects: list of file-level edits to the three victim
-files. Loop: apply candidate to a temp copy → screen on previously-regressed cases (N reps)
-→ if screen passes, verify on the FULL suite (N reps, candidate model) → accept iff every
-originally-regressed case is PASS and no originally-PASS case leaves PASS → else revert, next
-candidate. Budget: max 6 candidates. Composable: an accepted candidate becomes the new base
+files. Loop, per signature round: apply EVERY candidate the round produces to its own temp
+copy and screen each on the still-broken cases (N reps) → rank the ones that restored
+something → verify the best on the FULL suite (N reps, candidate model) → accept iff it
+restores a broken case, breaks no originally-PASS case and relapses no earlier-restored one →
+else fall to the next ranked candidate. Composable: an accepted candidate becomes the new base
 and remaining regressions continue the loop (e.g. endpoint fix first, then prompt fix).
+
+**Sibling screening and the ranking (added 2026-09-07).** Until v0.5 the loop accepted the
+FIRST candidate that survived verification. That is not a choice between repairs, it is the
+playbook's emission order deciding the verdict, and it produced two wrong answers in the
+rescue lab: `ghisdk-127` (waku) accepted a candidate that restored 8 of 9 cases and published
+STAY PINNED while a sibling in the same generation restored all 9; `ghc-062` (crispen)
+shipped a repair with a disclosed change of guarantee over the maintainer's own equivalent
+fix, purely because the playbook listed it first. So every sibling is screened before any is
+verified, and the restorers are ranked by:
+
+1. full restoration first, then the number of broken cases restored on the screen;
+2. absence of `playbook.disclosures_for(id)` — a repair that changes no capability and no
+   cost beats one that does, when they restore the same cases;
+3. the playbook rank (`RANK_TRANSPORT` < `RANK_BEHAVIOURAL` < `RANK_CAPABILITY`);
+4. the playbook's own order, as the final tie-break.
+
+The ranking decides which candidate is VERIFIED first and nothing else: acceptance
+thresholds, adjudication and the fresh final verification are unchanged, and a top-ranked
+candidate that breaks a protected case is still rejected and the next one verified.
+
+**Cost.** `--budget` bounds the total candidates TRIED, and screening a sibling is trying it:
+a round with four siblings spends four units of budget on four screen runs even though only
+one is verified. When a candidate is accepted the agent has changed, so the siblings that lost
+that round become eligible again and are re-screened against the new stack — which is what
+lets prompt repairs keep stacking, and is why the default budget is 24 rather than 6. A screen
+run covers only the still-broken cases, so it is the cheapest measurement in the loop; the
+verify and adjudication runs, which cover the full suite, are unchanged in number.
 
 Contested statuses are adjudicated on 2N reps, same thresholds (added 2026-08-28 after the
 first real run showed single-sample vetoes firing on borderline-flaky cases — 4/5, 3/5,

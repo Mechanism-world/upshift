@@ -84,6 +84,12 @@ class ScriptedProvider(Provider):
     the case ids that PASS in that configuration. ``fail_after`` optionally makes a
     configuration start failing a case after a given number of full passes through it, which
     is how a candidate that wins its selection runs and loses the fresh final one is built.
+
+    ``markers`` names more than one patched configuration: ``{"PATCH_A": "a", "PATCH_B": "b"}``
+    makes the system prompt's marker select the script key, which is how SIBLING repair
+    candidates — several patches offered for the same signature, each with different effects —
+    are expressed. The default is the single ``PATCH_MARKER`` -> ``"patched"`` mapping every
+    earlier test was written against.
     """
 
     name = "sim"  # a simulator: nothing here is evidence about a real model
@@ -94,10 +100,12 @@ class ScriptedProvider(Provider):
         *,
         fail_after: dict[str, int] | None = None,
         api_error: dict[str, Any] | None = None,
+        markers: dict[str, str] | None = None,
     ) -> None:
         self.script = script
         self.fail_after = dict(fail_after or {})
         self.api_error = api_error
+        self.markers = dict(markers or {PATCH_MARKER: "patched"})
         self.seen: dict[str, int] = {}
         self.requests: list[dict[str, Any]] = []
 
@@ -122,7 +130,9 @@ class ScriptedProvider(Provider):
         system = "".join(
             str(m.get("content", "")) for m in request.get("messages", []) if m.get("role") == "system"
         )
-        variant = "patched" if PATCH_MARKER in system else "base"
+        variant = next(
+            (name for marker, name in self.markers.items() if marker in system), "base"
+        )
         passing = set(self.script.get(model, {}).get(variant, set()))
         key = f"{model}:{variant}:{case_id}"
         self.seen[key] = self.seen.get(key, 0) + 1
