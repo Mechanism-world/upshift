@@ -13,8 +13,12 @@ still-broken cases; it must restore at least one of them to earn verification.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import inspect
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -75,6 +79,45 @@ def thinking_refusal_lines(
     return lines
 
 
+#: Salt mixed into the per-(case, rep) seed of the fresh final verification (DESIGN.md §D).
+#: The final run must be a NEW sample, not a replay of the sample that selected the
+#: candidate: reusing the selection seeds would let a candidate chosen because it happened
+#: to work on those draws be confirmed by the same draws.
+FINAL_RUN_SEED_SALT = "upshift-final-verification"
+
+#: `run_suite` reads the module-level `runner.seed_for`; when it does not (yet) accept a
+#: `seed_salt` argument, the final run swaps that function for the duration. Serialised
+#: because the swap is process-global and `run_suite` itself is threaded.
+_SEED_SALT_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _salted_seeds(run_suite, salt: str):
+    """Yield the kwargs `run_suite` needs for salted seeds, patching `runner.seed_for` if it
+    has no `seed_salt` parameter of its own. Restores the original either way."""
+    try:
+        supported = "seed_salt" in inspect.signature(run_suite).parameters
+    except (TypeError, ValueError):  # pragma: no cover - a C callable would land here
+        supported = False
+    if supported:
+        yield {"seed_salt": salt}
+        return
+
+    from upshift import runner as runner_module
+
+    with _SEED_SALT_LOCK:
+        original = runner_module.seed_for
+
+        def salted(case_id: str, rep: int) -> int:
+            return int(hashlib.sha256(f"{salt}:{case_id}:{rep}".encode()).hexdigest()[:8], 16)
+
+        runner_module.seed_for = salted
+        try:
+            yield {}
+        finally:
+            runner_module.seed_for = original
+
+
 @dataclass
 class RepairOutcome:
     accepted_patches: list[Patch]
@@ -84,6 +127,22 @@ class RepairOutcome:
     budget: int
     log: list[str] = field(default_factory=list)
     final_verify_run_id: str | None = None
+    #: The FRESH full-suite run of the stacked patch, at new seeds, that the verdict rests on
+    #: (DESIGN.md §D). None when no candidate was accepted or `final_verify=False`.
+    final_run_id: str | None = None
+    #: Every screen / verify / adjudication run. These SELECTED the candidates; they are not
+    #: the evidence for them, and the report lists them under that name.
+    selection_runs: list[str] = field(default_factory=list)
+    #: Cases that passed on the candidate before repair and fail on the final run. Empty is
+    #: a measured result here, not an assumption.
+    broken_by_patch: list[str] = field(default_factory=list)
+    #: Cases the candidate was accepted for that the fresh final run did not confirm.
+    unconfirmed_by_final: list[str] = field(default_factory=list)
+    protected_cases: list[str] = field(default_factory=list)
+    #: (verify runs performed) x (protected cases): how many times collateral damage was
+    #: actually looked for. Zero with protected_cases == 0 is the "nothing to protect" case.
+    collateral_checks: int = 0
+    evidence_label: str | None = None
 
 
 def _copy_agent_dir(src: Path, dst: Path) -> None:
@@ -146,7 +205,12 @@ def repair(
     budget: int = 6,
     workers: int = 4,
     cost_ceiling: CostCeiling | None = None,
+    final_verify: bool = True,
 ) -> RepairOutcome:
+    """``final_verify`` (DESIGN.md §D): after the last accepted candidate, re-run the stacked
+    patch on the FULL suite at fresh seeds as ``<run_prefix>-final`` and let the verdict rest
+    on that, not on the runs that selected the candidates. Setting it False skips the run and
+    labels the outcome ``selection_evidence_only`` — cheaper, and honestly weaker."""
     original_agent_dir = Path(original_agent_dir)
     work_dir = Path(work_dir)
     _copy_agent_dir(original_agent_dir, work_dir)
@@ -176,6 +240,8 @@ def repair(
     ]
     tried_ids: set[str] = set()
     final_verify_run_id: str | None = None
+    selection_runs: list[str] = []
+    collateral_checks = 0
     refused: set[str] = set()
     log.extend(thinking_refusal_lines(per_case_sigs, unrestored, refused))
 
@@ -223,6 +289,7 @@ def repair(
                     notes=f"repair screen for candidate {patch.id}",
                     cost_ceiling=cost_ceiling,
                 )
+                selection_runs.append(screen_id)
                 screen_counts = _case_pass_counts(
                     recorder.run_dir(runs_root, screen_id), sorted(unrestored)
                 )
@@ -254,6 +321,13 @@ def repair(
                     notes=f"repair full verification for candidate {patch.id}",
                     cost_ceiling=cost_ceiling,
                 )
+                selection_runs.append(verify_id)
+                # Every protected case is re-measured by this run: that is what a collateral
+                # check IS, and counting them is what makes "zero collateral damage" a
+                # measurement instead of a slogan. With nothing protected the count stays 0
+                # and the report says so (rescue-ops ghi56-006, ghisdk-052, ghc-223: "repair
+                # start: N regressed case(s), 0 protected passing case(s)").
+                collateral_checks += len(protected)
                 verify_counts = _case_pass_counts(
                     recorder.run_dir(runs_root, verify_id), all_case_ids
                 )
@@ -294,6 +368,7 @@ def repair(
                         notes=f"adjudication of contested cases for candidate {patch.id}",
                         cost_ceiling=cost_ceiling,
                     )
+                    selection_runs.append(adj_id)
                     adj_counts = _case_pass_counts(recorder.run_dir(runs_root, adj_id), suspects)
                     for case_id in suspects:
                         vk, vn = verify_counts[case_id]
@@ -352,6 +427,69 @@ def repair(
                 log.append("all current candidates rejected; giving up")
             break
 
+    # --- Fresh final verification (DESIGN.md §D) ------------------------------------
+    # The runs above SELECTED the candidates; a candidate picked because it won on one
+    # sample cannot also be confirmed by that sample. One more full-suite run of the
+    # stacked patch, at seeds no selection run used, is what the verdict rests on.
+    final_run_id: str | None = None
+    broken_by_patch: list[str] = []
+    unconfirmed: list[str] = []
+    evidence_label = "selection_evidence_only"
+    if accepted and final_verify:
+        final_run_id = f"{run_prefix}-final"
+        with _salted_seeds(run_suite, FINAL_RUN_SEED_SALT) as seed_kwargs:
+            run_suite(
+                work_dir,
+                provider,
+                final_run_id,
+                n_reps=n_reps,
+                model_override=candidate_model,
+                runs_root=runs_root,
+                workers=workers,
+                notes=(
+                    "fresh final verification of the stacked patch at new seeds; the verdict "
+                    "rests on this run, not on the screen/verify runs that selected it"
+                ),
+                cost_ceiling=cost_ceiling,
+                **seed_kwargs,
+            )
+        final_counts = _case_pass_counts(recorder.run_dir(runs_root, final_run_id), all_case_ids)
+
+        def final_pass(case_id: str) -> bool:
+            k, n = final_counts[case_id]
+            return outcome(k, n, thresholds["pass"], thresholds["fail"]) == OUTCOME_PASS
+
+        collateral_checks += len(protected)
+        broken_by_patch = sorted(c for c in protected if not final_pass(c))
+        unconfirmed = sorted(c for c in restored if not final_pass(c))
+        evidence_label = "fresh_final_verification"
+        log.append(
+            f"final verification {final_run_id}: full suite, {n_reps} reps, fresh seeds — "
+            f"{sum(1 for c in all_case_ids if final_pass(c))}/{len(all_case_ids)} cases pass"
+        )
+        if unconfirmed:
+            # Selection said restored; the fresh sample says otherwise. The fresh sample wins,
+            # and the case goes back to unrestored, which is a STAY PINNED.
+            log.append(
+                f"  NOT CONFIRMED by the fresh final run: {unconfirmed} — selection evidence "
+                f"is not verification evidence; these cases return to unrestored"
+            )
+            restored -= set(unconfirmed)
+            unrestored |= set(unconfirmed)
+        if broken_by_patch:
+            log.append(
+                f"  COLLATERAL DAMAGE on the fresh final run: {broken_by_patch} passed on the "
+                f"candidate before the patch and fail after it"
+            )
+    elif accepted and not final_verify:
+        log.append(
+            "final verification SKIPPED (final_verify=False): the verdict below rests on the "
+            "runs that selected the candidates, which is weaker evidence — labelled "
+            "selection_evidence_only"
+        )
+    elif not accepted:
+        evidence_label = None
+
     if unrestored:
         log.append(
             f"repair end: {len(restored)}/{len(regressed)} regressed cases restored; "
@@ -368,4 +506,11 @@ def repair(
         budget=budget,
         log=log,
         final_verify_run_id=final_verify_run_id,
+        final_run_id=final_run_id,
+        selection_runs=selection_runs,
+        broken_by_patch=broken_by_patch,
+        unconfirmed_by_final=unconfirmed,
+        protected_cases=list(protected),
+        collateral_checks=collateral_checks,
+        evidence_label=evidence_label,
     )
