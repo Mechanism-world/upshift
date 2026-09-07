@@ -270,11 +270,15 @@ def test_the_loop_forwards_every_signature_the_differ_can_emit() -> None:
     that copy is silently dropped: candidates that exist are never even asked for, which is
     how the token-cap repair still produced STAY PINNED after the playbook could fix it.
 
-    `thinking_block_invalid` is the one deliberate omission (the loop refuses it instead).
+    `differ.SIGNATURES_WITHOUT_REPAIRS` is the contract for what may legitimately be absent:
+    `thinking_block_invalid` (the loop refuses it instead), `harness_error` (the request never
+    reached the provider, so there is no model behaviour to repair) and
+    `api_error_unsupported_effort_value` (detection-only for now). Anything else missing is an
+    accident.
     """
-    from upshift.differ import SIG_THINKING_BLOCK_INVALID, SIGNATURE_PRIORITY
+    from upshift.differ import SIGNATURE_PRIORITY, SIGNATURES_WITHOUT_REPAIRS
     from upshift.repair.loop import _SIGNATURE_PRIORITY
 
     assert list(_SIGNATURE_PRIORITY) == [
-        s for s in SIGNATURE_PRIORITY if s != SIG_THINKING_BLOCK_INVALID
+        s for s in SIGNATURE_PRIORITY if s not in SIGNATURES_WITHOUT_REPAIRS
     ]
