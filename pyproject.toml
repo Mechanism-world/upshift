@@ -51,10 +51,23 @@ artifacts = ["src/upshift/example_agent/**"]
 
 [tool.hatch.build.targets.sdist]
 # runs/ is committed experiment evidence (megabytes of JSON transcripts), not package content.
+# tests/ IS shipped so an sdist is testable. tests/rescue/fixtures/ is deliberately not
+# excluded: it is ~12 KB of API request parameters (endpoint, model pair, params dict) with no
+# upstream source text in it, and every incident's upstream license is recorded in
+# tests/rescue/fixtures/LICENSES.md. Add an exclusion here if that ever stops being true.
 exclude = ["/runs", "/dist", "/CLAUDE.md", "/agents", "/victim", "/reports", "/docs", "/.github"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# How a test gets its evidence. `live` is registered so a live test is *nameable*, but
+# tests/rescue/conftest.py skips every `live`-marked test unless the run selects `-m live`:
+# the default `pytest -q` must never reach a provider or spend money.
+markers = [
+    "sim: runs against the built-in deterministic simulator (no network, $0)",
+    "mocked_transport: drives a scripted in-process provider or HTTP handler (no network)",
+    "recorded_fixture: asserts against a committed capture/run record (no network)",
+    "live: calls a real provider with real credentials; never selected by default",
+]
 
 [tool.ruff]
 line-length = 100

@@ -5,7 +5,11 @@ Mechanical: the jinja template SOURCE is lifted out of toponymy/templates.py by 
 `topic_name_prompt` render_params dict; the data is toponymy's own committed test
 fixture subtopic_objects.json + conftest.py's cluster_tree.
 """
-import ast, json, pathlib, sys
+import ast
+import json
+import pathlib
+import sys
+
 import jinja2
 
 WS = pathlib.Path(sys.argv[1])          # .../workspace
@@ -49,21 +53,21 @@ SUMMARY_KINDS = [
     "simple (1 or 2 word)",
 ]
 DETAIL_LEVEL = 1.0                                   # top layer (layer 1) of a 2-layer fit
-summary_kind = SUMMARY_KINDS[int(round(DETAIL_LEVEL * (len(SUMMARY_KINDS) - 1)))]
+summary_kind = SUMMARY_KINDS[round(DETAIL_LEVEL * (len(SUMMARY_KINDS) - 1))]
 
 OBJECT_DESCRIPTION = "sentences"                     # test_toponymy.py:48
 CORPUS_DESCRIPTION = "collection of sentences"       # test_toponymy.py:49
 
-common = dict(
-    document_type=OBJECT_DESCRIPTION,
-    corpus_description=CORPUS_DESCRIPTION,
-    summary_kind=summary_kind,
-    is_very_specific_summary="very specific" in summary_kind,
-    is_general_summary="general" in summary_kind,
-    has_major_subtopics=True,
-    exemplar_start_delimiter='    * "',              # prompt_construction.py:317
-    exemplar_end_delimiter='"\n',                    # prompt_construction.py:318
-)
+common = {
+    "document_type": OBJECT_DESCRIPTION,
+    "corpus_description": CORPUS_DESCRIPTION,
+    "summary_kind": summary_kind,
+    "is_very_specific_summary": "very specific" in summary_kind,
+    "is_general_summary": "general" in summary_kind,
+    "has_major_subtopics": True,
+    "exemplar_start_delimiter": '    * "',              # prompt_construction.py:317
+    "exemplar_end_delimiter": '"\n',                    # prompt_construction.py:318
+}
 
 system_prompt = env_sys.render(
     cluster_keywords=[],
@@ -101,7 +105,7 @@ for topic in fixture:
              "regex": r'\{\s*"topic_name":\s*.*?,\s*"topic_specificity":\s*[\w.]+\s*\}'},
         ],
         "sim": {"oracle_plan": [
-            {"final_message": '{"topic_name":"%s","topic_specificity":0.8}' % topic["topic"]}
+            {"final_message": '{{"topic_name":"{}","topic_specificity":0.8}}'.format(topic["topic"])}
         ]},
     })
 

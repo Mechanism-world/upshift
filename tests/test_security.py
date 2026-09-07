@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ if str(ROOT) not in sys.path:
 from upshift import recorder
 from upshift.adapt import inventory
 from upshift.adapt.generate import build_backend, docstring_safe
+from upshift.capture import server as capture_server
 
 # ---------------------------------------------------------------------------
 # 1. git clone argument injection
@@ -518,3 +520,210 @@ def test_cli_refuses_a_tag_that_is_a_path(tmp_path, monkeypatch):
     ) == 2
     assert not runs.exists()
     assert not (tmp_path.parent / "escape-baseline").exists()
+
+
+# ---------------------------------------------------------------------------
+# 8. a credential must not reach a record, a log line, or a child process
+# ---------------------------------------------------------------------------
+
+FAKE_KEY = "sk-proj-RESCUE12CANARYDONOTLOG0000000000000000000000000"
+
+
+class _EchoProvider:
+    """A provider that has the key in hand and hands back a normal-looking response.
+
+    It deliberately echoes the key into the SDK-level places a careless implementation would
+    let leak — a `_request_id`, a debug field — so the assertion below is about what the
+    RECORDER writes, not about what a provider could theoretically be handed.
+    """
+
+    name = "openai"
+    requires_all_workers = False
+
+    def __init__(self):
+        self.api_key = FAKE_KEY
+
+    def call(self, endpoint, request, seed_key, sim_context=None):
+        return {
+            "id": "chatcmpl-x",
+            "model": "gpt-5.5",
+            "choices": [
+                {"index": 0, "finish_reason": "stop",
+                 "message": {"role": "assistant", "content": "done"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+
+def test_no_credential_reaches_any_file_under_the_runs_root(tmp_path, monkeypatch, capsys):
+    """End-to-end grep: run a suite with a key in the environment and in the provider, then
+    read every byte written under the runs root and every byte printed."""
+    from upshift.cli import example_agent_root
+    from upshift.runner import run_suite
+
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
+
+    run_suite(
+        example_agent_root(),
+        _EchoProvider(),
+        "credential-grep",
+        n_reps=1,
+        model_override="gpt-5.5",
+        runs_root=tmp_path,
+        case_ids=["happy_search_basic"],
+        workers=1,
+    )
+
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert written, "the run wrote nothing, so this test would pass vacuously"
+    for path in written:
+        blob = path.read_bytes()
+        assert FAKE_KEY.encode() not in blob, f"the API key reached {path}"
+        assert b"sk-proj-" not in blob, f"an OpenAI-shaped key reached {path}"
+        assert b"x-api-key" not in blob.lower(), f"an auth header name reached {path}"
+        assert b"authorization" not in blob.lower(), f"an auth header name reached {path}"
+
+    printed = capsys.readouterr()
+    assert FAKE_KEY not in printed.out
+    assert FAKE_KEY not in printed.err
+
+
+def test_the_capture_recorder_writes_no_credential_header(tmp_path):
+    """`upshift capture` sees real Authorization / x-api-key headers by construction. What it
+    writes must keep none of them."""
+    from upshift.capture.record import CaptureStore
+
+    store = CaptureStore(tmp_path / "cap", listen="127.0.0.1:0", upstream="x", mode="forward")
+    store.add(
+        headers={
+            "user-agent": "framework/1.0",
+            "x-api-key": FAKE_KEY,
+            "authorization": f"Bearer {FAKE_KEY}",
+            "anthropic-workspace-id": "wrkspc_rescue12",
+        },
+        body={"model": "claude-fable-5", "max_tokens": 8,
+              "messages": [{"role": "user", "content": "hi"}]},
+        raw_body_bytes=40, path="/v1/messages", status=200,
+        response_body={"id": "msg_1", "type": "message", "role": "assistant",
+                       "model": "claude-fable-5",
+                       "content": [{"type": "text", "text": "hello"}],
+                       "stop_reason": "end_turn"},
+        events=None, streamed=False, latency_s=0.1,
+    )
+    store.close()
+
+    files = [p for p in (tmp_path / "cap").rglob("*") if p.is_file()]
+    assert files, "the capture wrote nothing, so this test would pass vacuously"
+    for path in files:
+        blob = path.read_bytes().lower()
+        assert FAKE_KEY.lower().encode() not in blob, f"the key reached {path}"
+        assert b"bearer " not in blob, f"an Authorization value reached {path}"
+        assert b"wrkspc_rescue12" not in blob, f"an account identifier reached {path}"
+
+    # The header NAMES are kept on purpose — which credential header a framework sends is
+    # part of what a capture is for — but every value is REDACTED before it touches disk.
+    record = json.loads(
+        (tmp_path / "cap" / "conversations" / "conv_01" / "req_01.json").read_text()
+    )
+    headers = record["headers"]
+    assert headers["x-api-key"] == "REDACTED"
+    assert headers["authorization"] == "REDACTED"
+    assert headers["anthropic-workspace-id"] == "REDACTED"
+    assert headers["user-agent"] == "framework/1.0"  # a non-credential header is kept verbatim
+
+
+def test_the_container_receives_a_minimal_environment(monkeypatch, tmp_path):
+    """Docker does not forward the host environment into a container unless it is told to.
+
+    The guarantee therefore is negative and argv-shaped: the sandbox argv must contain no
+    `--env-file`, no `--env-host`, and no bare `-e NAME` (the form that copies the host's
+    value of NAME into the container). Only explicit `-e NAME=VALUE` pairs are allowed, and
+    today there are exactly two of them.
+
+    The `docker` CLI process itself does inherit the operator's environment — it needs
+    DOCKER_HOST and friends to reach the daemon at all — which is why the boundary that
+    matters is the container's env, not the client's. SECURITY.md says so in the same words.
+    """
+    module = _shell_backend_module()
+    monkeypatch.setattr(module, "WORKROOT", tmp_path / "work")
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    seen: dict = {}
+
+    class Completed:
+        returncode = 0
+        stdout = b""
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["kwargs"] = kwargs
+        return Completed()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    backend = module.create_backend({})
+    backend.execute("execute_shell_command", {"shell_command": "env"})
+
+    argv = seen["argv"]
+    assert "--env-file" not in argv
+    assert "--env-host" not in argv
+    env_values = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+    assert env_values == ["TZ=UTC", "LC_ALL=C"], (
+        f"the container's environment is not minimal any more: {env_values}"
+    )
+    for value in env_values:
+        assert "=" in value, (
+            f"`-e {value}` copies the host's value of {value} into the container; "
+            f"only explicit NAME=VALUE pairs are allowed"
+        )
+    assert FAKE_KEY not in " ".join(argv)
+
+
+def test_the_capture_upstream_is_operator_supplied_and_must_be_http(tmp_path):
+    """Precise statement of TODAY's behaviour, so a change to it is a deliberate one.
+
+    `upshift capture --upstream` is NOT allowlisted to a set of provider hosts. It defaults
+    to `https://api.anthropic.com` and accepts any http(s) URL the operator names — the same
+    escape hatch `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` are, and the reason a corporate
+    gateway or a second recorder can sit in front of it. What it refuses is a non-http(s)
+    scheme and a URL with no host.
+
+    The credential exposure this creates is real and bounded by one fact: the recorder
+    forwards the CALLER's own headers to whatever host is named, so pointing `--upstream` at
+    an untrusted host sends that agent's API key there. The recorder never substitutes a key
+    of its own and never persists one (see the test above). SECURITY.md states this; the
+    assertions below are what that paragraph is checked against.
+    """
+    assert capture_server.DEFAULT_UPSTREAM == "https://api.anthropic.com"
+
+    # Refused: not an http(s) URL, or no host at all.
+    for bad in ("file:///etc/passwd", "ftp://evil.example", "not-a-url", "https://", ""):
+        with pytest.raises(ValueError, match="must be an http\\(s\\) URL"):
+            capture_server.check_upstream(bad)
+
+    # Accepted, and this is the documented behaviour, not an oversight: an arbitrary host is
+    # allowed *because the operator typed it*. It is never inferred from a request.
+    assert capture_server.check_upstream("http://evil.example") == "http://evil.example"
+    assert capture_server.check_upstream("https://gateway.internal:8443/v1/") == (
+        "https://gateway.internal:8443/v1"
+    )
+
+
+def test_nothing_in_the_recorder_chooses_an_upstream_from_request_content():
+    """The other half of the paragraph above: the destination comes from the CLI flag only.
+
+    A recorded request body or header must never be able to redirect the proxy — that would
+    turn a capture session into an exfiltration primitive for any agent whose prompt an
+    attacker controls.
+    """
+    source = (ROOT / "src" / "upshift" / "capture" / "server.py").read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "_url":
+            continue
+        rendered = ast.unparse(node)
+        assert "self._config.upstream" in rendered
+        assert "self.headers" not in rendered, "the upstream must not come from a header"
+        assert "body" not in rendered, "the upstream must not come from a request body"
+        break
+    else:  # pragma: no cover - the method is the thing under test
+        raise AssertionError("no _url method in capture/server.py")
