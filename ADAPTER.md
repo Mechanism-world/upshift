@@ -31,8 +31,17 @@ my_agent/
    job: on `/v1/messages` they are moved into `extra_body` when the installed `anthropic` SDK
    no longer takes them as keywords (>= 1.1.0), which puts the same field on the wire and lets
    the API, not the client, decide. An `extra_body` you write yourself is honoured and wins,
-   and the sampling repair can remove params from either place. `tools.json` is chat-style on every endpoint —
-   upshift converts it for `responses` and `messages`.
+   and the sampling repair can remove params from either place. Declare a structured-output
+   contract as a plain `params.response_format` key in the chat/completions shape
+   (`{"type": "json_schema", "json_schema": {"name", "schema", "strict"}}`): upshift sends it
+   as-is on `chat_completions`, translates it to `text.format` on `/v1/responses` (flattening
+   the `json_schema` object, per OpenAI's migration guide) and DROPS it with a recorded reason
+   on `/v1/messages`, which has no such field. A `text` object you write yourself wins.
+   `tools.json` is chat-style on every endpoint — upshift converts it for `responses` and
+   `messages`. A tool parameter that may be null keeps a null branch: `{"nullable": true}` and
+   `{"type": ["string", "null"]}` are both canonicalised to
+   `{"anyOf": [{"type": "string"}, {"type": "null"}]}`, so a model that needs to say "nothing"
+   can.
 
    **`turn_params` (optional): params that change from turn to turn.** `params` is what every
    assistant turn sends. When your agent sends something different on different turns — the
@@ -327,8 +336,8 @@ hand:
   into every rep record that did so. Never silently, in either direction. An agent without
   `recorded_turns` (every hand-written one) is unaffected: there is no recording to run off.
 - **`unsupported_fields.json`** (a file, not a key) — every field the recording held that an
-  agent directory has no slot for: dropped request params (`response_format`, `metadata`,
-  `mcp_servers`), tool fields the chat-style shape cannot carry (a server tool's `type` and its
+  agent directory has no slot for: dropped request params (`metadata`, `mcp_servers`;
+  `response_format` is CARRIED and so is not listed), tool fields the chat-style shape cannot carry (a server tool's `type` and its
   own configuration), beta headers, response blocks with no representation, non-2xx responses
   in the capture, a non-provider upstream (a gateway's contract is not the provider's), and the
   API paths the recorder does not record at all (`count_tokens`, `batches`). Each finding has a

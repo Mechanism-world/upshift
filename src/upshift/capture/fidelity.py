@@ -3,10 +3,13 @@
 `capture/adapt.py` already reports the deviations it MAKES. This module reports the ones it
 cannot avoid: fields that were on the wire and have no slot in an upshift agent directory. The
 difference matters because a silent omission reads, downstream, as an absence: a run whose
-`response_format` was dropped measures an agent that never had one, and the report says nothing
+`response_format` was dropped measures an agent that never had one, and the report said nothing
 about it. That failure is not hypothetical — `upshift adapt` did exactly this, for money:
 "`response_format` is in `BLOCKED_PARAMS` … adapt silently deletes the entire subject of a
 structured-output failure" (rescue-ops `ops/cases/ghisdk-051/CASE.md:308`, $0.3060 spent).
+`response_format` is now CARRIED (adapt/generate.BLOCKED_PARAMS, agent_loop's translation
+table), so it is no longer a finding — the module that exists to name losses stops naming one
+the moment it stops being a loss.
 
 Each finding is a dict with a stable shape, written to `unsupported_fields.json` in the
 generated agent directory and rendered as a table in `ADAPT_EDITS.md`::
@@ -58,6 +61,7 @@ CARRIED_REQUEST_FIELDS = frozenset(
         "top_p",
         "top_k",
         "tool_choice",     # agent.json params or turn_params
+        "response_format", # agent.json params; translated per endpoint (ghisdk-051)
         "thinking",
         "output_config",
         "service_tier",
@@ -74,14 +78,6 @@ REPRESENTED_BLOCK_TYPES = frozenset({"text", "tool_use", "thinking", "redacted_t
 #: still becomes a finding, with a generic impact line — the catalogue improves the message,
 #: it is never what decides whether something is reported.
 _KNOWN_REQUEST_FIELDS: dict[str, tuple[str, str]] = {
-    "response_format": (
-        KIND_DROPPED_PARAM,
-        (
-            "structured-output format. upshift has no slot for it and the replayed request will not "
-            "ask for structured output at all — so a structured-output regression becomes invisible "
-            "(rescue-ops ops/cases/ghisdk-051/CASE.md:308)."
-        ),
-    ),
     "metadata": (
         KIND_DROPPED_PARAM,
         (

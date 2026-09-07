@@ -149,9 +149,12 @@ def _most_common(
 #: is the one that decides CONTROL FLOW: under a forced choice the model cannot answer in
 #: text, so a framework that forces turn 1 and then goes `auto` has a completely different
 #: episode from one that forces every turn.
+#: `response_format` is read off the wire for the same reason: a capture of a
+#: structured-output agent that does not carry its structured-output contract is a capture of
+#: a different agent (rescue-ops ghisdk-051).
 CAPTURED_PARAMS = (
     "max_tokens", "temperature", "top_p", "top_k", "tool_choice", "thinking",
-    "output_config", "service_tier",
+    "output_config", "service_tier", "response_format",
 )
 
 

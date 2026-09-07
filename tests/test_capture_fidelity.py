@@ -83,21 +83,24 @@ def test_the_kind_vocabulary_is_closed_and_every_finding_uses_it(tmp_path: Path)
         assert finding["detail"]
 
 
-def test_response_format_is_never_dropped_silently_again(tmp_path: Path) -> None:
-    """The ghisdk-051 regression, pinned."""
+def test_response_format_is_carried_rather_than_reported_as_a_loss(tmp_path: Path) -> None:
+    """The ghisdk-051 regression, pinned — at its new resting place.
+
+    This test used to assert that the dropped `response_format` at least got NAMED in
+    `unsupported_fields.json`, which was the best the adapter could do while the parameter was
+    in `BLOCKED_PARAMS`. It is carried now, so the honest assertion is the stronger one: the
+    contract reaches agent.json, and the module that exists to name losses names no loss.
+    """
     out = tmp_path / "agent"
     result = adapt_from_capture(
         _capture_with(tmp_path / "cap", body_extra={"response_format": {"type": "json_object"}}),
         out,
     )
-    fields = {f["field"]: f for f in result.unsupported_fields}
-    assert "response_format" in fields
-    assert fields["response_format"]["kind"] == "dropped_param"
-    assert "ghisdk-051" in fields["response_format"]["detail"]
-    assert fields["response_format"]["sample"] == '{"type": "json_object"}'
+    assert "response_format" not in {f["field"] for f in result.unsupported_fields}
+    params = json.loads((out / "agent.json").read_text())["params"]
+    assert params["response_format"] == {"type": "json_object"}
     written = json.loads((out / "unsupported_fields.json").read_text())
-    assert {f["field"] for f in written} == set(fields)
-    assert "`response_format`" in (out / "ADAPT_EDITS.md").read_text()
+    assert {f["field"] for f in written} == {f["field"] for f in result.unsupported_fields}
 
 
 def test_an_unknown_future_field_is_reported_without_anyone_adding_it_to_a_list(

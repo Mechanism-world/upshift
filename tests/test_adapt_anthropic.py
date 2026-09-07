@@ -269,7 +269,10 @@ def test_every_other_parameter_stays_scalar():
     data["params"]["value"] = {"output_config": {"effort": "low"}}
     errors = validate_extraction(data)
     assert any("params.value.output_config" in e for e in errors), errors
-    assert any("only tool_choice/thinking may be an object" in e for e in errors), errors
+    assert any(
+        "only tool_choice/thinking/response_format/reasoning may be an object" in e
+        for e in errors
+    ), errors
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ ROW_TEST_PREFIXES = {
     "output_cap": "test_output_cap",
     "tool_choice": "test_tool_choice",
     "sampling": "test_sampling",
+    "response_format": "test_response_format",
     "seed": "test_seed",
     "state_linking": "test_state_linking",
 }
@@ -435,6 +436,97 @@ def test_seed_negative_is_dropped_with_a_reason_on_messages():
 def test_seed_precedence_nothing_to_arbitrate_the_canonical_name_is_the_native_one():
     assert map_params(CHAT, {"seed": 42})["seed"] == 42
     assert build_request(CHAT, "gpt-5.6-sol", {"seed": 42}, [], [])["seed"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Row: response_format  (chat `response_format` <-> responses `text.format`)
+#
+# rescue-ops ghisdk-051 (getzep/graphiti): the incident WAS a structured-output 400
+# ("Invalid schema for response_format 'ExtractedEdges'"), and `upshift adapt` dropped the
+# parameter, producing an agent that requested no structured output at all. Carrying it means
+# translating it, and the two OpenAI endpoints do not spell it the same way.
+# ---------------------------------------------------------------------------
+
+#: The shape graphiti sent, reduced to two properties.
+GRAPHITI_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "ExtractedEdges",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "edges": {"type": "array", "items": {"type": "string"}},
+                "valid_at": {"type": "string"},
+            },
+            "required": ["edges"],
+        },
+    },
+}
+
+
+def test_response_format_positive_chat_completions_sends_it_verbatim():
+    result = translate_params(CHAT, {"response_format": GRAPHITI_RESPONSE_FORMAT})
+
+    assert result.request_fields["response_format"] == GRAPHITI_RESPONSE_FORMAT
+    assert "text" not in result.request_fields
+    assert result.dropped_params == []
+    assert "response_format" not in result.passthrough_params
+
+
+def test_response_format_positive_responses_maps_it_to_text_format_and_flattens():
+    """"Instead of `response_format`, use `text.format` in Responses" — OpenAI's migration
+    guide, https://developers.openai.com/api/docs/guides/migrate-to-responses. The json_schema
+    object also loses a level: chat nests {name, schema, strict}, Responses does not."""
+    result = translate_params(RESPONSES, {"response_format": GRAPHITI_RESPONSE_FORMAT})
+
+    assert "response_format" not in result.request_fields
+    assert result.request_fields["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "ExtractedEdges",
+            "schema": GRAPHITI_RESPONSE_FORMAT["json_schema"]["schema"],
+        }
+    }
+    assert any(n["param"] == "response_format" for n in result.notes)
+
+
+def test_response_format_positive_strict_and_the_simple_types_survive():
+    declared = json.loads(json.dumps(GRAPHITI_RESPONSE_FORMAT))
+    declared["json_schema"]["strict"] = True
+    assert (
+        translate_params(RESPONSES, {"response_format": declared})
+        .request_fields["text"]["format"]["strict"]
+        is True
+    )
+    for value in ({"type": "json_object"}, {"type": "text"}):
+        result = translate_params(RESPONSES, {"response_format": value})
+        assert result.request_fields["text"] == {"format": value}
+
+
+def test_response_format_negative_is_dropped_with_a_reason_on_messages():
+    """Anthropic's Messages API has no `response_format`. Forwarding it would fail identically
+    on both models of the pair, which distinguishes nothing."""
+    result = translate_params(MESSAGES, {"response_format": GRAPHITI_RESPONSE_FORMAT})
+
+    assert "response_format" not in result.request_fields
+    assert dropped(result, "response_format")["reason"]
+
+
+def test_response_format_negative_a_scalar_is_a_translation_error():
+    """Nothing is guessed at: a value the row cannot express raises while the request is being
+    built and is recorded as a harness failure, never sent half-translated."""
+    with pytest.raises(TranslationError):
+        translate_params(RESPONSES, {"response_format": "json"})
+
+
+def test_response_format_precedence_an_explicit_text_object_wins():
+    native = {"format": {"type": "json_schema", "name": "Native", "schema": {"type": "object"}}}
+    result = translate_params(
+        RESPONSES, {"response_format": GRAPHITI_RESPONSE_FORMAT, "text": native}
+    )
+
+    assert result.request_fields["text"] == native
+    assert any(n["param"] == "response_format" and "wins" in n["note"] for n in result.notes)
 
 
 # ---------------------------------------------------------------------------

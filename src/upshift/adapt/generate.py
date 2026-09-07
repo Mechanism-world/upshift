@@ -26,6 +26,7 @@ from typing import Any
 
 from upshift.adapt.extract import ALLOWED_CHECK_TYPES, DICT_PARAMS, ENDPOINT_VALUES
 from upshift.adapt.verify import Verification
+from upshift.jsonschema import canonicalise_nullable
 
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_MAX_TURNS = 12
@@ -34,9 +35,15 @@ DEFAULT_ENDPOINT = "chat_completions"
 #: Request parameters that would break the eval loop or the recorder if passed through.
 #: `system` joins `instructions`/`messages`/`input` here: on the Messages API the system
 #: prompt is a request field, and upshift owns it (it lives in system_prompt.txt).
+#:
+#: `response_format` is NOT here, and used to be. It is the agent's parameter, not upshift's:
+#: dropping it produced an agent that asked for no structured output, which is a different
+#: agent, and in rescue-ops `ghisdk-051` it deleted the entire subject of the incident under
+#: repair (a 400 reading `Invalid schema for response_format 'ExtractedEdges'`). It is carried
+#: as a param and translated per endpoint by `agent_loop.TRANSLATION_TABLE`.
 BLOCKED_PARAMS = frozenset(
     {"stream", "stream_options", "messages", "input", "model", "tools", "functions",
-     "function_call", "n", "response_format", "store", "instructions", "system"}
+     "function_call", "n", "store", "instructions", "system"}
 )
 
 #: Tool names that look like retrieval. The generated `tool_called` check for such a tool
@@ -230,7 +237,11 @@ def build_tools(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[s
                 "function": {
                     "name": name,
                     "description": str(tool.get("description") or ""),
-                    "parameters": parameters,
+                    # A parameter that may be null keeps a null branch, whichever of the three
+                    # spellings the extraction reported it in. Dropping it costs the model the
+                    # only way it had to say "nothing" and it invents an empty string instead
+                    # (rescue-ops ghisdk-052; upshift.jsonschema).
+                    "parameters": canonicalise_nullable(parameters),
                 },
             }
         )

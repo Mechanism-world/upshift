@@ -273,6 +273,29 @@ TRANSLATION_TABLE: tuple[ParamRow, ...] = (
         ),
     ),
     ParamRow(
+        name="response_format",
+        params=("response_format",),
+        fields={
+            CHAT: "response_format",
+            # "Instead of `response_format`, use `text.format` in Responses" — OpenAI,
+            # https://developers.openai.com/api/docs/guides/migrate-to-responses. The
+            # json_schema object also flattens one level there: chat nests {name, schema,
+            # strict} under `json_schema`, Responses puts them beside `type`.
+            RESPONSES: "text.format",
+            MESSAGES: None,
+        },
+        placement={CHAT: PLACE_TOP, RESPONSES: PLACE_NESTED, MESSAGES: PLACE_DROPPED},
+        precedence=(
+            "an explicit `text` object in the agent's params is the endpoint's own spelling "
+            "and the more specific statement, so it keeps its own format"
+        ),
+        reason=(
+            "Anthropic's Messages API has no `response_format`: there is no field to carry a "
+            "structured-output contract to, and forwarding one would be an SDK error on both "
+            "models of the pair, which distinguishes nothing"
+        ),
+    ),
+    ParamRow(
         name="seed",
         params=("seed",),
         fields={CHAT: "seed", RESPONSES: "seed", MESSAGES: None},
@@ -368,7 +391,7 @@ def translate_params(endpoint: str, params: dict[str, Any]) -> Translation:
         if target is None:
             result.dropped_params.append({"name": key, "reason": row.reason})
             continue
-        if row.name in ("reasoning", "output_cap", "sampling"):
+        if row.name in ("reasoning", "output_cap", "sampling", "response_format"):
             # Order-sensitive: these arbitrate against a native spelling or an extra_body that
             # may appear later in the dict, so they land once the loop has finished.
             _defer(deferred, row, key, value, endpoint)
@@ -381,6 +404,7 @@ def translate_params(endpoint: str, params: dict[str, Any]) -> Translation:
             raise TranslationError(key, value, endpoint, f"row {row.name!r} has no handler")
 
     _land_reasoning(endpoint, deferred, result)
+    _land_response_format(endpoint, deferred, result)
     _land_output_cap(endpoint, deferred, result)
     _land_sampling(endpoint, deferred, result)
     _inspect_extra_body(endpoint, out, result)
@@ -393,6 +417,8 @@ def _defer(
     if row.name == "reasoning":
         _check_allowed(row, key, value, endpoint)
         deferred["reasoning"] = value
+    elif row.name == "response_format":
+        deferred["response_format"] = copy.deepcopy(value)
     elif row.name == "output_cap":
         # `max_output_tokens` on /v1/responses and `max_tokens` on messages are the endpoint's
         # own spelling: an explicit one wins over anything translated. Among foreign
@@ -442,6 +468,68 @@ def _land_reasoning(endpoint: str, deferred: dict[str, Any], result: Translation
             }
         )
     config.setdefault(leaf, effort)
+    out[parent] = config
+
+
+def _responses_text_format(value: dict[str, Any]) -> dict[str, Any]:
+    """One chat/completions `response_format` as the `text.format` object Responses takes.
+
+    `{"type": "json_schema", "json_schema": {"name", "schema", "strict"}}` flattens to
+    `{"type": "json_schema", "name", "schema", "strict"}`; `{"type": "json_object"}` and
+    `{"type": "text"}` have no nested object and pass through as they are. Keys upshift does
+    not recognise inside `json_schema` are carried too — the API answers for them, which is
+    more honest than a whitelist that silently loses one.
+    """
+    nested = value.get("json_schema")
+    if value.get("type") != "json_schema" or not isinstance(nested, dict):
+        return copy.deepcopy(value)
+    flattened = {"type": "json_schema"}
+    flattened.update(copy.deepcopy(nested))
+    return flattened
+
+
+def _land_response_format(endpoint: str, deferred: dict[str, Any], result: Translation) -> None:
+    """The agent's structured-output contract, spelled the way the endpoint takes it.
+
+    chat/completions already spells it `response_format`. On `/v1/responses` it is
+    `text.format` with the json_schema object flattened one level (OpenAI's migration guide:
+    "Instead of `response_format`, use `text.format` in Responses"). An explicit `text` object
+    the agent wrote by hand wins, the same rule `output_config.effort` and `extra_body` follow.
+    """
+    if "response_format" not in deferred:
+        return
+    value = deferred["response_format"]
+    if not isinstance(value, dict):
+        raise TranslationError(
+            "response_format",
+            value,
+            endpoint,
+            "a structured-output contract is an object "
+            '({"type": "json_object"} or {"type": "json_schema", ...}); upshift will not '
+            "guess at what a scalar was meant to say",
+        )
+    out = result.request_fields
+    target = _ROW_FOR_PARAM["response_format"].fields[endpoint]
+    if target == "response_format":
+        out["response_format"] = copy.deepcopy(value)
+        return
+    parent, leaf = str(target).split(".", 1)
+    config = dict(out.get(parent) or {})
+    if leaf in config:
+        result.notes.append(
+            {
+                "param": "response_format",
+                "note": f"not applied: the agent sets {target} explicitly, which wins",
+            }
+        )
+    else:
+        config[leaf] = _responses_text_format(value)
+        result.notes.append(
+            {
+                "param": "response_format",
+                "note": f"translated to {target!r} for the {endpoint} endpoint",
+            }
+        )
     out[parent] = config
 
 
