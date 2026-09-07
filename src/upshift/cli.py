@@ -23,7 +23,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 
-from upshift import recorder
+from upshift import recorder, verify_patch
 from upshift.budget import (
     CostCeiling,
     CostCeilingExceeded,
@@ -42,7 +42,13 @@ from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
 from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case, validate_turn_params
-from upshift.verdict import BASELINE_BROKEN, SAFE_WITH_PATCH, decide
+from upshift.verdict import (
+    BASELINE_BROKEN,
+    EXIT_INCONCLUSIVE,
+    INCONCLUSIVE,
+    SAFE_WITH_PATCH,
+    decide,
+)
 
 console = Console()
 
@@ -1043,6 +1049,7 @@ def cmd_upgrade(args) -> int:
                 ceiling.check("4/4 repair loop")
             work_dir = out_dir / "patched_agent"
             repair_outcome = repair(
+                final_verify=not args.no_final_verify,
                 original_agent_dir=agent_dir,
                 work_dir=work_dir,
                 provider=provider,
@@ -1080,7 +1087,9 @@ def cmd_upgrade(args) -> int:
             patch_file.write_text(patch_text)
             patch_path = str(patch_file)
 
-    verdict = decide(diff, repair_outcome, patch_path, framework=framework)
+    verdict = decide(
+        diff, repair_outcome, patch_path, framework=framework, runs_root=runs_root
+    )
     console.print()
     render_diff(diff, console=console, verdict=verdict)
 
@@ -1104,6 +1113,8 @@ def cmd_upgrade(args) -> int:
     )
     if verdict["verdict"] == SAFE_WITH_PATCH:
         console.print(f"apply the repair with: [bold]git apply {escape(str(patch_path))}[/bold]")
+    if verdict["verdict"] == INCONCLUSIVE:
+        return EXIT_INCONCLUSIVE
     return 0 if verdict["verdict"] in ("SAFE", SAFE_WITH_PATCH) else 1
 
 
@@ -1368,6 +1379,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-repair", action="store_true",
         help="stop after the behavioral diff; do not try to repair the regressions",
     )
+    p_up.add_argument(
+        "--no-final-verify", action="store_true",
+        help="skip the fresh final full-suite run after the last accepted repair; the verdict "
+        "is then labelled selection_evidence_only (DESIGN.md v0.5 §D)",
+    )
     p_up.set_defaults(func=cmd_upgrade)
 
     p_cost = sub.add_parser("cost", help="exact token cost of recorded runs")
@@ -1385,6 +1401,8 @@ def main(argv: list[str] | None = None) -> int:
         help="path to a saved diff: runs/<tag>/diff.json or runs/diffs/<a>__<b>.json",
     )
     p_rep.set_defaults(func=cmd_report)
+
+    verify_patch.add_parser(sub)
 
     args = parser.parse_args(argv)
     if args.command is None:
