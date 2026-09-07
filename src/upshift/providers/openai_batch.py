@@ -122,6 +122,8 @@ class OpenAIBatchProvider(Provider):
                     slot.event.set()
             # Deliberate blanket catch: if the coordinator thread died, every parked
             # episode would block forever. Any failure becomes a per-rep recorded error.
+            # It cannot mask a translation failure: params are translated while the episode
+            # thread BUILDS its request, long before the request is parked for a wave.
             except Exception as e:  # noqa: BLE001
                 err = ProviderAPIError(f"batch wave failed: {e}", error_type="batch_error")
                 for slot in wave_slots.values():
@@ -203,9 +205,12 @@ class OpenAIBatchProvider(Provider):
         status = response.get("status_code")
         body = response.get("body") or {}
         if item.get("error"):
+            # A per-request error the Batch API reports without an HTTP status. `api_error`,
+            # not `api_status_error`: the latter promises a status_code, and upshift never
+            # manufactures one (providers/base.py).
             err = item["error"]
             return None, ProviderAPIError(
-                str(err.get("message", err)), error_type="api_status_error"
+                str(err.get("message", err)), status_code=None, error_type="api_error"
             )
         if status == 200:
             return body, None

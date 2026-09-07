@@ -17,7 +17,12 @@ import re
 from functools import cache
 from typing import Any
 
-from upshift.providers.base import Provider, ProviderAPIError
+from upshift.providers.base import (
+    ERROR_API_STATUS,
+    ERROR_SDK_VALIDATION,
+    Provider,
+    ProviderAPIError,
+)
 
 MESSAGES = "messages"
 
@@ -25,15 +30,16 @@ MESSAGES = "messages"
 SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
 
 #: An SDK that refuses a request parameter raises a TypeError before anything is sent, so the
-#: API never gets to answer. Recorded as the 400 the API returns for the same request, so the
-#: differ's sampling-params signature — which keys on a 400 whose message names
-#: temperature/top_p/top_k — still fires and its repair (drop the param) stays reachable.
-#: For the sampling params themselves this is now a fallback: the loop routes them through
-#: `extra_body` on an SDK that dropped them (see `messages_create_accepts`), so the request
-#: reaches the wire and the API's own answer is what the run records. This mapping remains for
-#: any OTHER parameter a future SDK removes. See DESIGN.md "Params mapping".
+#: API never gets to answer. Until v0.5 that was recorded as the 400 the API returns for the
+#: same request, to keep the sampling-params repair reachable; it is now recorded for what it
+#: is — `sdk_validation`, `status_code: None` — because a manufactured status tells a reader
+#: the provider rejected the agent when in fact nothing was sent, and the differ would score a
+#: harness failure as a model regression. The evidence value was in any case zero: an
+#: in-process TypeError happens identically on BOTH models of an upgrade pair, so it can never
+#: distinguish them. The real path is unaffected: `map_params` routes the sampling params
+#: through `extra_body` on an SDK that dropped them (see `messages_create_accepts`), the
+#: request reaches the wire, and the API's own 400 is what the run records and repairs.
 _RE_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument", re.IGNORECASE)
-SDK_REJECTED_PARAM_STATUS = 400
 TIMEOUT_S = 600.0  # thinking + long tool turns; the SDK also retries
 MAX_RETRIES = 5
 
@@ -57,7 +63,10 @@ def messages_create_accepts(name: str) -> bool:
         from anthropic.resources.messages import Messages
 
         parameters = inspect.signature(Messages.create).parameters
-    except Exception:  # noqa: BLE001 - an unreadable SDK must not break request building
+    except (ImportError, AttributeError, TypeError, ValueError):
+        # An SDK laid out differently than expected must not break request building; anything
+        # NOT in this list is a real bug and is left to surface. (Narrowed in v0.5: a blanket
+        # catch here could swallow a translation failure and answer "yes, accepted".)
         return True
     if name in parameters:
         return True
@@ -122,7 +131,7 @@ class AnthropicProvider(Provider):
             raise ProviderAPIError(
                 message=_status_message(exc),
                 status_code=getattr(exc, "status_code", None),
-                error_type="api_status_error",
+                error_type=ERROR_API_STATUS,
             ) from exc
         except anthropic.APIError as exc:
             raise ProviderAPIError(
@@ -145,8 +154,8 @@ class AnthropicProvider(Provider):
                     f"the installed anthropic SDK rejected a request parameter before it "
                     f"reached the wire: {message}"
                 ),
-                status_code=SDK_REJECTED_PARAM_STATUS,
-                error_type="api_status_error",
+                status_code=None,
+                error_type=ERROR_SDK_VALIDATION,
             ) from exc
         return result.model_dump(mode="json")
 
@@ -167,7 +176,7 @@ class AnthropicProvider(Provider):
                 raise ProviderAPIError(
                     message=_status_message(exc),
                     status_code=getattr(exc, "status_code", None),
-                    error_type="api_status_error",
+                    error_type=ERROR_API_STATUS,
                 ) from exc
             except anthropic.APIError as exc:
                 raise ProviderAPIError(

@@ -10,9 +10,22 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+#: The provider answered with an HTTP status. `status_code` is that status and `message` is
+#: the API's own wording, verbatim — this is evidence about the MODEL.
+ERROR_API_STATUS = "api_status_error"
+#: The installed SDK refused the request in process, before any bytes went out: an unexpected
+#: keyword, a value its own models reject. `status_code` is None — inventing one would dress a
+#: local failure up as a provider verdict — and the differ classifies it as `harness_error`,
+#: never as a model regression, because the API never spoke and both models of an upgrade pair
+#: fail it identically.
+ERROR_SDK_VALIDATION = "sdk_validation"
+
 
 class ProviderAPIError(Exception):
-    """An API-level failure (4xx/5xx). Carries enough to be recorded and matched on."""
+    """A call that produced no response. Either the provider answered with an HTTP status
+    (`error_type=ERROR_API_STATUS`, `status_code` set, `message` verbatim) or the failure was
+    local — SDK validation, a missing key, a socket — in which case `status_code` is None.
+    upshift never manufactures an HTTP status for a request that was never sent."""
 
     def __init__(self, message: str, status_code: int | None = None, error_type: str = "api_error"):
         super().__init__(message)

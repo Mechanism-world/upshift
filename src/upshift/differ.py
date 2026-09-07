@@ -22,6 +22,7 @@ from typing import Any
 
 from upshift import stats
 from upshift.checks import DEFAULT_CONFIRMATION_PATTERN, assistant_turns, count_state_entries
+from upshift.providers.base import ERROR_SDK_VALIDATION
 from upshift.schemas import LABEL_STABLE_PASS, OUTCOME_PASS, RepRecord, label, outcome
 
 # ---------------------------------------------------------------------------
@@ -32,7 +33,12 @@ SIG_API_ERROR_TOOLS_REASONING = "api_error_tools_reasoning"
 SIG_API_ERROR_FORCED_TOOL_CHOICE = "api_error_forced_tool_choice"
 SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS = "api_error_unsupported_sampling_params"
 SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP = "api_error_unsupported_token_cap"
+SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE = "api_error_unsupported_effort_value"
 SIG_API_ERROR_OTHER = "api_error_other"
+#: Not a model signature at all: the request never reached the provider (a local SDK
+#: validation error, or a param upshift refused to translate). Kept in the taxonomy so it
+#: is visible rather than filed under a model break it is not.
+SIG_HARNESS_ERROR = "harness_error"
 SIG_THINKING_BLOCK_INVALID = "thinking_block_invalid"
 SIG_DUPLICATE_TOOL_CALLS = "duplicate_tool_calls"
 SIG_ACTING_PAST_GOAL = "acting_past_goal"
@@ -46,9 +52,13 @@ SIG_OTHER_BEHAVIORAL = "other_behavioral"
 #: first (most specific 400 first, generic bucket last), then the API break the repair loop
 #: refuses to patch, then behavioral signatures.
 SIGNATURE_PRIORITY = (
+    # First, because it invalidates everything after it: if the request never went out,
+    # nothing in this run is evidence about the model.
+    SIG_HARNESS_ERROR,
     SIG_API_ERROR_FORCED_TOOL_CHOICE,
     SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS,
     SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP,
+    SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE,
     SIG_API_ERROR_TOOLS_REASONING,
     SIG_THINKING_BLOCK_INVALID,
     SIG_API_ERROR_OTHER,
@@ -60,6 +70,24 @@ SIGNATURE_PRIORITY = (
     SIG_WRONG_OR_MISSING_TOOL_CALL,
     SIG_OTHER_BEHAVIORAL,
 )
+
+#: Signatures the repair loop deliberately does NOT generate candidates for, and why. The
+#: loop keeps its own priority list; this is the contract for what may legitimately be absent
+#: from it, so a signature dropped by accident is still caught by a test.
+SIGNATURES_WITHOUT_REPAIRS = {
+    SIG_THINKING_BLOCK_INVALID: (
+        "no in-scope repair exists; the loop refuses and points at the harness change needed."
+    ),
+    SIG_HARNESS_ERROR: (
+        "the request never reached the provider, so there is nothing about the model to "
+        "repair; fix the config or the SDK pin."
+    ),
+    SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE: (
+        "no candidate yet: mapping a rejected effort value onto the model's own ladder needs "
+        "the ladder from the 400's `Supported values are:` list, which the playbook (which "
+        "sees signatures, not messages) cannot read. Detection-only until then."
+    ),
+}
 
 #: One-line explanation per signature, for the report's taxonomy legend.
 SIGNATURE_DESCRIPTIONS = {
@@ -73,6 +101,10 @@ SIGNATURE_DESCRIPTIONS = {
         "400: the model rejects the output-token cap parameter this endpoint used to accept "
         "(e.g. max_tokens -> max_completion_tokens)."
     ),
+    SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE: (
+        "400: the reasoning-effort VALUE the agent declares is not on this model's ladder "
+        "(e.g. 'minimal' on the gpt-5.6 family, which lists none/low/medium/high/xhigh/max)."
+    ),
     SIG_API_ERROR_TOOLS_REASONING: (
         "400: function tools plus reasoning_effort are not supported on this endpoint."
     ),
@@ -81,6 +113,11 @@ SIGNATURE_DESCRIPTIONS = {
         "exists; the loop refuses (see DESIGN.md)."
     ),
     SIG_API_ERROR_OTHER: "An API error the taxonomy does not recognize.",
+    SIG_HARNESS_ERROR: (
+        "The request never reached the provider: the installed SDK rejected it in process, "
+        "or upshift refused to translate a parameter to this endpoint. A harness/config "
+        "failure, not a model regression — no repair is generated for it."
+    ),
     SIG_DUPLICATE_TOOL_CALLS: (
         "The same tool call ran twice, or the backend holds more entries than expected."
     ),
@@ -99,6 +136,12 @@ SIGNATURE_DESCRIPTIONS = {
     SIG_OTHER_BEHAVIORAL: "A behavioral failure the taxonomy does not classify further.",
 }
 
+#: Error types that mean the request never left the machine (providers/base.py:
+#: ERROR_SDK_VALIDATION) or was never built (agent_loop.TranslationError). Both are
+#: harness failures and hit BOTH models of an upgrade pair identically, so neither can
+#: distinguish them; see SIG_HARNESS_ERROR.
+HARNESS_ERROR_TYPES = frozenset({ERROR_SDK_VALIDATION, "translation_error"})
+
 _RE_FUNCTION_TOOLS = re.compile(r"function tools", re.IGNORECASE)
 _RE_REASONING_EFFORT = re.compile(r"reasoning[_ ]effort", re.IGNORECASE)
 _RE_CONFIRMATION_ID = re.compile(DEFAULT_CONFIRMATION_PATTERN)
@@ -114,6 +157,18 @@ _RE_SAMPLING_PARAMS = re.compile(r"\b(temperature|top_p|top_k)\b", re.IGNORECASE
 #: 'max_completion_tokens' instead."
 _RE_TOKEN_CAP_PARAM = re.compile(
     r"'(max_tokens|max_completion_tokens|max_output_tokens)'\s+is not supported",
+    re.IGNORECASE,
+)
+
+#: The gpt-5.6-era rejection of an effort VALUE the model does not have a rung for, matched
+#: on the API's own wording: "Unsupported value: 'minimal' is not supported with the
+#: 'gpt-5.6-luna' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and
+#: 'max'." (rescue-ops ops/cases evidence). Distinct from the sampling 400, which reads
+#: "'temperature' does not support 0.0 with this model" — a value the param rejects, not a
+#: param the model lacks. Matched BEFORE the sampling regex so a supported-values list that
+#: happens to contain a sampling word cannot steal it.
+_RE_UNSUPPORTED_EFFORT_VALUE = re.compile(
+    r"unsupported value:\s*'[^']+'\s+is not supported with the\s+'[^']+'\s+model",
     re.IGNORECASE,
 )
 
@@ -204,6 +259,11 @@ def _api_error_signature(err: dict[str, Any]) -> str:
     thinking-block 400 is not also reported as ``api_error_other``.
     """
     message = str(err.get("message", ""))
+    if err.get("type") in HARNESS_ERROR_TYPES:
+        # No status_code and no provider answer: the call died locally. Classifying it as a
+        # model signature would credit a config/SDK fault to the candidate model and send the
+        # repair loop after a break the model never produced.
+        return SIG_HARNESS_ERROR
     if err.get("status_code") == 400:
         if FORCED_TOOL_CHOICE_400 in message:
             return SIG_API_ERROR_FORCED_TOOL_CHOICE
@@ -213,6 +273,8 @@ def _api_error_signature(err: dict[str, Any]) -> str:
             return SIG_API_ERROR_TOOLS_REASONING
         if _RE_TOKEN_CAP_PARAM.search(message):
             return SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP
+        if _RE_UNSUPPORTED_EFFORT_VALUE.search(message):
+            return SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE
         if _RE_SAMPLING_PARAMS.search(message):
             return SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS
     return SIG_API_ERROR_OTHER

@@ -114,6 +114,99 @@ TOKEN_CAP_FOR_ENDPOINT = {
 }
 
 
+
+# ---------------------------------------------------------------------------
+# Disclosures and ordering (DESIGN.md §G)
+#
+# Some repairs restore the eval by changing what the agent is GUARANTEED to do, not just how
+# its request is spelled. Removing a forced `tool_choice` swaps a hard guarantee ("this turn
+# is a tool call") for an instruction the model may ignore; `reasoning_effort='none'` clears
+# the chat/completions 400 by turning reasoning OFF. Both can score a green suite while
+# shipping a different agent. upshift may still propose them — they are the documented fixes —
+# but never silently and never first: the disclosure travels with the patch id so the report
+# and the verdict can print it, and the ordering below puts spelling fixes ahead of them.
+#
+# The registry is keyed by patch id and lives here rather than on `schemas.Patch` so the
+# report and verdict can read it without a schema change; `disclosures_for(patch_id)` is the
+# whole API.
+# ---------------------------------------------------------------------------
+
+#: Ranks used to order candidates. Lower is tried first.
+RANK_TRANSPORT = 0  # a spelling/route fix: the same agent, addressed correctly
+RANK_BEHAVIOURAL = 1  # a prompt, tool-schema or effort change: same guarantees, new wording
+RANK_CAPABILITY = 2  # removes or disables something the agent was guaranteed before
+
+#: patch id -> the rank it is tried at. Ids missing here are RANK_BEHAVIOURAL.
+PATCH_RANKS: dict[str, int] = {
+    "route-to-responses": RANK_TRANSPORT,
+    "rename-token-cap-param": RANK_TRANSPORT,
+    "remove-forced-tool-choice": RANK_CAPABILITY,
+    "drop-sampling-params": RANK_CAPABILITY,
+    "drop-token-cap-param": RANK_CAPABILITY,
+    "reasoning-effort-none": RANK_CAPABILITY,
+}
+
+#: patch id -> sentences that MUST appear next to it wherever it is reported. Written for a
+#: maintainer deciding whether to ship the patch, not for a changelog.
+PATCH_DISCLOSURES: dict[str, tuple[str, ...]] = {
+    "remove-forced-tool-choice": (
+        (
+            "changes_capability: the forced tool choice is gone. Before the patch the API "
+            "guaranteed this turn was a tool call; after it, a prompt sentence asks for one "
+            "and the model may still answer in text. Any downstream code that assumes a tool "
+            "call must be re-checked."
+        ),
+    ),
+    "drop-sampling-params": (
+        (
+            "changes_capability: temperature / top_p / top_k are no longer sent, so the model "
+            "samples at its own defaults. Output variability and any behaviour tuned by those "
+            "values changes."
+        ),
+    ),
+    "drop-token-cap-param": (
+        (
+            "changes_capability: the output-token cap is gone, so the model applies its own "
+            "default. Responses may be longer than the agent ever allowed."
+        ),
+        "changes_cost: an uncapped response can bill more output tokens per call.",
+    ),
+    "reasoning-effort-none": (
+        (
+            "changes_capability: disables reasoning. This clears the 400 by asking the model "
+            "not to think, which is NOT equivalent to routing the same agent to "
+            "/v1/responses — expect different answers on anything the reasoning was doing."
+        ),
+    ),
+    "raise-effort-one-rung": (
+        (
+            "changes_cost: a higher reasoning effort bills more output (reasoning) tokens per "
+            "call and takes longer."
+        ),
+    ),
+    "reasoning-effort-high": (
+        (
+            "changes_cost: a higher reasoning effort bills more output (reasoning) tokens per "
+            "call and takes longer."
+        ),
+    ),
+}
+
+
+def disclosures_for(patch_id: str) -> list[str]:
+    """Everything a reader must be told about `patch_id` before shipping it.
+
+    Empty for a patch that changes only how the request is spelled — the common case, and the
+    only case where "the eval went green" means the same agent still works.
+    """
+    return list(PATCH_DISCLOSURES.get(patch_id, ()))
+
+
+def rank_for(patch_id: str) -> int:
+    """Where `patch_id` sits in the try-order: transport fixes first, capability changes last."""
+    return PATCH_RANKS.get(patch_id, RANK_BEHAVIOURAL)
+
+
 def _read(agent_dir: Path, rel: str) -> str:
     return (agent_dir / rel).read_text()
 
@@ -633,4 +726,10 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
         if patch.id not in seen and content_key not in seen:
             seen.update((patch.id, content_key))
             unique.append(patch)
+    # Transport/spelling fixes first, capability-changing repairs last. The sort is STABLE, so
+    # within a rank the signature-driven order above is untouched — including DESIGN item 4's
+    # "effort first, then the documented nudge". Ordering matters because the loop accepts the
+    # first candidate that restores the broken cases: without it, a patch that disables
+    # reasoning could win over routing the same agent to an endpoint that supports it.
+    unique.sort(key=lambda patch: rank_for(patch.id))
     return unique

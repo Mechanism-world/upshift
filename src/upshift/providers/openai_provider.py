@@ -19,7 +19,12 @@ import json
 import os
 from typing import Any
 
-from upshift.providers.base import Provider, ProviderAPIError
+from upshift.providers.base import (
+    ERROR_API_STATUS,
+    ERROR_SDK_VALIDATION,
+    Provider,
+    ProviderAPIError,
+)
 
 TIMEOUT_S = 120.0
 FLEX_TIMEOUT_S = 900.0  # flex is slower; the guide recommends a 15-minute timeout
@@ -73,18 +78,20 @@ class OpenAIProvider(Provider):
         if self.service_tier:
             request.setdefault("service_tier", self.service_tier)
         request.setdefault("prompt_cache_key", _cache_key(endpoint, request))
+        # Checked BEFORE the try, so upshift's own programming error is never dressed up as
+        # something the SDK or the provider said.
+        if endpoint not in ("chat_completions", "responses"):
+            raise ValueError(f"unknown endpoint {endpoint!r}")
         try:
             if endpoint == "chat_completions":
                 result = client.chat.completions.create(**request)
-            elif endpoint == "responses":
-                result = client.responses.create(**request)
             else:
-                raise ValueError(f"unknown endpoint {endpoint!r}")
+                result = client.responses.create(**request)
         except openai.APIStatusError as exc:
             raise ProviderAPIError(
                 message=_status_message(exc),
                 status_code=getattr(exc, "status_code", None),
-                error_type="api_status_error",
+                error_type=ERROR_API_STATUS,
             ) from exc
         except openai.APIError as exc:
             raise ProviderAPIError(
@@ -98,7 +105,34 @@ class OpenAIProvider(Provider):
                 status_code=None,
                 error_type="network_error",
             ) from exc
+        except (TypeError, ValueError) as exc:
+            # The SDK refused the request in process: `Responses.create() got an unexpected
+            # keyword argument 'max_completion_tokens'` is the canonical one (the translation
+            # matrix exists to prevent it, and this is the net under it). Nothing was sent, so
+            # there is no status to report and no model behaviour to attribute it to — the
+            # differ reads `sdk_validation` as a harness failure.
+            if _is_response_validation_error(exc):
+                raise  # a RESPONSE the SDK could not parse; not a rejected request
+            raise ProviderAPIError(
+                message=(
+                    f"the installed openai SDK rejected the {endpoint} request before it "
+                    f"reached the wire: {exc.__class__.__name__}: {exc}"
+                ),
+                status_code=None,
+                error_type=ERROR_SDK_VALIDATION,
+            ) from exc
         return result.model_dump(mode="json")
+
+
+def _is_response_validation_error(exc: BaseException) -> bool:
+    """A pydantic ValidationError is a ValueError, but it means the SDK could not parse the
+    RESPONSE — the opposite of a rejected request. It must not be relabelled `sdk_validation`.
+    """
+    try:
+        from pydantic import ValidationError
+    except ImportError:  # pragma: no cover - pydantic ships with both SDKs
+        return False
+    return isinstance(exc, ValidationError)
 
 
 def _cache_key(endpoint: str, request: dict[str, Any]) -> str:
