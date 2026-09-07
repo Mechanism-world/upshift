@@ -34,6 +34,18 @@ from upshift import recorder
 
 # model prefix -> (input, output) at standard sync rates
 RATES: dict[str, tuple[float, float]] = {
+    # gpt-5.4 family: https://developers.openai.com/api/docs/pricing, fetched 2026-09-05.
+    # Standard tier, USD per 1M tokens. Every sibling gets its own entry because the table
+    # is prefix-matched: without them, `gpt-5.4-pro` (12x the base rate) and `gpt-5.4-mini`
+    # would both price as `gpt-5.4` and the spend ledger would be wrong in both directions.
+    # Published cached-input rates are exactly 10% of each model's input rate
+    # (0.25 / 0.075 / 0.02), which is CACHED_INPUT_FRACTION; gpt-5.4-pro publishes no
+    # cached-input row at all, so its cache-read figure is the default fraction rather
+    # than a published number.
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4-pro": (30.00, 180.00),
     "gpt-5.5": (5.00, 30.00),
     # gpt-5.6 family: https://developers.openai.com/api/docs/pricing, fetched 2026-09-03.
     # Standard tier, USD per 1M tokens. The published flex and batch rows are exactly half

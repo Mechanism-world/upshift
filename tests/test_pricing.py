@@ -226,3 +226,46 @@ def test_pre_gpt5_cached_input_is_not_the_ten_percent_default():
     assert abs(price("openai", "gpt-4.1-nano", 1_000_000, 0, 1_000_000) - 0.025) < 1e-9
     # a gpt-5-era model is untouched by the override table
     assert cached_input_fraction("gpt-5.5") == 0.1
+
+
+# The gpt-5.4 family is what a target that predates the temperature deprecation runs as its
+# baseline (the 2026-09-05 atlas-ui-3 rescue case), so every sibling must price or the
+# baseline leg of an upgrade run reports "unknown rate" and `--max-cost-usd` cannot enforce
+# a ceiling on it at all.
+GPT_54_PUBLISHED = {
+    # developers.openai.com/api/docs/pricing, fetched 2026-09-05; USD per 1M tokens.
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4-pro": (30.00, 180.00),
+}
+
+
+@pytest.mark.parametrize("model", sorted(GPT_54_PUBLISHED))
+def test_gpt_54_published_rates(model):
+    published = GPT_54_PUBLISHED[model]
+    assert abs(price("openai", model, 1_000_000, 0, 0) - published[0]) < 1e-9
+    assert abs(price("openai", model, 0, 1_000_000, 0) - published[1]) < 1e-9
+
+
+def test_gpt_54_siblings_do_not_collapse_onto_the_base_entry():
+    """Prefix matching must pick the longest match: a -pro run is 12x a plain gpt-5.4 run,
+    so pricing it as gpt-5.4 would understate the spend by an order of magnitude."""
+    assert price("openai", "gpt-5.4-pro", 1_000_000, 0, 0) > price(
+        "openai", "gpt-5.4", 1_000_000, 0, 0
+    )
+    assert price("openai", "gpt-5.4-mini", 1_000_000, 0, 0) < price(
+        "openai", "gpt-5.4", 1_000_000, 0, 0
+    )
+    # A dated snapshot id still resolves to its own family member, not the base entry.
+    assert abs(price("openai", "gpt-5.4-mini-2026-03-17", 1_000_000, 0, 0) - 0.75) < 1e-9
+    assert abs(price("openai", "gpt-5.4-2026-03-05", 1_000_000, 0, 0) - 2.50) < 1e-9
+
+
+@pytest.mark.parametrize("model", sorted(GPT_54_PUBLISHED))
+def test_gpt_54_flex_and_cached_follow_the_published_table(model):
+    standard = price("openai", model, 1_000_000, 100_000, 0)
+    assert abs(price("openai-flex", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    assert abs(price("openai-batch", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    full_input = price("openai", model, 1_000_000, 0, 0)
+    assert abs(price("openai", model, 1_000_000, 0, 1_000_000) - full_input / 10) < 1e-9
