@@ -44,7 +44,7 @@ class Backend:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return {"error": f"'{variable}' must carry a numeric 'value'"}
             self.outputs[variable] = value
-            self.dollars[variable] = int(round(value))
+            self.dollars[variable] = round(value)
             recorded.append(variable)
         if not recorded:
             return {"error": "'outputs' contained no variables"}

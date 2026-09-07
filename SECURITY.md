@@ -4,11 +4,11 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.3.x | Yes — fixes land on `main` and ship in the next 0.3.x release |
-| < 0.3 | No |
+| The latest release | Yes — fixes land on `main` and ship in the next release |
+| Anything older | No |
 
-upshift is pre-1.0. There is no long-term support branch: the fix for a reported issue is a
-new 0.3.x release.
+upshift is pre-1.0. There is no long-term support branch: the fix for a reported issue is
+the next release.
 
 ## Reporting a vulnerability
 
@@ -49,22 +49,52 @@ Out of scope:
 
 These are properties of this codebase, stated so you can check them rather than trust them.
 
-### Everything runs locally
+### What leaves your machine
 
-upshift is a local CLI. It makes exactly three kinds of outbound network call, all initiated
-by you:
+upshift is a local CLI with no backend of its own. It is **not** true that nothing leaves
+your machine — testing a model means sending it your agent — so here is the actual data
+flow, in full.
 
-- Model API calls to OpenAI (`api.openai.com`) or Anthropic (`api.anthropic.com`), or to a
-  base URL you set via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`.
-- `git clone --depth 1 -- <url>` when you pass `upshift adapt` a git URL instead of a local
-  path. The URL must start with `https://`, `git://`, `ssh://` or `git@` (or end in `.git`);
-  a source beginning with `-` is refused rather than handed to git, where it would be read
-  as one of git's own options.
-- Nothing else. There is no telemetry, no analytics, no crash reporting, no license check,
-  and no upload of your agent, your prompts, or your results anywhere.
+**Data that leaves your machine, every run, by design:**
 
-Your agent definitions, your eval cases and your run records stay on your machine unless you
-commit and push them yourself.
+- **To the model provider you selected.** Every API call carries your system prompt, your
+  tool schemas, every eval-case user message, every tool result, and your **API key** as a
+  transport credential. The destination is `api.openai.com` or `api.anthropic.com`, or the
+  base URL you set via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` — including a URL that points
+  at your own gateway, or at `upshift capture` on loopback.
+- **To the extraction model, when you run `upshift adapt`.** `adapt` ranks the target
+  repository's files and puts cited slices of them in the prompt. If you point it at a private
+  repository, that repository's source is sent to whichever model you configured, under your
+  key. The `ADAPT_REPORT.md` and the run record both show exactly which slices went.
+- **To the git remote, when you pass `adapt` a URL.** `git clone --depth 1 -- <url>`. The URL
+  must start with `https://`, `git://`, `ssh://` or `git@` (or end in `.git`); a source
+  beginning with `-` is refused rather than handed to git, where it would be read as one of
+  git's own options.
+
+**Data that does not leave your machine:**
+
+- Nothing goes to Mechanism, or to any service operated by this project. There is no
+  telemetry, no analytics, no crash reporting, no license check, no account, and no upload of
+  your agent, your prompts, your patches or your results.
+- Run records, diffs, verdicts and patches are written under your runs root and stay there
+  unless you commit and push them yourself.
+
+**Consequences worth stating plainly:**
+
+- Your **local transcripts can contain sensitive data**. A run record is a full transcript by
+  design (see below); an `adapt` record additionally quotes source it read. Both live in
+  plaintext JSON in your working tree.
+- Your **provider sees everything the run sends**, under their retention and training policy,
+  not ours. If your prompt embeds customer data, the provider receives it.
+- `upshift capture` forwards **the caller's own credentials** to the `--upstream` you name.
+  That upstream is not restricted to a provider allowlist — it defaults to
+  `https://api.anthropic.com`, accepts any `http(s)` URL you type, and refuses anything else
+  (a non-http scheme, or a URL with no host). The destination is never inferred from a
+  recorded request's headers or body, so a hostile agent cannot redirect the recorder; the
+  operator chooses it, and a wrong choice sends that agent's key to the host they named.
+  Verified in `tests/test_security.py`
+  (`test_the_capture_upstream_is_operator_supplied_and_must_be_http`,
+  `test_nothing_in_the_recorder_chooses_an_upstream_from_request_content`).
 
 ### API keys
 
@@ -142,6 +172,15 @@ docker run --rm --network none --hostname shellbox --pids-limit 512 \
     -v <per-episode tmpdir>:/work -w /work -e TZ=UTC -e LC_ALL=C \
     upshift-shellbox:latest bash -c <command>
 ```
+
+The container's environment is `TZ=UTC` and `LC_ALL=C` and nothing else. Docker forwards no
+host variable into a container unless it is told to, and this argv contains no `--env-file`,
+no `--env-host`, and no bare `-e NAME` (the form that would copy the host's value of `NAME`
+across) — so `OPENAI_API_KEY` and everything else in your shell is unreachable from inside.
+The `docker` client process itself does inherit your environment, because it needs
+`DOCKER_HOST` and friends to reach the daemon at all; the boundary that matters is the
+container's environment, and that one is minimal. Pinned by
+`tests/test_security.py::test_the_container_receives_a_minimal_environment`.
 
 `--network none` means no network from inside the container, `--rm` and a fresh per-episode
 temporary directory mean no state survives, `--pids-limit 512` bounds fork bombs,

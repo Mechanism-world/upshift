@@ -14,7 +14,7 @@ git clone https://github.com/Mechanism-world/upshift
 cd upshift
 uv sync --group dev
 uv run pytest -q
-uv run ruff check src tests
+uv run ruff check src tests agents
 ```
 
 The test suite is offline and makes zero API calls. The Docker-backed `shell_gpt` sandbox
@@ -87,7 +87,7 @@ provider (added in v0.3) is the worked example of adding a second one.
 ## Pull requests
 
 - One change per PR, with a title that says what changed.
-- `uv run pytest -q` and `uv run ruff check src tests` pass. CI runs both on Ubuntu and
+- `uv run pytest -q` and `uv run ruff check src tests agents` pass. CI runs both on Ubuntu and
   macOS, builds the wheel, and audits dependencies with `pip-audit`.
 - New behaviour comes with a test. Bug fixes come with a test that fails before the fix.
 - If you changed something a document asserts (ADAPTER.md, DESIGN.md, README.md), update it
