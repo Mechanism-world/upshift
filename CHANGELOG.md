@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.5-dev — unreleased (reliability follow-ups)
+
+Five findings from the OpenAI and Anthropic rescue tracks, each of which produced a wrong or
+unsupported ANSWER rather than a crash. Sources are the private ops repo's case files.
+
+- **The repair loop screens every sibling candidate before it accepts one** (`ghisdk-127`,
+  `ghc-062`). Greedy acceptance let the playbook's emission order decide the verdict: waku
+  accepted a candidate that restored 8 of 9 cases and published STAY PINNED while a sibling in
+  the same generation restored all nine, and crispen shipped a repair with a disclosed change
+  of guarantee ahead of the maintainer's own equivalent fix. Restorers are now ranked by full
+  restoration, then cases restored, then the absence of a disclosure, then the playbook rank,
+  and verified in that order. Screening costs one screen run per sibling and `--budget` still
+  bounds the candidates TRIED, so its default is 24 rather than 6.
+- **A candidate whose adjudication cannot run is rejected, not accepted** (`ghisdk-052`). When
+  the cost ceiling stops the N reps that settle a contested case, the candidate is rejected,
+  the suspects are recorded as `adjudication_skipped`, and the verdict is
+  INCONCLUSIVE(cost_ceiling) — never SAFE WITH PATCH on the strength of the sample that raised
+  the suspicion.
+- **Transient provider failures are retried, and never recorded as behaviour** (`ghi56-019`,
+  `ghi56-006`, `ghi56-021`). A flex capacity 429 was written down three times as a permanently
+  failing rep, moving the pass rate the verdict is computed from. 429/5xx/timeouts/connection
+  errors are now retried per rep (3 attempts, jittered exponential backoff, ≤90s) outside the
+  SDK's own retries; an unrecovered one is recorded as `transient_provider_error`, which the
+  differ files under `harness_error` and the verdict treats as INCONCLUSIVE. Billing still
+  aborts, auth is not retried, and a 400 is never retried or reclassified. New
+  **`--retry-errored`** on `run`/`upgrade` re-runs, on a resume, exactly the reps whose
+  recorded error was non-behavioural.
+- **`response_format` is carried, not deleted** (`ghisdk-051`). adapt used to drop it, which
+  removed the entire subject of a structured-output incident and produced an agent that asked
+  for no structured output at all. It is now a param, translated per endpoint: verbatim on
+  chat/completions, `text.format` (with the json_schema object flattened) on `/v1/responses`,
+  dropped with a recorded reason on Anthropic's messages. A nullable tool parameter also keeps
+  its null branch (`ghisdk-052`): every spelling is canonicalised to `anyOf` with null.
+- **A disclosed strict-schema repair** (`ghisdk-051`, `p2-001`). New signature
+  `api_error_schema_invalid` and new candidate `schema-strict-compat:<schema>`, applying
+  OpenAI's three documented strict rules to one named schema. Disclosed: optional fields become
+  required-and-nullable, so downstream code must accept null.
+
 ## v0.4.1-dev — unreleased
 
 Three fixes found by running capture mode on its first real case outside pydantic-ai
