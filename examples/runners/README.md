@@ -29,7 +29,8 @@ scenario end to end. A native runner is a thin adapter over that.
 1. **Copy a reference runner** into your project and replace `run_agent` (Python) / `runAgent`
    (Node) with a call to your own agent, using the case's `model`, `endpoint`, `initial_state`
    and `user_messages`.
-2. **Write `agent.json`** with a `runner` block — see ADAPTER.md, "Native runner":
+2. **Write `agent.json`** with a `runner` block — see ADAPTER.md, "Native runner" —
+   or use the shipped `examples/runners/python-agent`, which is exactly this and runs today:
 
    ```json
    {
@@ -94,5 +95,29 @@ afterwards, and `usage` is what `upshift cost` prices.
 | `python_runner.py` | Python reference runner. Copy and edit `run_agent`. |
 | `node_runner.mjs` | Node reference runner, same protocol. Copy and edit `runAgent`. |
 | `fake_provider.py` | The stub provider the Python example drives, so the demo costs nothing. |
+| `python-agent/` | The finished result of the three steps above, in Python. Runs today. |
+| `node-agent/` | The same agent, same suite, driven by the Node runner. |
 
-`tests/test_native_runner.py` runs both of these through `run_suite` end to end.
+## The shipped agents
+
+```console
+$ upshift run --agent examples/runners/python-agent --provider sim \
+    --run-id example-baseline --n 2 --allow-runner
+$ upshift run --agent examples/runners/node-agent   --provider sim \
+    --run-id example-node     --n 2 --allow-runner
+```
+
+Three cases, all passing, `$0` and no key — `--provider sim` is never called on a native run,
+because the application builds its own requests; the flag only says which provider's key
+variables the child would be allowed to see. Point either agent at `stub-model-b`
+(`--model stub-model-b`) and every case fails with the documented 400: baseline → candidate,
+the whole subject of an upgrade, in two commands.
+
+Each agent carries the reference runner inside its own `app/` workdir rather than pointing at
+the sibling file one directory up. That is not duplication for its own sake: `runner.workdir`
+may never escape the agent directory, and `workdir-copy` copies only that directory, so a
+relative path out of it would not exist in the copy the command runs in.
+`tests/test_examples_runners.py` pins each shipped copy to its sibling byte for byte.
+
+`tests/test_native_runner.py` runs the reference runners through `run_suite` end to end, and
+`tests/test_examples_runners.py` runs both shipped agents through the CLI.
