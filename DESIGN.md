@@ -687,14 +687,25 @@ published tables).
 ### E. Patch verification block
 
 `verdict.json.patch_verification = {"patch_sha256", "applies_cleanly": bool, "scope",
-"commit" (native) or "agent_files_sha256" (adapter), "config": {...incident params...},
-"commands": [...], "runs": {"baseline", "candidate", "patched"}, "live": bool,
-"evidence_ids": [...]}`. `upshift verify-patch` for an adapter dir: clean copy of the ORIGINAL
-agent dir → `git apply --check` + apply the exported patch → rebuild the first request of
-every case with `build_request` and assert it equals the request recorded in the run that
-verified the patch (no API call) → optional `--live` fresh N-rep run. Exit 2 with the
-differing request on any mismatch. This closes the gap between `patched_agent/` (what the
-loop verified) and `upgrade.patch` (what we export).
+"commit" (native) or "agent_files_sha256" (adapter), "recorded_config": {...what the run's
+manifest recorded...}, "patched_config": {...model/endpoint/params/turn_params read out of the
+patched copy...}, "config_mismatches": [...], "fields_not_proven_by_the_patch": [...],
+"cases_checked", "cases_without_a_recorded_request": [...], "mismatches": [...], "verified":
+bool, "reason": str|None, "commands": [...], "runs": {"baseline", "candidate", "patched"},
+"live": bool, "evidence_ids": [...]}`. `upshift verify-patch` for an adapter dir: clean copy of
+the ORIGINAL agent dir → `git apply --check` + apply the exported patch → rebuild the first
+request of every case with `build_request`, using ONLY the patched copy's endpoint, params,
+turn_params, prompt and tools, and assert it equals the request recorded in the run that
+verified the patch (no API call) → optional `--live` fresh N-rep run. The recorded manifest
+values are reported, never used to rebuild — otherwise a patch that lost the endpoint change
+would be checked against the endpoint it lost — and a disagreement between them is itself a
+`config_mismatch`. The single exception is the MODEL: the candidate is a command-line argument
+(`--candidate` / `run_suite(model_override=...)`) that no patch can carry, so it is taken from
+the run and listed in `fields_not_proven_by_the_patch`. `verified` requires every case in the
+patched cases.json to have been compared: a case with no recorded `rep_01` was never verified.
+Exit 2 with the differing request on any mismatch — request, config, or uncompared case. This
+closes the gap between `patched_agent/` (what the loop verified) and `upgrade.patch` (what we
+export).
 
 ### F. Capture continuation policy
 

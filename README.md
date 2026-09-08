@@ -162,9 +162,14 @@ upshift verify-patch --agent my-agent --patch runs/my-upgrade/upgrade.patch --ru
 ```
 
 Applies the exact exported patch to a clean copy, rebuilds every case's first request through
-the same code path, and compares it with the run that verified the patch — exit 0 only when
-they match byte for byte (cache keys and seeds excluded). This closes the gap between "the
-repair idea worked" and "the file we exported is what was verified".
+the same code path — from the patched files alone, so a patch that lost the endpoint routing or
+a param rebuilds what it really says — and compares it with the run that verified the patch.
+Exit 0 only when every case in the patched `cases.json` was compared and matched byte for byte
+(cache keys and seeds excluded); a case the run never recorded, or a patched configuration that
+disagrees with the run's, is exit 2 with the reason named. The candidate model is the one field
+no patch can carry (it is a command-line argument), and the block says so explicitly. This
+closes the gap between "the repair idea worked" and "the file we exported is what was
+verified".
 
 Operational notes: `--max-cost-usd` bounds spend for a whole `upgrade` (the default
 `--budget` of 24 counts every repair candidate *screened*, since siblings are now screened

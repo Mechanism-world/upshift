@@ -9,7 +9,28 @@ that drifted after the run — turns a verified result into an unverified one.
 What this command proves, exactly:
 
     applying <patch> to a clean copy of <agent dir> yields an agent configuration that
-    rebuilds, for every case, the SAME first request that is recorded in <run>.
+    rebuilds, for EVERY case in that configuration's cases.json, the SAME first request
+    that is recorded in <run>.
+
+Every case counts. A case in the patched agent's `cases/cases.json` for which the run has no
+`rep_01` request was never compared, so it was never verified: it is reported in
+``cases_without_a_recorded_request`` and it makes ``verified`` False with that name in
+``reason``. A partial run is an unfinished verification, not a passing one.
+
+The rebuild comes from the PATCH, never from the run. Everything the patch is supposed to
+carry — endpoint, params, turn_params, system prompt, tools — is read out of the patched copy
+alone (``patched_config`` in the block), so a patch that lost the endpoint routing or a param
+rebuilds the request it actually describes and the difference shows up. The run's own
+manifest values are kept beside it as ``recorded_config`` for the report, and where they
+disagree with the patched configuration that disagreement is itself a result:
+``config_mismatches``, which also makes ``verified`` False.
+
+The one field a patch cannot carry is the MODEL. The candidate model is passed on the command
+line (`upgrade --candidate` / `run --model`, `runner.run_suite(model_override=...)`) and is
+recorded in the manifest as `agent.model_requested`; the patched `agent.json` still names the
+BASELINE model, and that is correct, not a defect. So the model is rebuilt from the run's
+manifest, and when it differs from the patched config it is listed in
+``fields_not_proven_by_the_patch`` rather than silently compared or silently ignored.
 
 It sends nothing and costs nothing: the comparison is against requests already on disk. That
 also bounds the claim — a first request matching is not an episode matching, and this command
@@ -17,7 +38,8 @@ says nothing about turns 2..n or about tool results. `--live` (a fresh N-rep run
 patched copy) is future work and deliberately absent rather than stubbed, so that no reader
 can mistake a free structural check for a paid behavioural one.
 
-Exit codes: 0 verified, 2 any mismatch or any failure to apply.
+Exit codes: 0 verified, 2 any mismatch (a request mismatch, a config mismatch, a case with no
+recorded request, or no case compared at all) or any failure to apply.
 """
 
 from __future__ import annotations
@@ -253,12 +275,18 @@ def verify_patch(
         "scope": manifest.get("scope") or recorder.SCOPE_ADAPTED_AGENT,
         "run": manifest.get("run_id"),
         "evidence_ids": [manifest["evidence_id"]] if manifest.get("evidence_id") else [],
-        "config": {
+        # What the verifying RUN recorded. Reported, never used to rebuild (see the module
+        # docstring): reading the rebuild's inputs from here would check the patch against
+        # the previous run's configuration instead of against its own.
+        "recorded_config": {
             "model_requested": agent.get("model_requested"),
             "endpoint": agent.get("endpoint"),
             "params": agent.get("params") or {},
             "n_reps": manifest.get("n_reps"),
         },
+        "patched_config": {},
+        "config_mismatches": [],
+        "fields_not_proven_by_the_patch": [],
         "commands": [],
         "agent_files_sha256": {},
         "cases_checked": 0,
@@ -275,10 +303,36 @@ def verify_patch(
         config = AgentConfig.load(dest)
         block["agent_files_sha256"] = config.file_hashes()
 
+        # Rebuild from the PATCHED configuration alone. `endpoint`, `params` and
+        # `turn_params` are exactly what a repair edits into agent.json, so a patch that
+        # lost one of them must rebuild the request it really describes and fail here.
+        endpoint = config.endpoint
+        params = dict(config.params)
+        block["patched_config"] = {
+            "model": config.model,
+            "endpoint": endpoint,
+            "params": params,
+            "turn_params": list(config.turn_params or []),
+        }
+
+        # The model is the one field no patch carries: the candidate is a command-line
+        # argument (`--candidate` / `--model` -> `run_suite(model_override=...)`), and the
+        # patched agent.json legitimately still names the baseline model. Rebuild with the
+        # model the run recorded, and SAY that it is not proven by the patch.
         model = agent.get("model_requested") or config.model
-        endpoint = agent.get("endpoint") or config.endpoint
-        params = agent.get("params")
-        params = dict(params) if isinstance(params, dict) else dict(config.params)
+        if model != config.model:
+            block["fields_not_proven_by_the_patch"] = ["model"]
+
+        recorded_endpoint = agent.get("endpoint")
+        if recorded_endpoint is not None and recorded_endpoint != endpoint:
+            block["config_mismatches"].append(
+                {"field": "endpoint", "recorded": recorded_endpoint, "patched": endpoint}
+            )
+        recorded_params = agent.get("params")
+        if isinstance(recorded_params, dict) and recorded_params != params:
+            block["config_mismatches"].append(
+                {"field": "params", "recorded": recorded_params, "patched": params}
+            )
 
         cases = Case.load_all(dest / "cases" / "cases.json")
         for case in cases:
@@ -292,9 +346,29 @@ def verify_patch(
             if paths:
                 block["mismatches"].append({"case_id": case.id, "fields": paths})
 
-    block["verified"] = bool(
-        block["applies_cleanly"] and block["cases_checked"] and not block["mismatches"]
-    )
+    # A verification is the WHOLE suite or it is not a verification: a case the run never
+    # recorded was never compared, so it cannot be part of a passing result.
+    reasons: list[str] = []
+    if not block["applies_cleanly"]:
+        reasons.append("the patch does not apply")
+    if not block["cases_checked"]:
+        reasons.append("no_cases_compared")
+    if block["cases_without_a_recorded_request"]:
+        reasons.append(
+            "cases_without_a_recorded_request: "
+            + ", ".join(block["cases_without_a_recorded_request"])
+        )
+    if block["config_mismatches"]:
+        reasons.append(
+            "config_mismatches: "
+            + ", ".join(m["field"] for m in block["config_mismatches"])
+        )
+    if block["mismatches"]:
+        reasons.append(
+            "request_mismatches: " + ", ".join(m["case_id"] for m in block["mismatches"])
+        )
+    block["reason"] = "; ".join(reasons) if reasons else None
+    block["verified"] = not reasons
 
     target = Path(verdict_path) if verdict_path else run_directory.parent / "verdict.json"
     block["verdict_path"] = str(target) if target.is_file() else None
@@ -311,20 +385,40 @@ def _print(block: dict[str, Any]) -> None:
     print(f"  applies cleanly : {block['applies_cleanly']}")
     print(f"  scope           : {block['scope']}")
     print(f"  run             : {block['run']}")
-    print(f"  config          : {json.dumps(block['config'], sort_keys=True)}")
+    print(f"  recorded config : {json.dumps(block['recorded_config'], sort_keys=True)}")
+    print(f"  patched config  : {json.dumps(block['patched_config'], sort_keys=True)}")
+    if block["fields_not_proven_by_the_patch"]:
+        print(
+            "  NOT proven by the patch: "
+            f"{', '.join(block['fields_not_proven_by_the_patch'])} "
+            "(the candidate model is a command-line argument; it was taken from the run)"
+        )
     for command in block["commands"]:
         print(f"  ran             : {command}")
     print(f"  cases compared  : {block['cases_checked']}")
     missing = block["cases_without_a_recorded_request"]
     if missing:
-        print(f"  no rep_01 for   : {', '.join(missing)}")
+        print(
+            "  MISMATCH: cases_without_a_recorded_request — the run has no rep_01 for "
+            f"{', '.join(missing)}, so they were never verified"
+        )
+    if block["config_mismatches"]:
+        print("  MISMATCH: the patched configuration is not the one this run recorded.")
+        for entry in block["config_mismatches"]:
+            print(
+                f"    {entry['field']}: recorded {entry['recorded']!r} != "
+                f"patched {entry['patched']!r}"
+            )
     if block["mismatches"]:
         print("  MISMATCH: the patched agent does not rebuild the requests this run recorded.")
         for entry in block["mismatches"]:
             for field in entry["fields"]:
                 print(f"    {entry['case_id']}: {field}")
-    else:
-        print("  every compared case rebuilds the recorded first request byte for byte")
+    elif not missing and not block["config_mismatches"]:
+        print("  every case rebuilds the recorded first request byte for byte")
+    print(f"  verified        : {block['verified']}")
+    if block.get("reason"):
+        print(f"  reason          : {block['reason']}")
     if block["verdict_path"]:
         print(f"  written to      : {block['verdict_path']}")
     print(

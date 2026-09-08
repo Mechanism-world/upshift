@@ -74,13 +74,15 @@ def test_a_faithful_patch_verifies(workspace) -> None:
 def test_the_block_carries_everything_e_requires(workspace) -> None:
     block = VP.verify_patch(workspace["original"], workspace["patch"], workspace["run"])
     for key in (
-        "patch_sha256", "applies_cleanly", "scope", "agent_files_sha256", "config",
+        "patch_sha256", "applies_cleanly", "scope", "agent_files_sha256",
+        "recorded_config", "patched_config", "config_mismatches", "reason",
         "commands", "mismatches", "evidence_ids", "live",
     ):
         assert key in block, key
     assert len(block["patch_sha256"]) == 64
-    assert block["config"]["model_requested"] == MODEL
-    assert block["config"]["endpoint"] == "chat_completions"
+    assert block["recorded_config"]["model_requested"] == MODEL
+    assert block["recorded_config"]["endpoint"] == "chat_completions"
+    assert block["patched_config"]["endpoint"] == "chat_completions"
     assert block["scope"] == "adapted_agent"
     assert block["live"] is False
     assert any("git apply" in c and "--check" in c for c in block["commands"])
@@ -254,3 +256,112 @@ def test_add_parser_registers_the_subcommand() -> None:
     args = parser.parse_args(["verify-patch", "--agent", "a", "--patch", "p", "--run", "r"])
     assert args.func is VP.cmd_verify_patch
     assert (args.agent, args.patch, args.run, args.verdict) == ("a", "p", "r", None)
+
+
+# ---------------------------------------------------------------------------
+# FINDING 1 — a case the run never recorded is not a verified case
+# ---------------------------------------------------------------------------
+
+
+def test_a_case_without_a_recorded_request_fails_verification(workspace, capsys) -> None:
+    """`cases_without_a_recorded_request` was collected and then ignored: a run that skipped
+    a case still reported verified=True over the cases it happened to have."""
+    from upshift import recorder
+
+    recorder.rep_path(workspace["run"], CASES[1], 1).unlink()
+    block = VP.verify_patch(workspace["original"], workspace["patch"], workspace["run"])
+    assert block["cases_without_a_recorded_request"] == [CASES[1]]
+    assert block["cases_checked"] == 1
+    assert block["mismatches"] == []
+    assert block["verified"] is False
+    assert "cases_without_a_recorded_request" in (block["reason"] or "")
+    assert VP.cmd_verify_patch(_args(workspace)) == VP.EXIT_MISMATCH
+    assert "cases_without_a_recorded_request" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# FINDING 2 — the rebuild must come from the PATCH, not from the run's manifest
+# ---------------------------------------------------------------------------
+
+
+def _half_patch(workspace, tmp_path: Path, **agent_json_edits):
+    """A patch that carries the prompt change but NOT the agent.json change the run ran."""
+    half = write_agent(tmp_path / "half", CASES, prompt=f"BASE {PATCH_MARKER}")
+    patch_file = tmp_path / "half.patch"
+    patch_file.write_text(make_patch(workspace["original"], half, rel_prefix="victim/agent"))
+    return patch_file
+
+
+@pytest.fixture
+def param_workspace(tmp_path: Path):
+    """The verified run used `temperature`; the exported patch lost it."""
+    original = write_agent(tmp_path / "agent", CASES)
+    patched = write_agent(tmp_path / "patched_agent", CASES, prompt=f"BASE {PATCH_MARKER}")
+    raw = json.loads((patched / "agent.json").read_text())
+    raw["params"] = {"temperature": 0.5}
+    (patched / "agent.json").write_text(json.dumps(raw, indent=1))
+    runs = tmp_path / "runs"
+    provider = ScriptedProvider({MODEL: {"base": set(), "patched": set(CASES)}})
+    run_suite(
+        patched, provider, "t-c01-verify", n_reps=1, model_override=MODEL,
+        runs_root=runs, workers=1,
+    )
+    return {
+        "original": original,
+        "patched": patched,
+        "patch": None,
+        "run": runs / "t-c01-verify",
+        "runs": runs,
+        "tmp": tmp_path,
+    }
+
+
+def test_a_patch_that_lost_the_param_change_does_not_verify(param_workspace, tmp_path) -> None:
+    """The rebuild used to read `params` off the verifying run's manifest, so a patch that
+    dropped the param change was checked against the param it dropped."""
+    patch_file = _half_patch(param_workspace, tmp_path)
+    block = VP.verify_patch(param_workspace["original"], patch_file, param_workspace["run"])
+    assert block["patched_config"]["params"] == {}
+    assert block["recorded_config"]["params"] == {"temperature": 0.5}
+    assert block["config_mismatches"], block
+    assert any(m["field"] == "params" for m in block["config_mismatches"])
+    assert block["verified"] is False
+
+
+@pytest.fixture
+def endpoint_workspace(tmp_path: Path):
+    """The verified run ran on `responses`; the exported patch lost the routing change."""
+    original = write_agent(tmp_path / "agent", CASES)
+    patched = write_agent(tmp_path / "patched_agent", CASES, prompt=f"BASE {PATCH_MARKER}")
+    raw = json.loads((patched / "agent.json").read_text())
+    raw["endpoint"] = "responses"
+    (patched / "agent.json").write_text(json.dumps(raw, indent=1))
+    runs = tmp_path / "runs"
+    provider = ScriptedProvider({MODEL: {"base": set(), "patched": set(CASES)}})
+    run_suite(
+        patched, provider, "t-c01-verify", n_reps=1, model_override=MODEL,
+        runs_root=runs, workers=1,
+    )
+    return {"original": original, "run": runs / "t-c01-verify"}
+
+
+def test_a_patch_that_lost_the_endpoint_change_does_not_verify(
+    endpoint_workspace, tmp_path
+) -> None:
+    patch_file = _half_patch(endpoint_workspace, tmp_path)
+    block = VP.verify_patch(endpoint_workspace["original"], patch_file, endpoint_workspace["run"])
+    assert block["patched_config"]["endpoint"] == "chat_completions"
+    assert block["recorded_config"]["endpoint"] == "responses"
+    assert any(m["field"] == "endpoint" for m in block["config_mismatches"])
+    assert block["verified"] is False
+
+
+def test_the_cli_candidate_model_is_not_a_config_mismatch(workspace) -> None:
+    """`--candidate` is passed on the command line and no patch can carry it, so the model
+    is rebuilt from the run and REPORTED as not proven, never silently compared."""
+    block = VP.verify_patch(workspace["original"], workspace["patch"], workspace["run"])
+    assert block["patched_config"]["model"] == "scripted-base"
+    assert block["recorded_config"]["model_requested"] == MODEL
+    assert block["config_mismatches"] == []
+    assert block["fields_not_proven_by_the_patch"] == ["model"]
+    assert block["verified"] is True
