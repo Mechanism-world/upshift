@@ -9,6 +9,7 @@ is computed HERE, from what checked out, and is never read off the model's own r
 
 from __future__ import annotations
 
+import ast
 import copy
 import re
 from dataclasses import dataclass, field
@@ -100,6 +101,7 @@ class FileCache:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self._cache: dict[str, list[str] | None] = {}
+        self._literals: dict[str, list[str] | None] = {}
 
     def lines(self, rel: str) -> list[str] | None:
         if rel not in self._cache:
@@ -113,6 +115,31 @@ class FileCache:
     def whole(self, rel: str) -> str | None:
         lines = self.lines(rel)
         return None if lines is None else "\n".join(lines)
+
+    def string_literals(self, rel: str) -> list[str] | None:
+        """Every string constant in the cited file, as Python evaluates it, or None when the
+        file is not parseable Python.
+
+        Adjacent literals are already joined here — `("a. " "b.")` is one `ast.Constant`
+        holding `"a. b."` — which is exactly why this is the right oracle for deciding how
+        two chunks of one prompt were glued together upstream.
+        """
+        if rel not in self._literals:
+            text = self.whole(rel)
+            values: list[str] | None = None
+            if text is not None:
+                try:
+                    tree = ast.parse(text)
+                except (SyntaxError, ValueError, RecursionError, MemoryError):
+                    tree = None
+                if tree is not None:
+                    values = [
+                        node.value
+                        for node in ast.walk(tree)
+                        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    ]
+            self._literals[rel] = values
+        return self._literals[rel]
 
     def window(self, rel: str, start: int, end: int) -> str | None:
         lines = self.lines(rel)
@@ -169,6 +196,59 @@ def literal_in_file(cache: FileCache, citation: str, needle: str) -> tuple[str, 
     if target in normalize_ws(whole):
         return "in_file", f"text is in {rel} but not near line {start}"
     return "absent", f"text does not appear in {rel}"
+
+
+def _place_in_literals(
+    literals: list[str], text: str, after: tuple[int, int] | None
+) -> tuple[int, int, int] | None:
+    """Where `text` sits in the file's string literals, as (literal index, start, end).
+
+    `after` is the (literal index, end offset) of the previous chunk; a placement that
+    continues it wins, so a phrase that occurs twice is read as the continuation the
+    extraction described rather than as its first occurrence elsewhere in the file.
+    """
+    if after is not None:
+        index, offset = after
+        if 0 <= index < len(literals) and literals[index].startswith(text, offset):
+            return index, offset, offset + len(text)
+    for index, value in enumerate(literals):
+        found = value.find(text)
+        if found >= 0:
+            return index, found, found + len(text)
+    return None
+
+
+def locate_chunks_in_source(chunks: list[dict[str, Any]], cache: FileCache) -> None:
+    """Record each surviving chunk's exact span inside one source string literal.
+
+    `generate.build_system_prompt` reads `source_span` to decide the joiner: two chunks that
+    sit end to end inside the SAME literal were joined by the Python compiler with nothing
+    at all (implicit concatenation, or one literal the extraction reported in pieces), so
+    re-joining them with a newline would change the prompt the agent under test sends.
+    Anything this pass cannot place — a non-Python source, a templated chunk, a citation
+    that does not resolve — carries no span and keeps the documented newline join.
+    """
+    previous: tuple[str, int, int] | None = None  # (path, literal index, end offset)
+    for chunk in chunks:
+        chunk.pop("source_span", None)
+        text = str(chunk.get("text") or "")
+        parsed = parse_citation(str(chunk.get("citation") or ""))
+        if chunk.get("omitted") or not text or parsed is None:
+            previous = None
+            continue
+        rel = parsed[0]
+        literals = cache.string_literals(rel)
+        if not literals:
+            previous = None
+            continue
+        after = (previous[1], previous[2]) if previous and previous[0] == rel else None
+        placement = _place_in_literals(literals, text, after)
+        if placement is None:
+            previous = None
+            continue
+        index, start, end = placement
+        chunk["source_span"] = [rel, index, start, end]
+        previous = (rel, index, end)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +337,8 @@ def _verify_prompt(data: dict[str, Any], cache: FileCache, result: Verification)
                  f"claimed {claimed}, but {detail} — omitted from the generated prompt rather "
                  f"than written into the agent under test"),
         )
+
+    locate_chunks_in_source(chunks, cache)
 
     total = len(chunks)
     if total == 0 or prompt.get("status") == "undetermined":

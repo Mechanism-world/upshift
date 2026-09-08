@@ -72,8 +72,8 @@ class Backend:
         stray = document.get("assembly")
         if isinstance(stray, dict) and isinstance(stray.get("features"), list) and stray["features"]:
             v.append({"rule": "stray_assembly_features",
-                      "detail": '%d feature(s) were under "assembly" and would be ignored'
-                                % len(stray["features"])})
+                      "detail": f'{len(stray["features"])} feature(s) were under '
+                                '"assembly" and would be ignored'})
 
         feats = document.get("features")
         if not isinstance(feats, list):
@@ -85,32 +85,31 @@ class Backend:
 
         prev_type = None
         for i, f in enumerate(feats):
-            where = "features.%d" % i
+            where = f"features.{i}"
             if not isinstance(f, dict):
-                v.append({"rule": "schema", "detail": "%s: expected an object" % where})
+                v.append({"rule": "schema", "detail": f"{where}: expected an object"})
                 prev_type = None
                 continue
             fid = f.get("id")
             ftype = f.get("type")
             if not isinstance(fid, str) or not fid:
-                v.append({"rule": "schema", "detail": "%s.id: expected a non-empty string" % where})
+                v.append({"rule": "schema", "detail": f"{where}.id: expected a non-empty string"})
             if ftype not in FEATURE_TYPES:
                 v.append({"rule": "schema",
-                          "detail": "%s.type: %r is not one of the supported feature types" % (where, ftype)})
+                          "detail": f"{where}.type: {ftype!r} is not one of the supported feature types"})
                 prev_type = None
                 continue
             fparams = f.get("params") if isinstance(f.get("params"), dict) else {}
             for key in REQUIRED_PARAMS.get(ftype, []):
                 if not _is_num(fparams.get(key)):
-                    v.append({"rule": "schema", "detail": "%s.params.%s: expected a number" % (where, key)})
+                    v.append({"rule": "schema", "detail": f"{where}.params.{key}: expected a number"})
             fdata = f.get("data") if isinstance(f.get("data"), dict) else {}
             for key in REQUIRED_DATA.get(ftype, []):
                 if key not in fdata:
-                    v.append({"rule": "schema", "detail": "%s.data.%s is required" % (where, key)})
+                    v.append({"rule": "schema", "detail": f"{where}.data.{key} is required"})
             if ftype in NEEDS_SKETCH and prev_type != "sketch":
                 v.append({"rule": "no_sketch_upstream",
-                          "detail": "feature '%s' (%s): no sketch profile upstream"
-                                    % (fid if isinstance(fid, str) else where, ftype)})
+                          "detail": f"feature '{fid if isinstance(fid, str) else where}' ({ftype}): no sketch profile upstream"})
             prev_type = ftype
         return v
 
@@ -129,13 +128,14 @@ class Backend:
                 message = "The document did not match the build_part schema."
             errors = "; ".join(x["detail"] for x in violations)
             self._build_results.append({"status": "error", "message": message})
-            return {"result": "%s Errors: %s" % (message, errors), "isError": True}
+            return {"result": f"{message} Errors: {errors}", "isError": True}
 
         self._applied = document
         self._current = document
         self._applied_count += 1
         n = len(document["features"])
-        message = "Built the part (%d feature%s)." % (n, "" if n == 1 else "s")
+        plural = "" if n == 1 else "s"
+        message = f"Built the part ({n} feature{plural})."
         self._build_results.append({"status": "ok", "message": message})
         return {"result": message, "isError": False}
 
@@ -153,19 +153,19 @@ class Backend:
             if not isinstance(n.get("part"), str) or not n["part"]:
                 return {"result": "Plan rejected: nodes: part: expected a non-empty string", "isError": True}
             if n["id"] in ids:
-                return {"result": 'Plan rejected: duplicate node id "%s"' % n["id"], "isError": True}
+                return {"result": 'Plan rejected: duplicate node id "{}"'.format(n["id"]), "isError": True}
             ids.append(n["id"])
         for n in nodes:
             parent = n.get("parent")
             if parent is not None and parent not in ids:
-                return {"result": 'Plan rejected: node "%s" has an unknown parent "%s"' % (n["id"], parent),
+                return {"result": 'Plan rejected: node "{}" has an unknown parent "{}"'.format(n["id"], parent),
                         "isError": True}
         for r in relations:
             if not isinstance(r, dict) or r.get("from") not in ids:
                 return {"result": 'Plan rejected: relation references an unknown node "%s"'
                                   % (r.get("from") if isinstance(r, dict) else r), "isError": True}
             if r.get("to") not in ids:
-                return {"result": 'Plan rejected: relation references an unknown node "%s"' % r.get("to"),
+                return {"result": 'Plan rejected: relation references an unknown node "{}"'.format(r.get("to")),
                         "isError": True}
         # acyclic parent hierarchy
         parent_of = {n["id"]: n.get("parent") for n in nodes}
@@ -173,14 +173,15 @@ class Backend:
             seen, cur = set(), start
             while cur is not None:
                 if cur in seen:
-                    return {"result": 'Plan rejected: cycle in the parent hierarchy at "%s"' % cur,
+                    return {"result": f'Plan rejected: cycle in the parent hierarchy at "{cur}"',
                             "isError": True}
                 seen.add(cur)
                 cur = parent_of.get(cur)
         roots = [n["id"] for n in nodes if not n.get("parent")]
         self._plans.append({"nodes": len(nodes), "relations": len(relations)})
-        return {"result": "plan accepted: %d node(s), %d relation(s); roots: %s"
-                          % (len(nodes), len(relations), ", ".join(roots) or "—"),
+        return {"result": f"plan accepted: {len(nodes)} node(s), "
+                          f"{len(relations)} relation(s); roots: "
+                          f"{', '.join(roots) or '—'}",
                 "isError": False}
 
     # ── the tool dispatch (toolDefs.ts buildAgentTools) ────────────────────────
@@ -197,9 +198,9 @@ class Backend:
                 msg = (arguments or {}).get("message")
                 self._final_message = msg if isinstance(msg, str) else "Done."
                 return {"result": self._final_message, "isError": False}
-            return {"error": "No such tool: %s" % name}
-        except Exception as exc:  # never raises (ADAPTER.md rule 2)
-            return {"error": "%s: %s" % (type(exc).__name__, exc)}
+            return {"error": f"No such tool: {name}"}
+        except Exception as exc:  # noqa: BLE001 - ADAPTER.md rule 2: execute() never raises
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
     def state(self):
         feats = self._applied["features"] if isinstance(self._applied, dict) else []
@@ -209,7 +210,7 @@ class Backend:
             p = feats[0].get("params") if isinstance(feats[0].get("params"), dict) else {}
             vals = [p.get("dx"), p.get("dy"), p.get("dz")]
             if all(_is_num(x) for x in vals):
-                dims = ",".join("%g" % round(float(x), 3) for x in sorted(float(y) for y in vals))
+                dims = ",".join(f"{round(float(x), 3):g}" for x in sorted(float(y) for y in vals))
         return {
             "applied_document": self._applied,
             "applied_count": self._applied_count,

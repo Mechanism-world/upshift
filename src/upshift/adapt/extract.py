@@ -83,7 +83,11 @@ ENDPOINT_VALUES = ("chat_completions", "responses", "messages")
 #: Request parameters whose value is legitimately an object rather than a scalar. The list is
 #: closed on purpose: everything else in `params` is a scalar, so a dict anywhere else is the
 #: model handing us a nested request body instead of a parameter.
-DICT_PARAMS = ("tool_choice", "thinking")
+#: `response_format` and `reasoning` joined `tool_choice`/`thinking` after rescue-ops
+#: `ghisdk-051`, where a structured-output incident was adapted into an agent that requested
+#: no structured output at all, because the only object-valued parameters upshift accepted
+#: were the two Anthropic ones.
+DICT_PARAMS = ("tool_choice", "thinking", "response_format", "reasoning")
 CLAIM_STATUSES = ("found", "inferred", "undetermined")
 CHUNK_KINDS = ("verbatim", "templated", "inferred")
 BACKEND_KINDS = ("lookup", "list", "create", "update", "file_read", "file_write", "unclear")
@@ -150,7 +154,12 @@ Field notes:
       It may be a plain string or a list of text blocks; when it is a list, report one
       chunk per block (they are joined with a single newline) and cite each block.
 - system_prompt.chunks: the pieces that make up the system message, in the order they are
-  concatenated; they are joined with a single newline. Prefer one chunk per source literal —
+  concatenated. They are re-joined the way the source joins them: adjacent string literals
+  of one expression (implicit concatenation) are joined with nothing at all, exactly as
+  Python does, and chunks from separate statements are joined with a single newline. Report
+  each chunk's characters exactly as they appear, including a trailing space or "\\n" if the
+  literal has one — that is what makes the join reconstructible. Prefer one chunk per source
+  literal —
   a chunk is only "verbatim" if its exact characters are in one file, so a prompt built by
   concatenating three literals is three verbatim chunks, not one. If the prompt is a
   template with placeholders that the code fills from config with a known default, use kind
@@ -447,9 +456,11 @@ def _param_value_errors(data: dict[str, Any]) -> list[str]:
     """`params` values are scalars, with exactly two documented exceptions.
 
     `tool_choice` and `thinking` are objects on the Anthropic Messages API
-    (`{"type": "tool", "name": ...}`, `{"type": "enabled", ...}`) and are passed through in
-    that shape (DESIGN.md v0.3). Every other parameter is a scalar: a dict elsewhere means
-    the model handed us a slice of the request body instead of one request parameter.
+    (`{"type": "tool", "name": ...}`, `{"type": "enabled", ...}`), `response_format` is one on
+    the OpenAI endpoints (`{"type": "json_schema", "json_schema": {...}}`) and so is
+    `reasoning` (`{"effort": ...}`); all four are passed through in that shape. Every other
+    parameter is a scalar: a dict elsewhere means the model handed us a slice of the request
+    body instead of one request parameter.
     """
     claim = data.get("params")
     params = claim.get("value") if isinstance(claim, dict) else None

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from upshift.jsonschema import is_strict, make_strict
 from upshift.schemas import FileEdit, Patch
 
 DISCIPLINE_BLOCK = (
@@ -101,6 +102,128 @@ EFFORT_LADDERS = {
 EFFORT_WHEN_UNSET = {"messages": "high", "chat_completions": "medium", "responses": "medium"}
 #: Params both Fables reject at non-default values (item 5).
 SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+#: Every spelling of "cap the generated tokens" upshift may find in an agent's params. An
+#: agent authored against an older model carries the name its endpoint used to accept.
+TOKEN_CAP_PARAMS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+#: The spelling each endpoint accepts today. The gpt-5 family's 400 names the replacement
+#: itself ("Use 'max_completion_tokens' instead"), and this table is that instruction.
+TOKEN_CAP_FOR_ENDPOINT = {
+    "chat_completions": "max_completion_tokens",
+    "responses": "max_output_tokens",
+    "messages": "max_tokens",
+}
+
+
+
+# ---------------------------------------------------------------------------
+# Disclosures and ordering (DESIGN.md §G)
+#
+# Some repairs restore the eval by changing what the agent is GUARANTEED to do, not just how
+# its request is spelled. Removing a forced `tool_choice` swaps a hard guarantee ("this turn
+# is a tool call") for an instruction the model may ignore; `reasoning_effort='none'` clears
+# the chat/completions 400 by turning reasoning OFF. Both can score a green suite while
+# shipping a different agent. upshift may still propose them — they are the documented fixes —
+# but never silently and never first: the disclosure travels with the patch id so the report
+# and the verdict can print it, and the ordering below puts spelling fixes ahead of them.
+#
+# The registry is keyed by patch id and lives here rather than on `schemas.Patch` so the
+# report and verdict can read it without a schema change; `disclosures_for(patch_id)` is the
+# whole API.
+# ---------------------------------------------------------------------------
+
+#: Ranks used to order candidates. Lower is tried first.
+RANK_TRANSPORT = 0  # a spelling/route fix: the same agent, addressed correctly
+RANK_BEHAVIOURAL = 1  # a prompt, tool-schema or effort change: same guarantees, new wording
+RANK_CAPABILITY = 2  # removes or disables something the agent was guaranteed before
+
+#: A patch id may name the thing it edits after a colon (`schema-strict-compat:ExtractedEdges`),
+#: because one signature can produce one candidate per named schema and each has to be a
+#: distinct, screenable sibling. Rank and disclosure belong to the FAMILY, so both lookups read
+#: the part before the colon — otherwise a per-schema candidate would silently lose its
+#: disclosure, which is the one thing a disclosure may never do.
+def _family(patch_id: str) -> str:
+    return patch_id.split(":", 1)[0]
+
+
+#: patch id -> the rank it is tried at. Ids missing here are RANK_BEHAVIOURAL.
+PATCH_RANKS: dict[str, int] = {
+    "route-to-responses": RANK_TRANSPORT,
+    "rename-token-cap-param": RANK_TRANSPORT,
+    "remove-forced-tool-choice": RANK_CAPABILITY,
+    "drop-sampling-params": RANK_CAPABILITY,
+    "drop-token-cap-param": RANK_CAPABILITY,
+    "reasoning-effort-none": RANK_CAPABILITY,
+    # A schema edit changes the contract, not the transport, and it does not DISABLE anything
+    # the agent had — so: after the spelling fixes, before the capability-removing ones.
+    "schema-strict-compat": RANK_BEHAVIOURAL,
+}
+
+#: patch id -> sentences that MUST appear next to it wherever it is reported. Written for a
+#: maintainer deciding whether to ship the patch, not for a changelog.
+PATCH_DISCLOSURES: dict[str, tuple[str, ...]] = {
+    "remove-forced-tool-choice": (
+        (
+            "changes_capability: the forced tool choice is gone. Before the patch the API "
+            "guaranteed this turn was a tool call; after it, a prompt sentence asks for one "
+            "and the model may still answer in text. Any downstream code that assumes a tool "
+            "call must be re-checked."
+        ),
+    ),
+    "drop-sampling-params": (
+        (
+            "changes_capability: temperature / top_p / top_k are no longer sent, so the model "
+            "samples at its own defaults. Output variability and any behaviour tuned by those "
+            "values changes."
+        ),
+    ),
+    "drop-token-cap-param": (
+        (
+            "changes_capability: the output-token cap is gone, so the model applies its own "
+            "default. Responses may be longer than the agent ever allowed."
+        ),
+        "changes_cost: an uncapped response can bill more output tokens per call.",
+    ),
+    "reasoning-effort-none": (
+        (
+            "changes_capability: disables reasoning. This clears the 400 by asking the model "
+            "not to think, which is NOT equivalent to routing the same agent to "
+            "/v1/responses — expect different answers on anything the reasoning was doing."
+        ),
+    ),
+    "schema-strict-compat": (
+        (
+            "changes_capability: schema made strict — optional fields are now "
+            "required-and-nullable; downstream code must accept null."
+        ),
+    ),
+    "raise-effort-one-rung": (
+        (
+            "changes_cost: a higher reasoning effort bills more output (reasoning) tokens per "
+            "call and takes longer."
+        ),
+    ),
+    "reasoning-effort-high": (
+        (
+            "changes_cost: a higher reasoning effort bills more output (reasoning) tokens per "
+            "call and takes longer."
+        ),
+    ),
+}
+
+
+def disclosures_for(patch_id: str) -> list[str]:
+    """Everything a reader must be told about `patch_id` before shipping it.
+
+    Empty for a patch that changes only how the request is spelled — the common case, and the
+    only case where "the eval went green" means the same agent still works.
+    """
+    return list(PATCH_DISCLOSURES.get(_family(patch_id), ()))
+
+
+def rank_for(patch_id: str) -> int:
+    """Where `patch_id` sits in the try-order: transport fixes first, capability changes last."""
+    return PATCH_RANKS.get(_family(patch_id), RANK_BEHAVIOURAL)
 
 
 def _read(agent_dir: Path, rel: str) -> str:
@@ -278,6 +401,29 @@ def _leaves_an_empty_extra_body(text: str) -> bool:
     return isinstance(params, dict) and params.get("extra_body") == {}
 
 
+def _agent_json_rename_param(agent_dir: Path, old: str, new: str) -> FileEdit | None:
+    """Rename one key inside ``params`` in agent.json, keeping its value.
+
+    Returns None when the agent does not declare ``old``, or already declares ``new`` (there
+    would be nothing to rename, or renaming would collide with a value the author chose).
+    A minimal textual rewrite of the key is preferred so the emitted git diff is the one line
+    a maintainer would change; anything else falls back to a re-serialize.
+    """
+    text = _read(agent_dir, "agent.json")
+    raw = json.loads(text)
+    params = raw.get("params") or {}
+    if old not in params or new in params:
+        return None
+    needle = json.dumps(old) + ":"
+    if text.count(needle) == 1:
+        return FileEdit(
+            file="agent.json", new_content=text.replace(needle, json.dumps(new) + ":")
+        )
+    params[new] = params.pop(old)
+    raw["params"] = params
+    return FileEdit(file="agent.json", new_content=json.dumps(raw, indent=2) + "\n")
+
+
 def _effort_ladder(endpoint: str) -> tuple[tuple[str, ...], str]:
     """(ladder, value-an-absent-param-means) for an endpoint; empty ladder if unknown."""
     return EFFORT_LADDERS.get(endpoint, ()), EFFORT_WHEN_UNSET.get(endpoint, "")
@@ -330,6 +476,82 @@ def _tool_description_edit(
             fn["description"] = new_desc
             return FileEdit(file=rel, new_content=json.dumps(tools, indent=2) + "\n")
     return None
+
+
+#: OpenAI's strict structured-output rules, cited where they are applied. `make_strict`
+#: implements the three the API enforces; this URL is what a maintainer reading the patch
+#: needs in order to check that upshift did not invent them.
+STRICT_SCHEMA_DOC = "https://platform.openai.com/docs/guides/structured-outputs"
+
+
+def _replace_json_value(text: str, old, new) -> str | None:
+    """Textual swap of one JSON value, so the emitted diff touches only the schema.
+
+    Returns None when the old value is not in the file exactly once in this serialization —
+    a pretty-printed agent.json usually is not — and the caller re-serializes instead.
+    """
+    fragment = json.dumps(old)
+    return text.replace(fragment, json.dumps(new)) if text.count(fragment) == 1 else None
+
+
+def _strict_response_format_edit(agent_dir: Path, raw_config: dict):
+    """`(schema name, FileEdit)` making the agent's response_format schema strict, or None.
+
+    None when there is no `response_format`, when it is not a json_schema, or when its schema
+    is ALREADY strict: a candidate that changes nothing costs a screen run and tells whoever
+    reads the report that the schema was the problem when it was not.
+    """
+    declared = (raw_config.get("params") or {}).get("response_format")
+    if not isinstance(declared, dict):
+        return None
+    nested = declared.get("json_schema")
+    if not isinstance(nested, dict):
+        return None
+    schema = nested.get("schema")
+    if not isinstance(schema, dict) or is_strict(schema):
+        return None
+    strict = make_strict(schema)
+    text = _read(agent_dir, "agent.json")
+    minimal = _replace_json_value(text, schema, strict)
+    if minimal is None:
+        raw = json.loads(text)
+        raw["params"]["response_format"]["json_schema"]["schema"] = strict
+        minimal = json.dumps(raw, indent=2) + "\n"
+    name = str(nested.get("name") or "response_format")
+    return name, FileEdit(file="agent.json", new_content=minimal)
+
+
+def _strict_tool_edits(agent_dir: Path, raw_config: dict) -> list[tuple[str, FileEdit]]:
+    """One `(tool name, FileEdit)` per tool whose `parameters` breaks the strict subset.
+
+    One candidate per tool, not one candidate for all of them: the loop screens siblings
+    against each other now, and a patch a maintainer has to read should name one thing.
+    """
+    rel = raw_config["tools_file"]
+    text = _read(agent_dir, rel)
+    try:
+        tools = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(tools, list):
+        return []
+    out: list[tuple[str, FileEdit]] = []
+    for index, tool in enumerate(tools):
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        parameters = function.get("parameters")
+        name = function.get("name")
+        if not isinstance(parameters, dict) or not isinstance(name, str) or is_strict(parameters):
+            continue
+        strict = make_strict(parameters)
+        minimal = _replace_json_value(text, parameters, strict)
+        if minimal is None:
+            edited = json.loads(text)
+            edited[index]["function"]["parameters"] = strict
+            minimal = json.dumps(edited, indent=2) + "\n"
+        out.append((name, FileEdit(file=rel, new_content=minimal)))
+    return out
 
 
 def _forced_tool_choice_instruction(tool_choice) -> str | None:
@@ -419,6 +641,33 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     "same requirement as an instruction in the system prompt instead.",
                     [removal, _prompt_append(agent_dir, raw_config, "\n\n" + instruction)],
                 )
+        elif sig == "api_error_schema_invalid":
+            # The 400 names the offending schema, but the playbook sees signatures, not
+            # messages — so every schema the agent supplies that breaks the documented subset
+            # gets its own candidate, and the screen decides which one was the offender.
+            found = _strict_response_format_edit(agent_dir, raw_config)
+            for name, edit in ([found] if found is not None else []):
+                add(
+                    f"schema-strict-compat:{name}",
+                    "model_params",
+                    sig,
+                    f"Make the {name!r} response_format schema satisfy OpenAI's strict "
+                    f"structured-output subset (every property in `required`, "
+                    f"`additionalProperties: false`, optional properties nullable): "
+                    f"{STRICT_SCHEMA_DOC}",
+                    [edit],
+                )
+            for name, edit in _strict_tool_edits(agent_dir, raw_config):
+                add(
+                    f"schema-strict-compat:{name}",
+                    "tool_schema_edit",
+                    sig,
+                    f"Make the {name!r} tool's parameter schema satisfy OpenAI's strict "
+                    f"structured-output subset (every property in `required`, "
+                    f"`additionalProperties: false`, optional properties nullable): "
+                    f"{STRICT_SCHEMA_DOC}",
+                    [edit],
+                )
         elif sig == "api_error_unsupported_sampling_params":
             add(
                 "drop-sampling-params",
@@ -428,6 +677,36 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                 "params (typically left over from an OpenAI-style config).",
                 [_agent_json_remove(agent_dir, list(SAMPLING_PARAMS), also_extra_body=True)],
             )
+        elif sig == "api_error_unsupported_token_cap":
+            wanted = TOKEN_CAP_FOR_ENDPOINT.get(raw_config["endpoint"])
+            declared = [
+                k for k in TOKEN_CAP_PARAMS if k in (raw_config.get("params") or {})
+            ]
+            if wanted is not None:
+                for stale in declared:
+                    if stale == wanted:
+                        continue
+                    rename = _agent_json_rename_param(agent_dir, stale, wanted)
+                    if rename is not None:
+                        add(
+                            "rename-token-cap-param",
+                            "model_params",
+                            sig,
+                            f"Rename the {stale!r} param to {wanted!r}, keeping its value: "
+                            f"this model rejects {stale!r} on /{raw_config['endpoint']} and "
+                            "names the replacement in the 400 itself.",
+                            [rename],
+                        )
+            if declared:
+                add(
+                    "drop-token-cap-param",
+                    "model_params",
+                    sig,
+                    "Remove the output-token cap entirely, so the model applies its own "
+                    "default (fallback for an endpoint that accepts no cap under this "
+                    "model).",
+                    [_agent_json_remove(agent_dir, declared)],
+                )
         elif sig == "serialized_tool_calls":
             if "in this one response" not in prompt:
                 add(
@@ -569,4 +848,10 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
         if patch.id not in seen and content_key not in seen:
             seen.update((patch.id, content_key))
             unique.append(patch)
+    # Transport/spelling fixes first, capability-changing repairs last. The sort is STABLE, so
+    # within a rank the signature-driven order above is untouched — including DESIGN item 4's
+    # "effort first, then the documented nudge". Ordering matters because the loop accepts the
+    # first candidate that restores the broken cases: without it, a patch that disables
+    # reasoning could win over routing the same agent to an endpoint that supports it.
+    unique.sort(key=lambda patch: rank_for(patch.id))
     return unique

@@ -39,7 +39,9 @@ from pathlib import Path
 from typing import Any
 
 from upshift.adapt.generate import RETRIEVAL_NAME_RE, build_params, docstring_safe, slugify
+from upshift.capture import fidelity
 from upshift.capture.record import canonical, load_capture, text_blocks
+from upshift.schemas import CONTINUATION_FAIL
 
 ENDPOINT = "messages"
 PROVIDER = "anthropic"
@@ -70,6 +72,13 @@ class CaptureAdaptResult:
     #: choose — a value some recorded request will not reproduce. `--strict` exits non-zero
     #: on any of these, because a note is not a gate.
     conflicts: list[str] = field(default_factory=list)
+    #: Machine-readable findings from `capture/fidelity.audit`: everything the recording held
+    #: that an agent directory has no slot for. Written to `unsupported_fields.json` and
+    #: rendered in ADAPT_EDITS.md.
+    unsupported_fields: list[dict[str, Any]] = field(default_factory=list)
+    #: Assistant turns the deepest recorded conversation contained (agent.json
+    #: `recorded_turns`); what the continuation policy (DESIGN.md §F) measures against.
+    recorded_turns: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +149,12 @@ def _most_common(
 #: is the one that decides CONTROL FLOW: under a forced choice the model cannot answer in
 #: text, so a framework that forces turn 1 and then goes `auto` has a completely different
 #: episode from one that forces every turn.
+#: `response_format` is read off the wire for the same reason: a capture of a
+#: structured-output agent that does not carry its structured-output contract is a capture of
+#: a different agent (rescue-ops ghisdk-051).
 CAPTURED_PARAMS = (
     "max_tokens", "temperature", "top_p", "top_k", "tool_choice", "thinking",
-    "output_config", "service_tier",
+    "output_config", "service_tier", "response_format",
 )
 
 
@@ -272,7 +284,9 @@ def _uncarried_tool_fields(tool: dict[str, Any]) -> list[str]:
     return sorted(dropped)
 
 
-def _tools_chat_style(tools: Any, notes: list[str] | None = None) -> list[dict[str, Any]]:
+def _tools_chat_style(
+    tools: Any, notes: list[str] | None = None, dropped_out: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """Anthropic `{name, description, input_schema}` -> the chat-style shape ADAPTER.md wants.
 
     `agent_loop.convert_tools_messages` converts those three fields back before the request
@@ -291,6 +305,16 @@ def _tools_chat_style(tools: Any, notes: list[str] | None = None) -> list[dict[s
         if not isinstance(tool, dict) or not tool.get("name"):
             continue
         dropped = _uncarried_tool_fields(tool)
+        if dropped and dropped_out is not None:
+            dropped_out.extend(
+                {
+                    "name": tool["name"],
+                    "field": key,
+                    "value": tool[key],
+                    "server_tool": tool.get("type") not in (None, "custom"),
+                }
+                for key in dropped
+            )
         if dropped and notes is not None:
             detail = ", ".join(f"{key}={canonical(tool[key])}" for key in dropped)
             notes.append(
@@ -824,7 +848,23 @@ def _adapt_edits(result: CaptureAdaptResult, index: dict[str, Any]) -> str:
         ]
         lines += [f"- {conflict}" for conflict in result.conflicts]
         lines.append("")
+    if result.unsupported_fields:
+        lines += ["", *fidelity.render_markdown(result.unsupported_fields)]
     lines += [
+        "",
+        "## Continuation past the recording (`agent.json` `continuation`)",
+        "",
+        (
+            f"The deepest recorded conversation ran {result.recorded_turns} assistant turn(s), "
+            f"written as `recorded_turns`. A replayed episode that needs turn "
+            f"{result.recorded_turns + 1} has left the recording: there are no parameters for "
+            f"that turn, because the framework never sent any. `continuation` is `'fail'` (the "
+            f"default), so such an episode ends with a `continuation_exhausted` error — a "
+            f"NON-behavioural failure that makes the case inconclusive rather than regressed. "
+            f"Set `'continuation': 'repeat_last'` to reuse the last recorded turn's parameters "
+            f"instead; every rep that does gets `continuation_used: true` in its record, so a "
+            f"run that leaned on repetition is readable as one. Never silently."
+        ),
         "",
         "## Not deviations, but read before trusting a run",
         "",
@@ -899,7 +939,8 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
         _most_common(variants, notes, f"the definition of tool {name!r}", conflicts)
         for name, variants in by_name.items()
     ]
-    chat_tools = _tools_chat_style(tools, notes)
+    tools_dropped: list[dict[str, Any]] = []
+    chat_tools = _tools_chat_style(tools, notes, tools_dropped)
     result.tool_names = [t["function"]["name"] for t in chat_tools]
 
     # -- params, and the per-turn sequence ----------------------------------
@@ -974,8 +1015,14 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
             f"them; written as agent.json `terminal_tools` and the episode stops there too"
         )
 
-    # -- max_turns ----------------------------------------------------------
-    result.max_turns = max(len(c["turns"]) for c in conversations) + 1
+    # -- max_turns and the recorded depth ------------------------------------
+    result.recorded_turns = max(len(c["turns"]) for c in conversations)
+    # One more than the deepest recording, so a repaired candidate has room for an extra turn
+    # without being cut off by max_turns before the continuation policy is even consulted.
+    result.max_turns = result.recorded_turns + 1
+
+    # -- what the recording held and this directory cannot carry --------------
+    result.unsupported_fields = fidelity.audit(index, conversations, tools_dropped=tools_dropped)
 
     # -- write --------------------------------------------------------------
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -991,6 +1038,10 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
         "system_prompt_file": "system_prompt.txt",
         "tools_file": "tools.json",
         "max_turns": result.max_turns,
+        # DESIGN.md §F: how deep the recording went, and what to do past it. `fail` is the
+        # default because reusing turn N's parameters on turn N+3 is not evidence.
+        "recorded_turns": result.recorded_turns,
+        "continuation": CONTINUATION_FAIL,
     }
     if result.volatile_suffix is not None:
         config["volatile_suffix"] = result.volatile_suffix
@@ -1017,6 +1068,8 @@ def adapt_from_capture(capture_dir: str | Path, out_dir: str | Path) -> CaptureA
            result)
     _write(out_dir, "backend.py", build_backend(str(capture_dir)), result)
     _write(out_dir, "cases/cases.json", json.dumps(cases, indent=2) + "\n", result)
+    _write(out_dir, "unsupported_fields.json",
+           json.dumps(result.unsupported_fields, indent=1, sort_keys=True) + "\n", result)
     _write(out_dir, "ATTRIBUTION.md",
            _attribution(index, capture_dir, conversations, model), result)
     _write(out_dir, "ADAPT_EDITS.md", _adapt_edits(result, index), result)

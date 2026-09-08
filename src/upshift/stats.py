@@ -103,3 +103,26 @@ def wilson_interval(k: int, n: int, z: float = Z_95) -> tuple[float, float]:
     lower = 0.0 if k == 0 else max(0.0, centre - half)
     upper = 1.0 if k == n else min(1.0, centre + half)
     return (lower, upper)
+
+
+def smallest_detectable_drop(n: int, alpha: float = 0.05) -> tuple[int, float] | None:
+    """The mildest per-case degradation an N-rep pair could call significant.
+
+    Answers: with a baseline that passed all ``n`` reps, what is the LARGEST number of
+    candidate passes ``k`` for which ``fisher_exact_one_sided(n, n, k, n) < alpha``? Returns
+    ``(k, p)``, or ``None`` when no ``k`` — not even 0 — reaches ``alpha`` at that N (true for
+    n <= 2 at alpha = 0.05: with two reps each the most extreme table has p = 1/6).
+
+    This is the number the report has to print next to every non-significant p, because
+    "not significant at N=5" is a statement about five reps and reads, to anyone not told
+    otherwise, as a statement about the models. It is deliberately the *detectability* of a
+    drop and not an equivalence bound: no run here can establish equivalence.
+    """
+    if n <= 0:
+        return None
+    best: tuple[int, float] | None = None
+    for k in range(n + 1):
+        p = fisher_exact_one_sided(n, n, k, n)
+        if p < alpha:
+            best = (k, p)
+    return best

@@ -830,3 +830,37 @@ def test_passing_cases_counts_one_run_the_way_the_diff_would(tmp_path: Path) -> 
 
     broken = write_run(tmp_path, "broken", {"a": reps("a", 0, 5)})
     assert differ.passing_cases(broken) == 0
+
+
+# ---------------------------------------------------------------------------
+# The differ's taxonomy is the repair loop's input (v0.5 integration)
+# ---------------------------------------------------------------------------
+
+
+def test_a_signature_added_to_the_differ_is_seen_by_the_repair_loop(monkeypatch) -> None:
+    """The loop used to keep a hand-written copy of the priority order, so a signature added
+    here was detected, reported — and never attempted. The list is now derived, and the only
+    legitimate way to be absent from it is `SIGNATURES_WITHOUT_REPAIRS`."""
+    import importlib
+
+    from upshift import differ as differ_mod
+    from upshift.repair import loop as loop_mod
+
+    monkeypatch.setattr(
+        differ_mod, "SIGNATURE_PRIORITY", (*differ_mod.SIGNATURE_PRIORITY, "brand_new_break")
+    )
+    reloaded = importlib.reload(loop_mod)
+    try:
+        assert "brand_new_break" in reloaded._SIGNATURE_PRIORITY
+        assert reloaded._ordered_signatures({"c1": ["brand_new_break"]}) == ["brand_new_break"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(loop_mod)
+
+
+def test_the_loop_skips_exactly_the_signatures_the_differ_says_have_no_repair() -> None:
+    from upshift import differ as differ_mod
+    from upshift.repair.loop import _SIGNATURE_PRIORITY
+
+    missing = set(differ_mod.SIGNATURE_PRIORITY) - set(_SIGNATURE_PRIORITY)
+    assert missing == set(differ_mod.SIGNATURES_WITHOUT_REPAIRS)

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -23,19 +24,37 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 
-from upshift import recorder
+from upshift import recorder, verify_patch
+from upshift.budget import (
+    CostCeiling,
+    CostCeilingExceeded,
+    clear_stopped_marker,
+    startup_warning,
+    write_stopped_marker,
+)
 from upshift.capture import mapping as capture_mapping
 from upshift.capture import record as capture_record
 from upshift.capture import server as capture_server
 from upshift.differ import diff_runs, load_diff, save_diff
 from upshift.differ import passing_cases as differ_passing_cases
+from upshift.native import cli as native_cli
+from upshift.native.protocol import RunnerSpec
 from upshift.patch import make_patch
 from upshift.providers import get_provider
 from upshift.providers.base import ProviderAPIError
 from upshift.repair.loop import repair
 from upshift.report import diff_to_markdown, render_diff
+from upshift.runner_cli import add_retry_args, retry_errored
 from upshift.schemas import ENDPOINTS, LABEL_REGRESSED, Case, validate_turn_params
-from upshift.verdict import BASELINE_BROKEN, SAFE_WITH_PATCH, decide
+from upshift.verdict import (
+    BASELINE_BROKEN,
+    EXIT_INCONCLUSIVE,
+    INCONCLUSIVE,
+    REASON_DESCRIPTIONS,
+    REASON_EMPTY_SUITE,
+    SAFE_WITH_PATCH,
+    decide,
+)
 
 console = Console()
 
@@ -109,6 +128,70 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="reps executed concurrently (default 4)",
     )
     p.add_argument("--quiet", action="store_true", help="no per-rep progress lines")
+    p.add_argument(
+        "--max-cost-usd", type=float, default=None,
+        help="spend ceiling for everything this command records. The priced cost of the "
+        "records already on disk is checked before every rep (and, for `upgrade`, between "
+        "phases and repair candidates); on reaching it the command stops before the next "
+        "API call, leaves every record resumable, and exits "
+        f"{EXIT_COST_STOPPED} without a verdict. Default: no ceiling.",
+    )
+
+
+#: Distinct from 1 (a STAY PINNED verdict) and 2 (a usage/API error): the pipeline never
+#: finished, so neither a verdict nor its absence says anything about the upgrade.
+EXIT_COST_STOPPED = 3
+
+
+def _cost_ceiling(args, prefix: str, models: list[str], *, descendants: bool) -> CostCeiling | None:
+    """Build the ceiling for this command, warning up front about models we cannot price."""
+    limit = getattr(args, "max_cost_usd", None)
+    if limit is None:
+        return None
+    if limit <= 0:
+        raise ValueError(f"--max-cost-usd must be positive (got {limit})")
+    warning = startup_warning(args.provider, models)
+    if warning:
+        console.print(f"[bold yellow]WARNING:[/bold yellow] {escape(warning)}", soft_wrap=True)
+    ceiling = CostCeiling(
+        runs_root=args.runs_root, prefix=prefix, limit_usd=limit, descendants=descendants
+    )
+    if ceiling.spent_usd:
+        console.print(
+            f"[dim]${ceiling.spent_usd:.4f} of the ${limit:.2f} ceiling is already recorded "
+            f"on disk for this {'tag' if descendants else 'run'}[/dim]",
+            highlight=False,
+        )
+    return ceiling
+
+
+def _report_cost_stop(stop: CostCeilingExceeded, marker: Path) -> int:
+    console.print("\n[red]stopped: cost ceiling reached[/red]")
+    console.print(
+        f"  phase        {escape(stop.phase)}\n"
+        f"  spent        ${stop.spent_usd:.4f} (priced from the records on disk)\n"
+        f"  ceiling      ${stop.limit_usd:.2f}",
+        highlight=False,
+    )
+    if stop.unpriced_models:
+        console.print(
+            f"  [yellow]note[/yellow]  {escape(', '.join(stop.unpriced_models))} has no "
+            f"published rate; its usage was charged at the highest rate upshift knows, so "
+            f"the total above is an upper bound",
+            highlight=False,
+            soft_wrap=True,
+        )
+    console.print(
+        f"  no verdict was produced — this pipeline did not finish ({escape(str(marker))})",
+        highlight=False,
+        soft_wrap=True,
+    )
+    console.print(
+        "  every completed rep is on disk: rerun the same command with a higher "
+        "--max-cost-usd to resume, or price what is there with `upshift cost`.",
+        soft_wrap=True,
+    )
+    return EXIT_COST_STOPPED
 
 
 def _make_provider(args):
@@ -198,6 +281,56 @@ def _read_json(path: Path):
         raise ValueError(f"{path}: cannot be read ({e.strerror})") from e
 
 
+class EmptySuiteError(ValueError):
+    """`cases/cases.json` parsed, and holds no cases.
+
+    A ValueError like every other authoring error, so `upshift run` still exits 2 with the
+    message below — but its own class, because `upshift upgrade` owes the user a VERDICT and
+    DESIGN.md §D names this one: an empty suite measures nothing, which is INCONCLUSIVE
+    (exit 3), not a SAFE upgrade and not merely a typo.
+    """
+
+
+def _validate_cases(agent_dir: Path) -> list:
+    """The eval suite, or a ValueError naming the file and the problem. Shared by both kinds
+    of agent directory: the suite is the one thing a native agent still owes upshift."""
+    cases_path = agent_dir / "cases" / "cases.json"
+    if not cases_path.is_file():
+        raise ValueError(
+            f"{cases_path} not found — an agent directory needs its eval suite at cases/cases.json"
+        )
+    try:
+        cases = Case.load_all(cases_path)
+    except TypeError as e:
+        raise ValueError(
+            f"{cases_path}: every case needs id, description, initial_state, user_messages "
+            f"and checks ({e})"
+        ) from e
+    except (KeyError, ValueError) as e:
+        raise ValueError(f"{cases_path}: malformed eval suite ({e})") from e
+    if not cases:
+        raise EmptySuiteError(
+            f"{cases_path}: the eval suite is empty — there is nothing to measure, so no run "
+            f"could say anything about either model"
+        )
+    return cases
+
+
+def _validate_native_agent_dir(agent_dir: Path, config_path: Path, raw: dict) -> dict:
+    """Preflight for an agent.json with a `runner` block (DESIGN.md §C).
+
+    Only `name`, `model` and a valid runner block are required: the endpoint, the prompt, the
+    tool schemas and backend.py belong to the application, which builds its own requests. The
+    runner block is validated by its own parser so the message names the field.
+    """
+    for key in ("name", "model"):
+        if key not in raw:
+            raise ValueError(f"{config_path}: missing required key {key!r} (native runner agent)")
+    RunnerSpec.from_dict(raw["runner"], str(config_path))
+    _validate_cases(agent_dir)
+    return raw
+
+
 def validate_agent_dir(agent_dir: Path) -> dict:
     """Fail fast, before any model call, with a message that names the file and the problem.
 
@@ -215,6 +348,11 @@ def validate_agent_dir(agent_dir: Path) -> dict:
     raw = _read_json(config_path)
     if not isinstance(raw, dict):
         raise ValueError(f"{config_path}: expected a JSON object")  # noqa: TRY004
+    if raw.get("runner") is not None:
+        # DESIGN.md §C: a native agent's prompt, tools and backend are the APPLICATION's, and
+        # upshift never builds a request for it — only `cases/` and the runner block are used.
+        # Demanding the five adapter files here would make the native path impossible to use.
+        return _validate_native_agent_dir(agent_dir, config_path, raw)
     for key in ("name", "endpoint", "model", "system_prompt_file", "tools_file"):
         if key not in raw:
             raise ValueError(f"{config_path}: missing required key {key!r}")
@@ -239,22 +377,7 @@ def validate_agent_dir(agent_dir: Path) -> dict:
             f"{agent_dir / str(raw['tools_file'])}: expected a JSON list of tool schemas"
         )
 
-    cases_path = agent_dir / "cases" / "cases.json"
-    if not cases_path.is_file():
-        raise ValueError(
-            f"{cases_path} not found — an agent directory needs its eval suite at cases/cases.json"
-        )
-    try:
-        cases = Case.load_all(cases_path)
-    except TypeError as e:
-        raise ValueError(
-            f"{cases_path}: every case needs id, description, initial_state, user_messages "
-            f"and checks ({e})"
-        ) from e
-    except (KeyError, ValueError) as e:
-        raise ValueError(f"{cases_path}: malformed eval suite ({e})") from e
-    if not cases:
-        raise ValueError(f"{cases_path}: the eval suite is empty")
+    _validate_cases(agent_dir)
 
     from upshift.runner import load_backend_factory
 
@@ -822,6 +945,68 @@ def cmd_adapt(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# The native runner (DESIGN.md §C): authorization, options, wire capture
+# ---------------------------------------------------------------------------
+
+
+def _native_config(agent_dir: Path):
+    """The loaded AgentConfig, or None when this directory is not a native-runner agent."""
+    from upshift.schemas import AgentConfig
+
+    config = AgentConfig.load(agent_dir)
+    return config if config.runner is not None else None
+
+
+def _runner_gate(agent_dir: Path, args) -> int | None:
+    """`None` when the run may proceed, else the exit code to return.
+
+    Executing an application's own command is a different act from reading its files, so the
+    gate is checked here, before any provider is contacted and before any run directory is
+    written: without --allow-runner upshift prints the exact argv it would have run and stops.
+    """
+    from upshift.schemas import AgentConfig
+
+    return native_cli.check_authorized(
+        AgentConfig.load(agent_dir), args, provider=args.provider, printer=console.print
+    )
+
+
+@contextlib.contextmanager
+def _runner_execution(agent_dir: Path, args, *, runs_root, wire_name: str):
+    """Yield the `runner_options` / `capture_session` kwargs for `run_suite`.
+
+    A no-op for an ordinary adapter agent (the options are still built, and still say "not
+    allowed", which is what an adapter run wants). For a native agent with `--capture`, the
+    `upshift capture` recorder is started on loopback and the child's provider base URL is
+    pointed at it, so the requests the APPLICATION serialized are attached to each rep record.
+    """
+    native = _native_config(agent_dir)
+    session = None
+    with contextlib.ExitStack() as stack:
+        if native is not None and getattr(args, "capture", None) is not None:
+            from upshift.native.runner import CaptureSession
+
+            out_dir = (
+                Path(args.capture) if args.capture
+                else Path(runs_root) / f"{wire_name}-wire"
+            )
+            session = stack.enter_context(
+                CaptureSession(out_dir, provider=args.provider)
+            )
+            console.print(
+                f"[dim]capturing the application's own requests to "
+                f"{escape(str(out_dir))} (workers forced to 1)[/dim]",
+                highlight=False,
+            )
+        options = native_cli.runner_options(
+            args,
+            provider=args.provider,
+            capture_env=session.env() if session is not None else None,
+        )
+        yield {"runner_options": options, "capture_session": session}
+
+
 def cmd_run(args) -> int:
     from upshift.runner import run_suite
 
@@ -831,22 +1016,48 @@ def cmd_run(args) -> int:
     recorder.safe_component(args.run_id, "run id")
     provider = _make_provider(args)
     agent_dir, raw_config = resolve_agent_dir(args.agent, args.runs_root)
+    denied = _runner_gate(agent_dir, args)
+    if denied is not None:
+        return denied
     model = args.model or str(raw_config["model"])
-    _check_models(args.provider, [model])
-    notes = _with_notes(args.notes, anthropic_preflight(provider, [model]))
-    run_directory = run_suite(
-        agent_dir,
-        provider,
-        args.run_id,
-        n_reps=args.n,
-        model_override=args.model,
-        endpoint_override=args.endpoint,
-        runs_root=args.runs_root,
-        case_ids=args.case or None,
-        workers=args.workers,
-        notes=notes,
-        on_rep_done=None if args.quiet else _progress,
+    native = _native_config(agent_dir) is not None
+    # A native run never calls upshift's provider: the application does, with its own client
+    # and its own model string. Preflighting that string against the simulator's or a
+    # provider's model list would reject a perfectly good native run (DESIGN.md §C).
+    if not native:
+        _check_models(args.provider, [model])
+    notes = _with_notes(
+        args.notes, "" if native else anthropic_preflight(provider, [model])
     )
+    ceiling = _cost_ceiling(args, args.run_id, [model], descendants=False)
+    if ceiling is not None:
+        ceiling.set_phase(f"run {args.run_id}")
+    try:
+        with _runner_execution(
+            agent_dir, args, runs_root=args.runs_root, wire_name=args.run_id
+        ) as native_kwargs:
+            run_directory = run_suite(
+                agent_dir,
+                provider,
+                args.run_id,
+                n_reps=args.n,
+                model_override=args.model,
+                endpoint_override=args.endpoint,
+                runs_root=args.runs_root,
+                case_ids=args.case or None,
+                workers=args.workers,
+                notes=notes,
+                on_rep_done=None if args.quiet else _progress,
+                cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
+                **native_kwargs,
+            )
+    except CostCeilingExceeded as stop:
+        marker = write_stopped_marker(
+            recorder.run_dir(args.runs_root, args.run_id), stop, extra={"run_id": args.run_id}
+        )
+        return _report_cost_stop(stop, marker)
+    clear_stopped_marker(run_directory)
     summary = json.loads((run_directory / "summary.json").read_text())
     passes = sum(1 for s in summary.values() if s["n"] and s["passes"] / s["n"] >= 0.8)
     console.print(
@@ -871,6 +1082,36 @@ def cmd_diff(args) -> int:
     return 0
 
 
+def _empty_suite_verdict(args, empty: EmptySuiteError) -> int:
+    """DESIGN.md §D: an empty suite is INCONCLUSIVE(empty_suite), with the artifact to prove
+    it. Written before any model is contacted — nothing was run, and the verdict says so."""
+    verdict = {
+        "verdict": INCONCLUSIVE,
+        "reasons": [REASON_EMPTY_SUITE],
+        "inconclusive_reason": REASON_EMPTY_SUITE,
+        "reason_details": {REASON_EMPTY_SUITE: {"detail": str(empty), "cases": []}},
+        "baseline_model": args.baseline_model,
+        "candidate_model": args.candidate_model,
+        "cases_total": 0,
+        "runs": [],
+    }
+    out_dir = recorder.run_dir(args.runs_root, args.tag)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=1, sort_keys=True))
+    console.print(
+        f"[bold white on yellow] {INCONCLUSIVE} [/bold white on yellow] "
+        f"{REASON_EMPTY_SUITE}: {REASON_DESCRIPTIONS[REASON_EMPTY_SUITE]}",
+        highlight=False, soft_wrap=True,
+    )
+    console.print(f"[dim]{escape(str(empty))}[/dim]", highlight=False, soft_wrap=True)
+    console.print(
+        f"nothing was run and no model was contacted; verdict in "
+        f"{escape(str((out_dir / 'verdict.json').resolve()))}",
+        highlight=False, soft_wrap=True,
+    )
+    return EXIT_INCONCLUSIVE
+
+
 def cmd_upgrade(args) -> int:
     from upshift.runner import run_suite
 
@@ -885,66 +1126,119 @@ def cmd_upgrade(args) -> int:
     # names is rewritten by the repair loop: check it before the first run starts.
     recorder.safe_component(args.tag, "tag")
     provider = _make_provider(args)
-    agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
+    try:
+        agent_dir, _ = resolve_agent_dir(args.agent, args.runs_root)
+    except EmptySuiteError as empty:
+        return _empty_suite_verdict(args, empty)
+    denied = _runner_gate(agent_dir, args)
+    if denied is not None:
+        return denied
     # Only a `adapt --from-capture` directory has one; None everywhere else, and None means
     # the report says nothing about frameworks rather than guessing at one.
     framework = capture_mapping.framework_of(agent_dir)
-    _check_models(args.provider, [args.baseline_model, args.candidate_model])
-    preflight = anthropic_preflight(provider, [args.baseline_model, args.candidate_model])
+    # See cmd_run: for a native agent the model strings are the APPLICATION's, not ours.
+    native = _native_config(agent_dir) is not None
+    if not native:
+        _check_models(args.provider, [args.baseline_model, args.candidate_model])
+    preflight = (
+        "" if native
+        else anthropic_preflight(provider, [args.baseline_model, args.candidate_model])
+    )
     tag = args.tag
     runs_root = args.runs_root
     baseline_id = f"{tag}-baseline"
     candidate_id = f"{tag}-candidate"
 
-    console.rule(f"[bold]1/4 baseline run: {args.baseline_model}")
-    run_suite(
-        agent_dir, provider, baseline_id, n_reps=args.n,
-        model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
-        notes=_with_notes("upgrade pipeline baseline", preflight),
-        on_rep_done=None if args.quiet else _progress,
+    # One ceiling for the whole pipeline: every run id here is derived from --tag, so the
+    # baseline, the candidate and every repair screen/verify/adjudication run count against
+    # the same budget. It is re-checked between phases as well as before every rep, so a
+    # phase that lands exactly on the line does not start the next one.
+    ceiling = _cost_ceiling(
+        args, tag, [args.baseline_model, args.candidate_model], descendants=True
     )
-    if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
-        # Said here, between the legs, because the candidate run is the one that costs money
-        # and a comparison against a baseline that passed nothing cannot mean anything.
-        console.print(
-            f"\n[bold white on red] {BASELINE_BROKEN} [/bold white on red] the baseline model "
-            f"{escape(args.baseline_model)} passed 0 cases: this suite does not work on the "
-            f"model it is supposed to work on, so nothing measured against "
-            f"{escape(args.candidate_model)} will mean anything. The pipeline will report "
-            f"{BASELINE_BROKEN}, never SAFE. Stop it now (Ctrl-C; completed reps are kept) "
-            f"and fix the agent directory or the eval suite first.\n",
-            highlight=False, soft_wrap=True,
-        )
-    console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
-    run_suite(
-        agent_dir, provider, candidate_id, n_reps=args.n,
-        model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
-        notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
-        on_rep_done=None if args.quiet else _progress,
-    )
+    out_dir = recorder.run_dir(runs_root, tag)
 
-    console.rule("[bold]3/4 behavioral diff")
-    diff = diff_runs(recorder.run_dir(runs_root, baseline_id),
-                     recorder.run_dir(runs_root, candidate_id))
-    regressed = [c for c in diff.cases if c.label == LABEL_REGRESSED]
-
-    repair_outcome = None
-    patch_path = None
-    if regressed and not args.no_repair:
-        console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
-        work_dir = recorder.run_dir(runs_root, tag) / "patched_agent"
-        repair_outcome = repair(
-            original_agent_dir=agent_dir,
-            work_dir=work_dir,
-            provider=provider,
-            candidate_model=args.candidate_model,
-            baseline_diff=diff,
-            n_reps=args.n,
-            runs_root=runs_root,
-            run_prefix=tag,
-            budget=args.budget,
-            workers=args.workers,
+    def stopped(stop: CostCeilingExceeded) -> int:
+        marker = write_stopped_marker(
+            out_dir,
+            stop,
+            extra={"tag": tag, "baseline_run_id": baseline_id, "candidate_run_id": candidate_id},
         )
+        return _report_cost_stop(stop, marker)
+
+    try:
+        with _runner_execution(
+            agent_dir, args, runs_root=runs_root, wire_name=tag
+        ) as native_kwargs:
+            console.rule(f"[bold]1/4 baseline run: {args.baseline_model}")
+            if ceiling is not None:
+                ceiling.check("1/4 baseline run")
+            run_suite(
+                agent_dir, provider, baseline_id, n_reps=args.n,
+                model_override=args.baseline_model, runs_root=runs_root, workers=args.workers,
+                notes=_with_notes("upgrade pipeline baseline", preflight),
+                on_rep_done=None if args.quiet else _progress,
+                cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
+                **native_kwargs,
+            )
+            if differ_passing_cases(recorder.run_dir(runs_root, baseline_id)) == 0:
+                # Said here, between the legs, because the candidate run is the one that costs
+                # money and a comparison against a baseline that passed nothing cannot mean
+                # anything.
+                console.print(
+                    f"\n[bold white on red] {BASELINE_BROKEN} [/bold white on red] the baseline "
+                    f"model {escape(args.baseline_model)} passed 0 cases: this suite does not "
+                    f"work on the model it is supposed to work on, so nothing measured against "
+                    f"{escape(args.candidate_model)} will mean anything. The pipeline will report "
+                    f"{BASELINE_BROKEN}, never SAFE. Stop it now (Ctrl-C; completed reps are "
+                    f"kept) and fix the agent directory or the eval suite first.\n",
+                    highlight=False, soft_wrap=True,
+                )
+            console.rule(f"[bold]2/4 candidate run: {args.candidate_model}")
+            if ceiling is not None:
+                ceiling.check("2/4 candidate run")
+            run_suite(
+                agent_dir, provider, candidate_id, n_reps=args.n,
+                model_override=args.candidate_model, runs_root=runs_root, workers=args.workers,
+                notes=_with_notes("upgrade pipeline candidate (unpatched)", preflight),
+                on_rep_done=None if args.quiet else _progress,
+                cost_ceiling=ceiling,
+                retry_errored=retry_errored(args),
+                **native_kwargs,
+            )
+
+            console.rule("[bold]3/4 behavioral diff")
+            diff = diff_runs(recorder.run_dir(runs_root, baseline_id),
+                             recorder.run_dir(runs_root, candidate_id))
+            regressed = [c for c in diff.cases if c.label == LABEL_REGRESSED]
+
+            repair_outcome = None
+            patch_path = None
+            if regressed and not args.no_repair:
+                console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
+                if ceiling is not None:
+                    ceiling.check("4/4 repair loop")
+                work_dir = out_dir / "patched_agent"
+                repair_outcome = repair(
+                    final_verify=not args.no_final_verify,
+                    original_agent_dir=agent_dir,
+                    work_dir=work_dir,
+                    provider=provider,
+                    candidate_model=args.candidate_model,
+                    baseline_diff=diff,
+                    n_reps=args.n,
+                    runs_root=runs_root,
+                    run_prefix=tag,
+                    budget=args.budget,
+                    workers=args.workers,
+                    cost_ceiling=ceiling,
+                    **native_kwargs,
+                )
+    except CostCeilingExceeded as stop:
+        return stopped(stop)
+
+    if repair_outcome is not None:
         for line in repair_outcome.log:
             # Log lines carry [repair_type] tags and ['case', 'lists'] — rich would eat them.
             console.print(f"[dim]{escape(line)}[/dim]", highlight=False)
@@ -966,12 +1260,15 @@ def cmd_upgrade(args) -> int:
             patch_file.write_text(patch_text)
             patch_path = str(patch_file)
 
-    verdict = decide(diff, repair_outcome, patch_path, framework=framework)
+    verdict = decide(
+        diff, repair_outcome, patch_path, framework=framework, runs_root=runs_root
+    )
     console.print()
     render_diff(diff, console=console, verdict=verdict)
 
-    out_dir = recorder.run_dir(runs_root, tag)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The pipeline finished, so a marker from an earlier cost-stopped attempt is stale.
+    clear_stopped_marker(out_dir)
     save_diff(diff, out_dir / "diff.json")
     (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=1, sort_keys=True))
     (out_dir / "REPORT.md").write_text(diff_to_markdown(diff, verdict=verdict))
@@ -989,6 +1286,8 @@ def cmd_upgrade(args) -> int:
     )
     if verdict["verdict"] == SAFE_WITH_PATCH:
         console.print(f"apply the repair with: [bold]git apply {escape(str(patch_path))}[/bold]")
+    if verdict["verdict"] == INCONCLUSIVE:
+        return EXIT_INCONCLUSIVE
     return 0 if verdict["verdict"] in ("SAFE", SAFE_WITH_PATCH) else 1
 
 
@@ -1227,6 +1526,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_run.add_argument("--case", action="append", help="run only these case ids (repeatable)")
     p_run.add_argument("--notes", default="", help="free text stored in the run manifest")
+    add_retry_args(p_run)
+    native_cli.add_runner_args(p_run)
     p_run.set_defaults(func=cmd_run)
 
     p_diff = sub.add_parser("diff", help="compare two recorded runs")
@@ -1248,11 +1549,25 @@ def main(argv: list[str] | None = None) -> int:
         "--candidate-model", required=True, help="model version you want to upgrade to"
     )
     p_up.add_argument("--tag", required=True, help="name for this upgrade experiment")
-    p_up.add_argument("--budget", type=int, default=6, help="max repair candidates (default 6)")
+    add_retry_args(p_up)
+    p_up.add_argument(
+        "--budget", type=int, default=24,
+        help="max repair candidates the loop may TRY, counted per candidate SCREENED "
+        "(default 24). Every sibling candidate a signature round produces is screened on "
+        "the still-broken cases before any of them is verified, so a round costs one unit "
+        "of budget per sibling — which is what stops the loop accepting the first candidate "
+        "that happens to work and never measuring the one that works better.",
+    )
     p_up.add_argument(
         "--no-repair", action="store_true",
         help="stop after the behavioral diff; do not try to repair the regressions",
     )
+    p_up.add_argument(
+        "--no-final-verify", action="store_true",
+        help="skip the fresh final full-suite run after the last accepted repair; the verdict "
+        "is then labelled selection_evidence_only (DESIGN.md v0.5 §D)",
+    )
+    native_cli.add_runner_args(p_up)
     p_up.set_defaults(func=cmd_upgrade)
 
     p_cost = sub.add_parser("cost", help="exact token cost of recorded runs")
@@ -1271,6 +1586,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_rep.set_defaults(func=cmd_report)
 
+    verify_patch.add_parser(sub)
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -1283,6 +1600,11 @@ def main(argv: list[str] | None = None) -> int:
     _install_interrupt_handler()
     try:
         return args.func(args)
+    except CostCeilingExceeded as e:
+        # Safety net: both commands that can set a ceiling already report the stop with
+        # their own artifacts. This keeps the exit code distinct if one ever escapes.
+        console.print(f"[red]stopped:[/red] {escape(str(e))}")
+        return EXIT_COST_STOPPED
     except ValueError as e:
         console.print(f"[red]error:[/red] {escape(str(e))}")
         return 2

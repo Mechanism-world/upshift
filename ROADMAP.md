@@ -13,7 +13,9 @@ promised; each item is listed because it was tempting and we said no for now.
   that is the boundary.
 - **UI / dashboard** — the verdict, the patch, and the committed records are the product;
   a UI would be a second surface to keep honest.
-- **Hosted service / SaaS** — "nothing leaves your machine" is a feature, not a phase.
+- **Hosted service / SaaS** — running locally, against your own provider account, is a
+  feature, not a phase. Your prompts and transcripts go to the provider you chose and
+  nowhere else; there is nothing of ours in the path, and we do not want there to be.
 - **Cross-file identifier chasing in `adapt`** — needed for schemas defined far from their
   registration site (ChatDBG); a real capability, deferred until the two-round extraction
   has more live mileage.

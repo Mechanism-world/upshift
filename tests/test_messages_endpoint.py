@@ -27,7 +27,12 @@ from upshift.providers.anthropic_provider import (
     AnthropicProvider,
     messages_create_accepts,
 )
-from upshift.providers.base import Provider, ProviderAPIError, get_provider
+from upshift.providers.base import (
+    ERROR_SDK_VALIDATION,
+    Provider,
+    ProviderAPIError,
+    get_provider,
+)
 from upshift.recorder import load_case_reps
 from upshift.runner import run_suite
 from upshift.schemas import AgentConfig, Case
@@ -905,6 +910,13 @@ def test_preflight_other_errors_propagate_as_api_errors():
 # ---------------------------------------------------------------------------
 # SDK-side parameter rejection (anthropic >= 1.3.0 removed temperature/top_p/top_k
 # from Messages.create, so the documented 400 never reaches the wire)
+#
+# v0.5 (DESIGN §G): this used to be recorded as the 400 the API returns for the same request,
+# which made the differ call it a sampling break and offer the drop-sampling-params repair.
+# That was a manufactured status for a request that was never sent — it told a reader the
+# provider rejected the agent when nothing left the machine — and it hits BOTH models of an
+# upgrade pair identically, so it could never distinguish them anyway. It is now recorded as
+# `sdk_validation` with `status_code: None` and classified `harness_error`.
 # ---------------------------------------------------------------------------
 
 
@@ -914,19 +926,17 @@ def removed_kwarg_type_error(name: str) -> TypeError:
 
 
 @pytest.mark.parametrize("param", ["temperature", "top_p", "top_k"])
-def test_sdk_removed_sampling_kwarg_is_a_400_the_differ_calls_a_sampling_break(param):
+def test_sdk_removed_kwarg_is_a_local_validation_error_not_a_provider_status(param):
     provider = make_provider(FakeClient(messages_outcome=removed_kwarg_type_error(param)))
 
     with pytest.raises(ProviderAPIError) as excinfo:
         provider.call("messages", {"model": "claude-fable-5", param: 0}, "k")
 
     exc = excinfo.value
-    assert exc.status_code == 400
+    assert exc.status_code is None  # nothing was sent; there is no status to report
+    assert exc.error_type == ERROR_SDK_VALIDATION
     assert f"unexpected keyword argument '{param}'" in exc.message
-    assert (
-        differ._api_error_signature(exc.to_dict())
-        == differ.SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS
-    )
+    assert differ._api_error_signature(exc.to_dict()) == differ.SIG_HARNESS_ERROR
 
 
 def test_a_type_error_that_is_not_an_unexpected_kwarg_is_not_swallowed():
@@ -946,7 +956,8 @@ def test_the_episode_records_the_sdk_rejection_instead_of_dying():
         make_config(params={}), make_case(), provider, StubBackend(), rep=0, seed=0,
     )
 
-    assert result.api_error["status_code"] == 400
+    assert result.api_error["status_code"] is None
+    assert result.api_error["type"] == ERROR_SDK_VALIDATION
     assert "temperature" in result.api_error["message"]
     assert result.api_calls[0].response is None
 
@@ -969,8 +980,9 @@ def test_the_whole_suite_survives_it_and_records_failing_reps(tmp_path):
         reps = load_case_reps(run_dir, case_id)
         assert len(reps) == 2
         assert all(not r.passed for r in reps)
-        assert all(r.api_error["status_code"] == 400 for r in reps)
-        assert failure_signatures(reps) == [differ.SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS]
+        assert all(r.api_error["status_code"] is None for r in reps)
+        assert all(r.api_error["type"] == ERROR_SDK_VALIDATION for r in reps)
+        assert failure_signatures(reps) == [differ.SIG_HARNESS_ERROR]
 
 
 # ---------------------------------------------------------------------------
@@ -1023,8 +1035,9 @@ def test_temperature_reaches_an_sdk_that_dropped_it_instead_of_raising(
         assert name not in client.messages.seen
 
 
-def test_another_unexpected_kwarg_still_maps_to_the_documented_400():
-    """The A-052 mapping is kept for every other parameter a future SDK removes."""
+def test_another_unexpected_kwarg_is_also_a_local_validation_error():
+    """The mapping is kept for every other parameter a future SDK removes — as a local
+    validation error, so the run says the request never reached the provider."""
     client = FakeClient()
     client.messages = StrictFakeMessages({"id": "msg_1", "content": []})
     provider = make_provider(client)
@@ -1032,7 +1045,8 @@ def test_another_unexpected_kwarg_still_maps_to_the_documented_400():
     with pytest.raises(ProviderAPIError) as excinfo:
         provider.call("messages", {"model": "claude-fable-5", "top_z": 1}, "k")
 
-    assert excinfo.value.status_code == 400
+    assert excinfo.value.status_code is None
+    assert excinfo.value.error_type == ERROR_SDK_VALIDATION
     assert "unexpected keyword argument 'top_z'" in excinfo.value.message
 
 

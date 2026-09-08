@@ -1,6 +1,8 @@
 """Cost model: standard vs flex/batch tier, cached-input discount, unknown models."""
 
-from upshift.pricing import price
+import pytest
+
+from upshift.pricing import cached_input_fraction, price
 
 
 def test_standard_sync_rates():
@@ -125,3 +127,145 @@ def test_claude_opus_5_has_a_known_rate():
     assert abs(price("anthropic", "claude-opus-5", 1_000_000, 0, 1_000_000) - 0.50) < 1e-9
     # 5-minute cache writes at 1.25x input: 1M written -> 6.25
     assert abs(price("anthropic", "claude-opus-5", 0, 0, 0, 1_000_000) - 6.25) < 1e-9
+
+
+# Every model id `upshift` can be pointed at must price, or `upshift cost` reports
+# "unknown rate" on a real run and the whole cost column becomes a guess.
+GPT_56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_every_served_gpt_56_model_has_a_rate(model):
+    assert price("openai", model, 1_000_000, 1_000_000, 0) is not None, (
+        f"{model} has no entry in pricing.RATES"
+    )
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_gpt_56_published_rates(model):
+    # developers.openai.com/api/docs/pricing, fetched 2026-09-03; USD per 1M tokens.
+    published = {
+        "gpt-5.6-sol": (4.00, 20.00),
+        "gpt-5.6-terra": (2.00, 12.00),
+        "gpt-5.6-luna": (0.20, 1.20),
+    }[model]
+    assert abs(price("openai", model, 1_000_000, 0, 0) - published[0]) < 1e-9
+    assert abs(price("openai", model, 0, 1_000_000, 0) - published[1]) < 1e-9
+
+
+@pytest.mark.parametrize("model", GPT_56_MODELS)
+def test_gpt_56_flex_batch_and_cached_match_the_published_table(model):
+    # The published flex and batch rows are exactly half the standard row, and the published
+    # cached-input rate is exactly 10% of the applicable input rate, for all three models.
+    standard = price("openai", model, 1_000_000, 100_000, 0)
+    assert abs(price("openai-flex", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    assert abs(price("openai-batch", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    full_input = price("openai", model, 1_000_000, 0, 0)
+    assert abs(price("openai", model, 1_000_000, 0, 1_000_000) - full_input / 10) < 1e-9
+
+
+# gpt-5.2 and gpt-5-mini: models a user can point --baseline-model / --candidate-model at.
+# developers.openai.com/api/docs/pricing, fetched 2026-09-03; USD per 1M tokens, standard tier.
+GPT_52_MODELS = {
+    "gpt-5.2": (1.75, 14.00),
+    "gpt-5.2-pro": (21.00, 168.00),
+    "gpt-5-mini": (0.25, 2.00),
+}
+
+
+@pytest.mark.parametrize("model", sorted(GPT_52_MODELS))
+def test_gpt_52_family_published_rates(model):
+    published = GPT_52_MODELS[model]
+    assert abs(price("openai", model, 1_000_000, 0, 0) - published[0]) < 1e-9
+    assert abs(price("openai", model, 0, 1_000_000, 0) - published[1]) < 1e-9
+
+
+def test_gpt_52_pro_does_not_resolve_to_the_gpt_52_rate():
+    """`gpt-5.2-pro` is a separate published row at 12x the `gpt-5.2` rate. Without its own
+    entry the longest-prefix lookup would price it as `gpt-5.2` and understate a run 12-fold
+    — which, with a spend ceiling set, is a fail-open."""
+    assert price("openai", "gpt-5.2-pro", 1_000_000, 0, 0) > price(
+        "openai", "gpt-5.2", 1_000_000, 0, 0
+    )
+
+
+def test_gpt_52_snapshot_and_flex_rows():
+    assert abs(price("openai", "gpt-5.2-2026-01-15", 1_000_000, 0, 0) - 1.75) < 1e-9
+    # published flex/batch row is exactly half standard: $0.875 in / $7.00 out
+    assert abs(price("openai-flex", "gpt-5.2", 1_000_000, 0, 0) - 0.875) < 1e-9
+    assert abs(price("openai-batch", "gpt-5.2", 0, 1_000_000, 0) - 7.00) < 1e-9
+    # published cached-input row is exactly 10% of input: $0.175 / $0.025 per 1M
+    assert abs(price("openai", "gpt-5.2", 1_000_000, 0, 1_000_000) - 0.175) < 1e-9
+    assert abs(price("openai", "gpt-5-mini", 1_000_000, 0, 1_000_000) - 0.025) < 1e-9
+
+
+def test_pre_gpt5_baseline_models_have_known_rates():
+    """A target repo's shipped default model is what a migration case runs as its BASELINE
+    leg, so it must price. Without a rate, `upshift cost` says "unknown rate" and the
+    ceiling charges the leg at the most expensive rate upshift knows — which stopped a real
+    lab run (ghc-223) at a reported $1.53 over a leg that actually cost about a cent.
+
+    $0.15/$0.60 (gpt-4o-mini) and $0.10/$0.40 (gpt-4.1-nano) per MTok, Standard tier, per
+    https://developers.openai.com/api/docs/pricing, verified 2026-09-05.
+    """
+    assert abs(price("openai", "gpt-4o-mini", 1_000_000, 1_000_000, 0) - 0.75) < 1e-9
+    assert abs(price("openai", "gpt-4.1-nano", 1_000_000, 1_000_000, 0) - 0.50) < 1e-9
+    # snapshot ids resolve by prefix
+    assert abs(price("openai", "gpt-4o-mini-2024-07-18", 1_000_000, 0, 0) - 0.15) < 1e-9
+    # flex halves it like every other OpenAI row
+    assert abs(price("openai-flex", "gpt-4o-mini", 1_000_000, 0, 0) - 0.075) < 1e-9
+
+
+def test_pre_gpt5_cached_input_is_not_the_ten_percent_default():
+    """These two publish their own cached-input prices ($0.075 of $0.15, $0.025 of $0.10).
+    Applying the gpt-5-era 90% discount would under-report a cache-heavy baseline leg."""
+    assert cached_input_fraction("gpt-4o-mini") == 0.5
+    assert cached_input_fraction("gpt-4.1-nano") == 0.25
+    # 1M fully cached input -> the published cached-input price, not $0.015/$0.010
+    assert abs(price("openai", "gpt-4o-mini", 1_000_000, 0, 1_000_000) - 0.075) < 1e-9
+    assert abs(price("openai", "gpt-4.1-nano", 1_000_000, 0, 1_000_000) - 0.025) < 1e-9
+    # a gpt-5-era model is untouched by the override table
+    assert cached_input_fraction("gpt-5.5") == 0.1
+
+
+# The gpt-5.4 family is what a target that predates the temperature deprecation runs as its
+# baseline (the 2026-09-05 atlas-ui-3 rescue case), so every sibling must price or the
+# baseline leg of an upgrade run reports "unknown rate" and `--max-cost-usd` cannot enforce
+# a ceiling on it at all.
+GPT_54_PUBLISHED = {
+    # developers.openai.com/api/docs/pricing, fetched 2026-09-05; USD per 1M tokens.
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4-pro": (30.00, 180.00),
+}
+
+
+@pytest.mark.parametrize("model", sorted(GPT_54_PUBLISHED))
+def test_gpt_54_published_rates(model):
+    published = GPT_54_PUBLISHED[model]
+    assert abs(price("openai", model, 1_000_000, 0, 0) - published[0]) < 1e-9
+    assert abs(price("openai", model, 0, 1_000_000, 0) - published[1]) < 1e-9
+
+
+def test_gpt_54_siblings_do_not_collapse_onto_the_base_entry():
+    """Prefix matching must pick the longest match: a -pro run is 12x a plain gpt-5.4 run,
+    so pricing it as gpt-5.4 would understate the spend by an order of magnitude."""
+    assert price("openai", "gpt-5.4-pro", 1_000_000, 0, 0) > price(
+        "openai", "gpt-5.4", 1_000_000, 0, 0
+    )
+    assert price("openai", "gpt-5.4-mini", 1_000_000, 0, 0) < price(
+        "openai", "gpt-5.4", 1_000_000, 0, 0
+    )
+    # A dated snapshot id still resolves to its own family member, not the base entry.
+    assert abs(price("openai", "gpt-5.4-mini-2026-03-17", 1_000_000, 0, 0) - 0.75) < 1e-9
+    assert abs(price("openai", "gpt-5.4-2026-03-05", 1_000_000, 0, 0) - 2.50) < 1e-9
+
+
+@pytest.mark.parametrize("model", sorted(GPT_54_PUBLISHED))
+def test_gpt_54_flex_and_cached_follow_the_published_table(model):
+    standard = price("openai", model, 1_000_000, 100_000, 0)
+    assert abs(price("openai-flex", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    assert abs(price("openai-batch", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
+    full_input = price("openai", model, 1_000_000, 0, 0)
+    assert abs(price("openai", model, 1_000_000, 0, 1_000_000) - full_input / 10) < 1e-9

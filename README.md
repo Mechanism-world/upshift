@@ -13,9 +13,9 @@
 
 **upshift** takes a tool-calling agent, runs its eval cases on two model versions, tells you
 with a p-value what regressed, tries a small set of repairs, and either hands you a patch
-it has verified against your whole suite — or tells you to stay pinned, and why. It runs
-entirely on your machine with your own API keys. Every claim in this README is backed by
-run records committed in this repository.
+it has verified against your whole suite — or tells you to stay pinned, and why. It is a
+local CLI: it runs on your machine, with your own API keys, and calls no service of ours.
+Every claim in this README is backed by run records committed in this repository.
 
 - **Two providers**: OpenAI (chat/completions, responses) and Anthropic (messages).
 - **Statistics, not vibes**: N runs per case (default 5), pass/fail as rates, Fisher exact
@@ -81,6 +81,12 @@ upshift upgrade --agent my-agent --provider anthropic \
 path caches the prompt prefix automatically. `upshift cost` prints the exact recorded spend.
 Runs are resumable — Ctrl-C exits immediately and a rerun picks up where it stopped.
 
+`--max-cost-usd N` puts a ceiling on that spend. The priced cost of everything recorded
+under the run id (or, for `upgrade`, the whole `--tag` family: baseline, candidate and every
+repair screen and verification) is checked before each rep and between phases; on reaching
+the ceiling the command stops before the next API call, writes a `COST_STOPPED.json` marker
+instead of a verdict, and exits 3. Rerun the same command with a higher ceiling to resume.
+
 ### Onboarding your agent in minutes
 
 ```bash
@@ -135,6 +141,35 @@ knob a framework does not have is reported as "not mapped", never guessed.
 
 Live smoke on a real pydantic-ai agent, `claude-fable-5` → `claude-fable-5-1`:
 [reports/capture-pydantic-ai-smoke.md](reports/capture-pydantic-ai-smoke.md).
+
+### Let the application run itself (native runner)
+
+If your agent already has a test or eval command, you don't have to rebuild it as a Python
+backend. Add a `runner` block to `agent.json` and upshift invokes your command once per
+case and rep, feeding the case on stdin and reading one JSON result line (protocol v1,
+[ADAPTER.md](ADAPTER.md#native-runner)); the same checks, statistics and verdicts apply.
+Running repository code needs `--allow-runner`; the child gets a minimal environment, a
+timeout, bounded output and a fresh copy of its working directory per rep. Reference
+runners for Python and Node are in [`examples/runners/`](examples/runners/). Results from a
+native run are stamped `native_application` — the only scope that means "verified in the
+application". Repairs are not generated in native mode; upshift measures regressions and
+verifies the patch you supply.
+
+### Verify the patch you actually ship
+
+```bash
+upshift verify-patch --agent my-agent --patch runs/my-upgrade/upgrade.patch --run runs/my-upgrade-final
+```
+
+Applies the exact exported patch to a clean copy, rebuilds every case's first request through
+the same code path, and compares it with the run that verified the patch — exit 0 only when
+they match byte for byte (cache keys and seeds excluded). This closes the gap between "the
+repair idea worked" and "the file we exported is what was verified".
+
+Operational notes: `--max-cost-usd` bounds spend for a whole `upgrade` (the default
+`--budget` of 24 counts every repair candidate *screened*, since siblings are now screened
+before one is accepted); `--retry-errored` re-runs reps that ended in a transient provider
+error (rate limits, capacity, 5xx) when resuming — those never count as behaviour.
 
 ## What it has found so far
 
@@ -197,16 +232,55 @@ with the evidence — or tells you to stay pinned.
 
 ## Security and privacy
 
-- **Nothing leaves your machine.** Your keys are read from your environment or a local `.env`
-  and used only to call the provider you chose. Prompts, transcripts, and results are written
-  to your local `runs/` directory. No telemetry, no account, no server.
-- **Run records contain your prompts and the models' outputs verbatim** — that is what makes
-  them evidence. Review them before publishing yours.
-- **Backends you run are executed.** The `backend.py` in an adapter is code; the shell_gpt
-  adapter runs model-generated commands inside Docker with `--network none`.
-- **`adapt` reads; it does not execute.** It reads a repository's files and sends cited slices
-  to the model you configured.
+### What leaves your machine
+
+upshift runs locally and sends nothing to Mechanism: there is no backend of ours, no
+telemetry, no analytics, no account, and no license check. What does leave your machine is
+what you asked upshift to send, to the provider you chose:
+
+- **Provider API calls transmit your prompts and your credentials.** Every run sends your
+  system prompt, tool schemas, eval-case messages and tool results to OpenAI or Anthropic (or
+  to the base URL you set), authenticated with your key. That is the measurement; there is no
+  way to test a model without talking to it.
+- **`upshift adapt` sends cited slices of your code to the extraction model.** It reads the
+  repository you point it at and puts the ranked excerpts in the prompt. Point it at a private
+  repository and that repository's source reaches the model you configured.
+- **Everything else stays on disk.** Run records, diffs, verdicts and patches are written to
+  your local `runs/` directory. Nothing is uploaded, committed or pushed for you.
+- **Your local transcripts can contain sensitive data.** A run record holds your prompts, the
+  models' outputs and your tool results verbatim — that is what makes it evidence, and it is
+  also why you should read a run directory before you publish it. An `adapt` record
+  additionally quotes the source it read.
+
+`git clone --depth 1` of a URL you pass to `adapt` is the only other outbound call.
+Details, and the guards each claim rests on: [SECURITY.md](SECURITY.md).
+
+### Code that gets executed
+
+- **Backends you run are executed.** The `backend.py` in an adapter is code, and `upshift
+  upgrade` imports and calls it in your process; the shell_gpt adapter runs model-generated
+  commands inside Docker with `--network none`. Read a generated `backend.py` before you
+  run it.
+- **`adapt` reads; it does not execute.** It never imports, builds or tests the repository
+  it analyses.
 - Vulnerability reports: see [SECURITY.md](SECURITY.md).
+
+### Verification scope — what a green result actually proves
+
+Every run, diff, verdict and report carries one of three scopes, derived from how the run
+executed (never declared by you):
+
+- **`request_contract`** — upshift built the requests itself from your three patchable files
+  and sent them, against a capture replay or a generated stub, so the result proves what the
+  provider accepts or rejects about the request shape.
+- **`adapted_agent`** — your adapter's `backend.py` executed real tool semantics, so the
+  result proves the behaviour of the adapted reconstruction of your agent.
+- **`native_application`** — your application's own entry point ran, with its own
+  request-building code and the original configuration, so the result proves behaviour in the
+  application itself.
+
+No wording anywhere says "verified in the application" unless the scope is
+`native_application`.
 
 ## Documentation
 
@@ -217,6 +291,7 @@ with the evidence — or tells you to stay pinned.
 | Read the migration evidence | [shell_gpt on gpt-5.6](reports/shellgpt-upgrade.md) · [four Claude agents on Fable 5.1](reports/fable-5-1-upgrade.md) |
 | See what `adapt` does on real repos | [adapt reports](reports/) |
 | Capture a framework agent at the wire | [docs/framework-mapping.md](docs/framework-mapping.md) |
+| What is actually implemented, and how far it is tested | [docs/capabilities.md](docs/capabilities.md) |
 | What's out of scope, and why | [ROADMAP.md](ROADMAP.md) · [SCOPE.md](SCOPE.md) |
 | What changed | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -247,7 +322,7 @@ with the evidence — or tells you to stay pinned.
 ```bash
 git clone https://github.com/Mechanism-world/upshift && cd upshift
 uv sync --group dev
-uv run ruff check src tests && uv run pytest -q
+uv run ruff check src tests agents && uv run pytest -q
 ```
 
 macOS note: uv's editable-install `.pth` file sometimes gets the `UF_HIDDEN` flag and CPython
@@ -258,7 +333,8 @@ skips it; tests self-heal via `tests/conftest.py`, and for the CLI entry point r
 
 - **The ask:** if you run a tool-calling agent, point `upshift adapt` at it and tell us what it
   got wrong — [open an agent report](https://github.com/Mechanism-world/upshift/issues/new/choose).
-  Nothing leaves your machine.
+  Nothing reaches us that you do not put in the report yourself; `adapt` itself sends your
+  code only to the extraction model you configured.
 - Questions and ideas: [Discussions](https://github.com/Mechanism-world/upshift/discussions).
 - Bugs: [Issues](https://github.com/Mechanism-world/upshift/issues).
 - Project site: [mechanism.world](https://mechanism.world).

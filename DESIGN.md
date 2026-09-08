@@ -118,6 +118,18 @@ Failure signatures drive candidate order (playbook.py):
 - `api_error_tools_reasoning` (400 matching the documented 5.6 break) →
   1. endpoint routing: chat_completions → responses
   2. params: reasoning_effort = "none" (stay on chat_completions)
+- `api_error_schema_invalid` (400 naming `additionalProperties`, `'required'`, or reading
+  `Invalid schema for response_format` / `Invalid schema for function`) → `schema-strict-compat`:
+  one candidate per NAMED schema the agent supplies (its `params.response_format.json_schema.schema`,
+  and each tool's `parameters` in tools.json), rewritten to OpenAI's documented strict subset —
+  every property listed in `required`, `additionalProperties: false` on every object, and a
+  property that was optional made nullable with `anyOf`
+  (<https://platform.openai.com/docs/guides/structured-outputs>). Ranked `RANK_BEHAVIOURAL`:
+  after the transport fixes, before the capability-disabling ones. DISCLOSED, because the third
+  rule changes the agent — "optional fields are now required-and-nullable; downstream code must
+  accept null". Already-strict schemas produce no candidate. (rescue-ops `ghisdk-051`, whose 400
+  had no signature at all; `p2-001`, where routing alone was 0/13 and routing plus a two-line
+  schema edit was 12/13.)
 - `duplicate_tool_calls` → prompt edit (execution discipline block), tool schema edit
   (strengthen book_flight description: exactly once per confirmed itinerary)
 - `acting_past_goal` → prompt edit (stop-after-goal block)
@@ -126,11 +138,39 @@ Failure signatures drive candidate order (playbook.py):
 - fallback → temperature/reasoning_effort nudges
 
 Candidates are structured `Patch` objects: list of file-level edits to the three victim
-files. Loop: apply candidate to a temp copy → screen on previously-regressed cases (N reps)
-→ if screen passes, verify on the FULL suite (N reps, candidate model) → accept iff every
-originally-regressed case is PASS and no originally-PASS case leaves PASS → else revert, next
-candidate. Budget: max 6 candidates. Composable: an accepted candidate becomes the new base
+files. Loop, per signature round: apply EVERY candidate the round produces to its own temp
+copy and screen each on the still-broken cases (N reps) → rank the ones that restored
+something → verify the best on the FULL suite (N reps, candidate model) → accept iff it
+restores a broken case, breaks no originally-PASS case and relapses no earlier-restored one →
+else fall to the next ranked candidate. Composable: an accepted candidate becomes the new base
 and remaining regressions continue the loop (e.g. endpoint fix first, then prompt fix).
+
+**Sibling screening and the ranking (added 2026-09-07).** Until v0.5 the loop accepted the
+FIRST candidate that survived verification. That is not a choice between repairs, it is the
+playbook's emission order deciding the verdict, and it produced two wrong answers in the
+rescue lab: `ghisdk-127` (waku) accepted a candidate that restored 8 of 9 cases and published
+STAY PINNED while a sibling in the same generation restored all 9; `ghc-062` (crispen)
+shipped a repair with a disclosed change of guarantee over the maintainer's own equivalent
+fix, purely because the playbook listed it first. So every sibling is screened before any is
+verified, and the restorers are ranked by:
+
+1. full restoration first, then the number of broken cases restored on the screen;
+2. absence of `playbook.disclosures_for(id)` — a repair that changes no capability and no
+   cost beats one that does, when they restore the same cases;
+3. the playbook rank (`RANK_TRANSPORT` < `RANK_BEHAVIOURAL` < `RANK_CAPABILITY`);
+4. the playbook's own order, as the final tie-break.
+
+The ranking decides which candidate is VERIFIED first and nothing else: acceptance
+thresholds, adjudication and the fresh final verification are unchanged, and a top-ranked
+candidate that breaks a protected case is still rejected and the next one verified.
+
+**Cost.** `--budget` bounds the total candidates TRIED, and screening a sibling is trying it:
+a round with four siblings spends four units of budget on four screen runs even though only
+one is verified. When a candidate is accepted the agent has changed, so the siblings that lost
+that round become eligible again and are re-screened against the new stack — which is what
+lets prompt repairs keep stacking, and is why the default budget is 24 rather than 6. A screen
+run covers only the still-broken cases, so it is the cheapest measurement in the loop; the
+verify and adjudication runs, which cover the full suite, are unchanged in number.
 
 Contested statuses are adjudicated on 2N reps, same thresholds (added 2026-08-28 after the
 first real run showed single-sample vetoes firing on borderline-flaky cases — 4/5, 3/5,
@@ -499,3 +539,180 @@ A capture is a record of one session. The suite it produces is exactly as broad 
 recorded, and the replay backend answers only the arguments it saw — so the further a repair
 moves the model off the recorded path, the more of the suite goes unanswered, visibly. Capture
 mode changes what upshift can measure; it does not change what counts as evidence.
+## v0.5 — verification scope, native runner, evidence identity (added 2026-09-07)
+
+Binding interfaces for the reliability sprint. Four streams code against this section;
+the integration owner wires CLI subcommands and merges. Changing a contract here requires
+changing this file first.
+
+### A. Verification scope — one enum, everywhere
+
+Every run manifest, diff, verdict, report and terminal summary carries `scope`:
+
+- `request_contract` — upshift built the requests itself from the adapter's three patchable
+  files and sent them; the backend is upshift's (recorded replay, generated stub, or hand
+  written). Proves the provider accepts/rejects the request shape. Today's default when the
+  backend is a capture replay or an `adapt` stub.
+- `adapted_agent` — the adapter's `backend.py` executes real tool semantics (sandboxed shell,
+  sqlite, in-memory state machine). Proves behaviour of the adapted reconstruction.
+- `native_application` — the application's own entry point ran (native runner, §C), with the
+  application's own request-building code and the original incident configuration.
+
+`scope` is derived, never declared by the user: `native_application` iff the run came from
+the native runner; `request_contract` iff the backend is a capture replay (`recorded_tools.json`
+present) or every tool is an `adapt` stub; `adapted_agent` otherwise. Manifest field
+`scope`; `verdict.json` field `scope`; REPORT.md prints `Verification scope: …` under the
+verdict, with the sentence that defines it. No wording anywhere may say "verified in the
+application" unless scope is `native_application`.
+
+### B. Evidence identity — stale results cannot be reused
+
+`evidence_id = sha256(upshift version, provider name, endpoint, model, sorted agent files
+(agent.json, prompt, tools; for native: the app commit sha + runner spec), patch sha256 or
+"none", n_reps, thresholds, scope)`. The recorder writes it into every manifest; `run_suite`
+resumes an existing run dir ONLY if its manifest `evidence_id` matches the one it would write
+now — a mismatch is a hard error naming the differing inputs, never a silent reuse. The
+verdict lists the evidence_ids it rests on. Test: change one byte of the prompt, the patch, or
+the config after a run; the next run refuses to resume and the verdict built on the old run
+is reported as stale by `upshift report`.
+
+### C. Native runner — the application runs itself
+
+`agent.json` gains an optional top-level `runner` block (present ⇒ the run is native; the
+five-file adapter's backend/tools/prompt are NOT used for execution — only `cases/` is):
+
+```json
+"runner": {
+  "kind": "command",
+  "workdir": ".",                       // relative to the agent dir; the app checkout
+  "command": ["python", "-m", "myapp.eval_case"],
+  "env": {"MYAPP_MODEL": "{model}", "MYAPP_ENDPOINT": "{endpoint}"},
+  "timeout_s": 120,
+  "max_output_bytes": 1048576,
+  "isolation": "workdir-copy"          // "workdir-copy" (default): each rep runs in a fresh
+                                        // temp copy of workdir; "in-place" requires
+                                        // --allow-in-place
+}
+```
+
+Protocol (**upshift result protocol v1**): upshift invokes `command` once per (case, rep)
+with the case delivered on stdin as JSON `{"protocol": 1, "case_id", "rep", "seed",
+"model", "endpoint", "initial_state", "user_messages", "patch_applied": bool}`; template
+variables in `env` are `{model}`, `{endpoint}`, `{case_id}`, `{rep}`, `{seed}`. The command
+must print ONE JSON object on stdout (last line), everything else goes to stderr:
+`{"protocol": 1, "final_message": str, "tool_executions": [{"turn": int, "name": str,
+"arguments": {}, "result": {}}], "final_state": {}, "api_calls": [{"request": {}, "response":
+{}|null, "error": {}|null}] (optional), "api_error": null|{"message","status_code","type"},
+"usage": {"input_tokens","output_tokens"} (optional)}`. upshift evaluates the case's checks on
+that result exactly as it does for adapter episodes, so statistics, labels, adjudication and
+verdicts are the same engine — there is no second verification engine. A non-zero exit, a
+timeout, malformed JSON or a missing `protocol` is recorded as `runner_error` (a distinct,
+non-behavioural failure class, see §D), never as a model regression.
+
+Authorization: running repository code needs `--allow-runner` on the CLI (or
+`UPSHIFT_ALLOW_RUNNER=1`); without it upshift prints what it would execute and exits 2.
+Environment: the child gets a minimal env (PATH, HOME, LANG, TMPDIR, the runner's `env`, and
+the provider key variables the run needs) — never the operator's whole environment.
+Cancellation: SIGINT kills the child process group. Output beyond `max_output_bytes` is
+truncated and flagged. Two reference runners ship in `examples/runners/`: Python
+(`python -m upshift.runners.example`) and a Node/TypeScript one (`node runner.mjs`) with the
+same protocol, each with a test that drives it through `run_suite`.
+
+Patched configuration for a native run: `upshift verify-patch --agent <dir> --patch <file>
+--commit <sha>` makes a clean `git worktree` of `workdir` at `<sha>`, `git apply --check`
+then applies the patch, runs baseline model / candidate model / candidate+patch through the
+runner, and writes a `patch_verification` block into verdict.json (§E). Repairs are NOT
+generated in native mode (the playbook edits adapter files, not application source); native
+mode detects regressions and verifies patches the developer supplies — that boundary is
+stated in the report.
+
+Provider-boundary check for native runs: when `--capture` is given, the run starts the
+existing `upshift capture` recorder on loopback and sets the provider base-URL env for the
+child (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`); the recorded requests are attached to the
+rep record as `wire_requests`, so the patched app's serialized requests are evidence.
+
+### D. Verdicts — honest by construction
+
+Outcomes: `SAFE`, `SAFE WITH PATCH`, `STAY PINNED`, `BASELINE_BROKEN`, and new
+`INCONCLUSIVE` (reason-coded). INCONCLUSIVE whenever: the suite is empty; any run is
+incomplete (fewer reps than n_reps for any case); a run contains billing/auth/quota/
+runner_error failures; the candidate model was unavailable; verification was interrupted by
+the cost ceiling; or a required run is missing. None of these can produce SAFE or SAFE WITH
+PATCH. Simulator evidence and live evidence never mix: a verdict whose runs disagree on
+provider realness is INCONCLUSIVE (`mixed_evidence`).
+
+Adjudication cannot be SKIPPED. When a verify run leaves a protected or earlier-restored
+case below PASS, the N adjudication reps that settle it are part of the acceptance test, not
+an optional extra: if they cannot be run — the cost ceiling stops the pipeline, the operator
+interrupts it — the candidate is REJECTED and the run ends INCONCLUSIVE(cost_ceiling). It
+never ends SAFE WITH PATCH on the strength of the sample that raised the suspicion
+(rescue-ops `ghisdk-052`, whose hunk 2 sat at 2/5 and 3/5 unadjudicated because the case went
+over budget). `verdict.json` carries `adjudication_skipped: [case ids]` so the reason for the
+rejection is legible. The same bar applies to the restoration side: a case is restored only
+when screen+verify COMBINED reach the pass threshold, so 2/5 + 3/5 = 5/10 is not a
+restoration at any point in the loop.
+
+Collateral protection is reported, never assumed: verdict.json gains `collateral:
+{"protected_cases": n, "checks_executed": m, "exercised": bool}`; when `protected_cases == 0`
+the report says "collateral protection was not exercised on this run: no case passed on the
+candidate before repair". `SAFE WITH PATCH` still requires zero broken; the sentence makes
+the absence of a guard visible.
+
+Final verification is fresh: after the last accepted candidate, the loop runs the stacked
+patch once more on the full suite as `<tag>-final` (N reps, new seeds) and the verdict rests
+on that run, not on the screening/verify runs that selected the candidates. Screening and
+selection evidence is listed separately as `selection_runs`. `--no-final-verify` skips it
+and the verdict is then labelled `selection_evidence_only`.
+
+Transient provider failures are not reps. A 429 (rate limit, or flex's "Flex does not have
+sufficient resources"), a 5xx, a timeout or a dropped connection is the provider's capacity
+answering, not the model: `runner.py` retries the whole episode up to
+`RETRY_MAX_ATTEMPTS` (3) with exponential, jittered backoff bounded by `RETRY_MAX_TOTAL_S`
+(90s) — the outer layer around the SDK's own retries — and records
+`type`/`error_type: "transient_provider_error"` only when those are exhausted. That type is in
+`native.protocol.NON_BEHAVIOURAL_ERROR_TYPES`, so the differ files it under `harness_error`
+and the verdict is INCONCLUSIVE(transient_provider_error). Billing and auth are never retried:
+a quota 429 is a fact about the account and still aborts the run (`BillingError`), and a 400
+is the regression upshift exists to find and is never retried or reclassified. `--retry-errored`
+on `run`/`upgrade` re-runs, on a resume, exactly the reps whose recorded error was
+non-behavioural; the rep file is replaced only on a pass or a new non-transient outcome, and
+the new record carries `retried_from`. (rescue-ops `ghi56-019`, `ghi56-006`, `ghi56-021`: the
+same capacity 429 recorded three times as a permanently failing rep.)
+
+Statistics wording: N=5 detects a 5/5→0/5 collapse (p≈0.004); the report states the
+smallest effect the run could have detected at its N and that a non-significant difference
+is not equivalence. stats.py gets reference-value tests (Fisher exact and Wilson against
+published tables).
+
+### E. Patch verification block
+
+`verdict.json.patch_verification = {"patch_sha256", "applies_cleanly": bool, "scope",
+"commit" (native) or "agent_files_sha256" (adapter), "config": {...incident params...},
+"commands": [...], "runs": {"baseline", "candidate", "patched"}, "live": bool,
+"evidence_ids": [...]}`. `upshift verify-patch` for an adapter dir: clean copy of the ORIGINAL
+agent dir → `git apply --check` + apply the exported patch → rebuild the first request of
+every case with `build_request` and assert it equals the request recorded in the run that
+verified the patch (no API call) → optional `--live` fresh N-rep run. Exit 2 with the
+differing request on any mismatch. This closes the gap between `patched_agent/` (what the
+loop verified) and `upgrade.patch` (what we export).
+
+### F. Capture continuation policy
+
+Capture-derived agents get `agent.json` `continuation: "fail"` (default) | `"repeat_last"`.
+When a live episode needs more assistant turns than the recording provided, `fail` ends the
+episode with `runner_error`-class failure `continuation_exhausted` (non-behavioural, makes the
+verdict INCONCLUSIVE for that case rather than a regression); `repeat_last` reuses the last
+recorded turn's params and says so in the record. Never silently recycle.
+
+### G. Endpoint/configuration translation — the matrix is a test
+
+`agent_loop.map_params` becomes table-driven and every row has a positive, a negative and a
+precedence test: reasoning (`reasoning_effort` ↔ `reasoning.effort` ↔ `output_config.effort`),
+output cap (`max_tokens` / `max_completion_tokens` / `max_output_tokens`, explicit native
+spelling wins), tool_choice (nested ↔ flat ↔ Anthropic), sampling (top-level vs `extra_body`,
+provider acceptance), `seed` (passed through where the provider accepts it; recorded as
+`determinism: "best_effort"` never "deterministic"), state-linking (`previous_response_id`,
+`store`, `conversation`, `metadata` ids) — DROPPED with a recorded `dropped_params` list on
+one-shot replays, never forwarded; unknown params pass through and are listed in the
+record's `passthrough_params`. Nothing is silently dropped: every drop is in the record and
+the report. Exceptions in translation raise; no broad `except` swallows a config error.

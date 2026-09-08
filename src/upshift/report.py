@@ -50,10 +50,37 @@ _LABEL_COLOR = {
 
 _VERDICT_COLOR = {
     "SAFE": "green", "SAFE WITH PATCH": "yellow", "STAY PINNED": "red",
-    "BASELINE_BROKEN": "red",
+    "BASELINE_BROKEN": "red", "INCONCLUSIVE": "magenta",
 }
 
 DETAIL_WIDTH = 60
+
+#: DESIGN.md §A. One sentence per verification scope, printed under every verdict, because
+#: "the tests pass" means three different things here and only one of them is about the
+#: application the user actually ships.
+SCOPE_SENTENCES = {
+    "request_contract": (
+        "upshift built the requests itself from the agent files and sent them; this proves "
+        "what the provider accepts or rejects about the request SHAPE, not what the "
+        "application does with the answer."
+    ),
+    "adapted_agent": (
+        "the adapter's backend.py executed real tool semantics; this proves the behaviour of "
+        "the adapted reconstruction of the agent, not of the application's own code path."
+    ),
+    "native_application": (
+        "the application's own entry point ran, with its own request-building code and the "
+        "original incident configuration."
+    ),
+}
+DEFAULT_SCOPE = "adapted_agent"
+NATIVE_SCOPE = "native_application"
+
+#: DESIGN.md §D, printed verbatim when the repair loop had nothing to protect.
+NO_COLLATERAL_SENTENCE = (
+    "collateral protection was not exercised on this run: no case passed on the candidate "
+    "before repair"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -153,10 +180,160 @@ def _footnote(result: DiffResult) -> list[str]:
         f"pass = rate >= {pass_t:g} of N; fail <= {fail_t:g}; else flaky. "
         "p: one-sided Fisher exact, baseline vs candidate passes. CI: Wilson 95%."
     )
+    tests = len(result.cases)
     return [
         method,
+        (
+            f"{tests} test(s) performed, one per case; p is NOT adjusted for multiple "
+            f"comparisons, so at alpha=0.05 roughly {max(1, round(tests * 0.05))} of "
+            f"{tests} could reach significance by chance alone. Read a single starred p as "
+            f"a pointer to a transcript, never as a result on its own."
+        ),
         f"full transcripts: runs/{result.candidate_run_id}/cases/<case>/rep_k.json",
     ]
+
+
+def scope_of(result: DiffResult, verdict: dict[str, Any] | None = None) -> str:
+    """The §A verification scope of the CANDIDATE run (the run a claim would be about)."""
+    if verdict and verdict.get("scope"):
+        return str(verdict["scope"])
+    return str(result.candidate_manifest.get("scope") or DEFAULT_SCOPE)
+
+
+def scope_lines(result: DiffResult, verdict: dict[str, Any] | None = None) -> list[str]:
+    scope = scope_of(result, verdict)
+    lines = [f"Verification scope: {scope}"]
+    sentence = SCOPE_SENTENCES.get(scope)
+    if sentence:
+        lines.append(sentence)
+    if scope != NATIVE_SCOPE:
+        # The one sentence this whole section exists to make impossible to skip.
+        lines.append(
+            "This upgrade is NOT verified in the application: nothing here ran the "
+            "application's own entry point."
+        )
+    return lines
+
+
+def collateral_lines(
+    verdict: dict[str, Any] | None, result: DiffResult | None = None
+) -> list[str]:
+    """DESIGN.md §D: what the run actually looked for, not what it assumes.
+
+    A verdict.json written before v0.5 has no `collateral` block. Rather than fall silent on
+    exactly the runs that motivated the block, the protected count is recovered from the diff
+    (a protected case is one the candidate passed BEFORE repair, which the diff records) and
+    the number of checks is reported as unknown — never as zero, and never as clean.
+    """
+    block = (verdict or {}).get("collateral")
+    if not isinstance(block, dict):
+        if result is None:
+            return []
+        protected = sum(1 for c in result.cases if c.candidate_outcome == OUTCOME_PASS)
+        if not protected:
+            return [
+                NO_COLLATERAL_SENTENCE
+                + " (recovered from the diff: this verdict predates the collateral block)."
+            ]
+        return [
+            (
+                f"collateral protection: {protected} case(s) passed on the candidate before "
+                f"repair; this verdict predates the collateral block, so how many times they "
+                f"were re-measured is not recorded."
+            )
+        ]
+    protected = _num(block.get("protected_cases"))
+    checks = _num(block.get("checks_executed"))
+    if not protected:
+        return [NO_COLLATERAL_SENTENCE + "."]
+    if not checks:
+        return [
+            (
+                f"collateral protection: {protected} case(s) passed on the candidate before "
+                f"repair, but no verification run re-measured them (no candidate reached full "
+                f"verification)."
+            )
+        ]
+    return [
+        (
+            f"collateral protection: {protected} case(s) that passed on the candidate before "
+            f"repair were re-measured {checks} time(s) across the verification runs; "
+            f"{_num(verdict.get('broken_by_patch'))} of them broke."
+        )
+    ]
+
+
+def evidence_lines(result: DiffResult, verdict: dict[str, Any] | None = None) -> list[str]:
+    """The §B evidence ids, the fresh-final-vs-selection distinction, and the STALE flag."""
+    lines: list[str] = []
+    ids = (verdict or {}).get("evidence_ids") or {
+        result.baseline_run_id: result.baseline_manifest.get("evidence_id"),
+        result.candidate_run_id: result.candidate_manifest.get("evidence_id"),
+    }
+    shown = [f"{run_id}={str(value)[:12]}" for run_id, value in sorted(ids.items()) if value]
+    if shown:
+        lines.append("evidence ids: " + "  ".join(shown))
+    else:
+        lines.append(
+            "evidence ids: none recorded (these runs predate evidence identity; their inputs "
+            "cannot be checked against what is on disk now)."
+        )
+    verdict = verdict or {}
+    label = verdict.get("evidence_label")
+    final_run = verdict.get("final_run_id")
+    selection = verdict.get("selection_runs") or []
+    if final_run:
+        lines.append(
+            f"the verdict rests on the FRESH final verification run `{final_run}` (full suite, "
+            f"new seeds); the {len(selection)} screening/verification run(s) that SELECTED the "
+            f"candidates are listed as selection_runs and are not the evidence for them."
+        )
+    elif label == "selection_evidence_only":
+        lines.append(
+            f"no fresh final verification was run (final_verify=False): this verdict rests on "
+            f"the {len(selection)} run(s) that SELECTED the candidates, which is weaker "
+            f"evidence — a candidate chosen because it won on a sample is being confirmed by "
+            f"that same sample."
+        )
+    elif verdict.get("accepted_patches") or verdict.get("patch_path"):
+        lines.append(
+            "this verdict predates fresh final verification: it rests on the runs that "
+            "SELECTED the accepted candidate(s). Re-run the upgrade to obtain a final run at "
+            "seeds no selection run used."
+        )
+    lines.extend(staleness_lines(result))
+    return lines
+
+
+def staleness_lines(result: DiffResult) -> list[str]:
+    """STALE warnings: a run whose agent directory no longer hashes to its evidence_id.
+
+    Limits, printed with the warning because they bound it: only runs that recorded an
+    `agent_dir` (v0.5 and later) can be checked at all, only the three patchable files named
+    by the CURRENT `agent.json` are re-hashed, and a run whose agent directory was a
+    temporary trial copy is unfalsifiable — an absent directory is reported as "cannot
+    check", never as "unchanged".
+    """
+    from upshift import recorder
+
+    out = []
+    for run_id, manifest in (
+        (result.baseline_run_id, result.baseline_manifest),
+        (result.candidate_run_id, result.candidate_manifest),
+    ):
+        recorded = manifest.get("evidence_id")
+        if not recorded:
+            continue
+        fresh = recorder.recompute_evidence_id(manifest)
+        if fresh is None or fresh == recorded:
+            continue
+        out.append(
+            f"STALE: run `{run_id}` was recorded against agent files that have since changed "
+            f"on disk ({manifest.get('agent_dir')}); its evidence_id no longer recomputes "
+            f"({str(recorded)[:12]} != {fresh[:12]}). This verdict describes the OLD files. "
+            f"Re-run to make a claim about the current ones."
+        )
+    return out
 
 
 def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
@@ -178,8 +355,38 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
             "STAY PINNED and no repair to attempt here — fix the agent directory or the eval "
             "suite until the baseline passes, then run the upgrade again."
         )
+    elif name == "INCONCLUSIVE":
+        # Lazy: verdict.py imports this module for REAL_PROVIDERS, so the dependency only
+        # runs in this direction at call time.
+        from upshift.verdict import REASON_DESCRIPTIONS
+
+        reasons = [str(r) for r in (verdict.get("reasons") or [])]
+        lines.append(
+            "this run cannot support ANY claim about the upgrade — not SAFE, not STAY "
+            "PINNED. Reason code(s): " + (", ".join(reasons) or "unspecified") + "."
+        )
+        details = verdict.get("reason_details") or {}
+        for reason in reasons:
+            explanation = REASON_DESCRIPTIONS.get(reason, "")
+            entry = details.get(reason) if isinstance(details, dict) else None
+            entry = entry if isinstance(entry, dict) else {}
+            detail, cases = entry.get("detail") or "", entry.get("cases") or []
+            line = f"  {reason}: {explanation}"
+            if detail:
+                line += f" ({detail})"
+            if cases:
+                line += " affected: " + ", ".join(str(c) for c in list(cases)[:8])
+                if len(cases) > 8:
+                    line += f", +{len(cases) - 8} more"
+            lines.append(line)
     elif name == "SAFE":
-        lines.append("no regressed cases; the candidate model is a drop-in replacement.")
+        total = verdict.get("cases_total", len(result.cases))
+        n_reps = verdict.get("n_reps", _n_reps(result))
+        lines.append(
+            f"no regression detected on {total} case(s) at {n_reps} reps. That is the whole "
+            f"claim: cases outside this suite, and effects too small for this N, were not "
+            f"measured."
+        )
     elif name == "SAFE WITH PATCH":
         lines.append(
             f"restored {restored}/{regressed_total} regressed, {broken} previously-passing broken"
@@ -201,6 +408,11 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
             f"restored {restored}/{regressed_total} regressed, {broken} previously-passing broken"
         )
 
+    if verdict.get("detectable_effect"):
+        lines.append(str(verdict["detectable_effect"]))
+    lines += collateral_lines(verdict, result)
+    lines += scope_lines(result, verdict)
+    lines += evidence_lines(result, verdict)
     if verdict.get("patch_path"):
         lines.append(f"patch: {verdict['patch_path']}")
     return lines

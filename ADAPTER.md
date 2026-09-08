@@ -31,8 +31,17 @@ my_agent/
    job: on `/v1/messages` they are moved into `extra_body` when the installed `anthropic` SDK
    no longer takes them as keywords (>= 1.1.0), which puts the same field on the wire and lets
    the API, not the client, decide. An `extra_body` you write yourself is honoured and wins,
-   and the sampling repair can remove params from either place. `tools.json` is chat-style on every endpoint —
-   upshift converts it for `responses` and `messages`.
+   and the sampling repair can remove params from either place. Declare a structured-output
+   contract as a plain `params.response_format` key in the chat/completions shape
+   (`{"type": "json_schema", "json_schema": {"name", "schema", "strict"}}`): upshift sends it
+   as-is on `chat_completions`, translates it to `text.format` on `/v1/responses` (flattening
+   the `json_schema` object, per OpenAI's migration guide) and DROPS it with a recorded reason
+   on `/v1/messages`, which has no such field. A `text` object you write yourself wins.
+   `tools.json` is chat-style on every endpoint — upshift converts it for `responses` and
+   `messages`. A tool parameter that may be null keeps a null branch: `{"nullable": true}` and
+   `{"type": ["string", "null"]}` are both canonicalised to
+   `{"anyOf": [{"type": "string"}, {"type": "null"}]}`, so a model that needs to say "nothing"
+   can.
 
    **`turn_params` (optional): params that change from turn to turn.** `params` is what every
    assistant turn sends. When your agent sends something different on different turns — the
@@ -112,7 +121,11 @@ never crashes a run. Checks are deterministic by design — there is no LLM judg
 The differ classifies each failing case into signatures that drive candidate generation.
 Besides the OpenAI-era ones, it recognizes the documented Claude Fable 5 → 5.1 changes
 (DESIGN.md): `api_error_forced_tool_choice` (the 400 for `tool_choice` type `tool`/`any`) →
-drop the param and state the requirement in the prompt; `api_error_unsupported_sampling_params`
+drop the param and state the requirement in the prompt; `api_error_schema_invalid` (a 400
+naming `additionalProperties`/`'required'`, or `Invalid schema for response_format`/`for
+function`) → rewrite that ONE named schema — `params.response_format.json_schema.schema` or a
+tool's `parameters` — into OpenAI's strict subset, which makes previously-optional properties
+required-and-nullable and is reported with that disclosure; `api_error_unsupported_sampling_params`
 (a 400 naming `temperature`/`top_p`/`top_k`) → drop those params, from `params` or from
 `params.extra_body`; `serialized_tool_calls` (the
 candidate stopped batching tool calls the baseline batched, or blew a `turns_at_most` budget the
@@ -203,3 +216,138 @@ invented answer would turn "we do not know" into a passing case. This is the one
 capture-derived agent is weaker than a hand-written one: the further a repair moves the model
 off the recorded path, the more of the suite goes unanswered. `ATTRIBUTION.md` and
 `ADAPT_EDITS.md` in the generated directory name every source and every deviation.
+
+## Native runner — when your application should run itself (v0.5)
+
+Everything above assumes the agent can be expressed as five files. Sometimes it cannot, and
+sometimes it should not be. The failing request is built inside a framework; the tools are a
+CAD kernel or a benchmark harness; the project is TypeScript and `upshift adapt` writes Python.
+In the two migration-rescue tracks that is not a corner: 25 OpenAI-track cases and 36
+Anthropic-track cases closed `UNSUPPORTED_FRAMEWORK`, and four of the five hand-built adapters
+were hand-built because the target was not Python (rescue-ops
+`ops/anthropic/summaries/EXEC_SUMMARY.md` §(f)). Two of those projects — `auditk/auditk`
+(`A-052`) and `PolicyEngine/policybench` (`A-032`) — *are* benchmark harnesses: they already
+run one scenario end to end with the application's own request-building code, and the adapter
+was a reconstruction of something that already ran.
+
+A **native runner** drives that command instead. Add a `runner` block to `agent.json` and
+upshift stops building requests entirely:
+
+```json
+{
+  "name": "my-app",
+  "model": "claude-fable-5-1",
+  "runner": {
+    "kind": "command",
+    "workdir": ".",
+    "command": ["python", "-m", "myapp.eval_case"],
+    "env": {"MYAPP_MODEL": "{model}", "MYAPP_ENDPOINT": "{endpoint}"},
+    "timeout_s": 120,
+    "max_output_bytes": 1048576,
+    "isolation": "workdir-copy"
+  }
+}
+```
+
+With a `runner` block, `system_prompt_file`, `tools_file` and `backend.py` are **not required
+and not used** — `runner` + `cases/cases.json` is the whole authoring surface. `workdir` is
+relative to the agent directory and may not escape it; `command` is an **argv list**, never a
+shell string (there is no shell anywhere in this path); `isolation` is `workdir-copy` (default:
+a fresh temp copy per rep, deleted afterwards) or `in-place` (needs `--allow-in-place`).
+`{model}`, `{endpoint}`, `{case_id}`, `{rep}` and `{seed}` are the only template variables
+`env` accepts.
+
+### upshift result protocol v1
+
+upshift runs the command once per (case, rep) and writes one JSON object to its **stdin**:
+
+```json
+{"protocol": 1, "case_id": "...", "rep": 1, "seed": 12345, "model": "...", "endpoint": "...",
+ "initial_state": {}, "user_messages": ["..."], "patch_applied": false}
+```
+
+The command prints **one JSON object as the last line of stdout** (everything else goes to
+stderr — your test runner's own output is fine):
+
+```json
+{"protocol": 1,
+ "final_message": "...",
+ "tool_executions": [{"turn": 0, "segment": 0, "name": "...", "arguments": {}, "result": {}}],
+ "final_state": {},
+ "api_calls": [{"request": {}, "response": {}, "error": null}],
+ "api_error": null,
+ "usage": {"input_tokens": 0, "output_tokens": 0}}
+```
+
+`api_calls` and `usage` are optional; everything else has a default. Checks are evaluated on
+that result **by the same engine that evaluates an adapter episode** — same check types, same
+N reps, same thresholds, same statistics, same verdict. There is no second verification engine.
+
+Two reference implementations ship in `examples/runners/`: `python_runner.py` and
+`node_runner.mjs`, each driving a small real agent loop against a stub provider, with tests.
+
+**Report a provider error as `api_error`, not as a non-zero exit.** A 400 is the most valuable
+thing a run can observe — it is the whole subject of the gpt-5.6 and Fable 5.1 migrations.
+Exiting non-zero tells upshift that *its own harness* failed, and it will correctly refuse to
+treat that as evidence about a model.
+
+### The failure class that is not a regression
+
+A non-zero exit, a timeout, malformed JSON, a missing `protocol` key, or output past
+`max_output_bytes` is recorded as an `api_error` with `error_type: "runner_error"` — a
+**non-behavioural** failure. It is never scored as a model regression; it makes the run
+inconclusive for that case. The same class covers `continuation_exhausted` (below). A flaky
+test command therefore cannot manufacture a regression.
+
+### Authorization — upshift will not execute your repository by accident
+
+Running a native agent means running code from the application's checkout, once per case per
+rep. It requires `--allow-runner` (or `UPSHIFT_ALLOW_RUNNER=1` for CI). Without it upshift
+prints the exact argv, working directory, isolation mode and the environment variables it
+would set, executes nothing, and exits 2.
+
+The child gets a **minimal environment**: `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`,
+`SYSTEMROOT` where present, the `runner.env` you declared, and the API-key variables of the
+run's provider only — never the rest of your environment. A timeout kills the whole process
+group, so a command that spawns workers does not leave them running (or spending). `--capture`
+additionally starts the `upshift capture` recorder on **loopback only** and points the child's
+provider base URL at it, attaching the requests the application itself serialized to each rep
+record as `wire_requests`; it forces `--workers 1`, because a request can only be attributed to
+a rep that ran alone.
+
+### The boundary: native mode detects and verifies, it does not repair
+
+The repair loop edits `agent.json`, the system prompt and the tool schemas. A native agent has
+none of those under upshift's control — the request is built by the application's own source,
+which upshift does not edit. **No repair candidate is generated in native mode.** What native
+mode does is detect the regression against the real application and verify a patch *you*
+supply (`upshift verify-patch`), and the report says which of the two it did. Only a native run
+carries `scope: native_application`, and no wording anywhere may claim a change was "verified
+in the application" at any other scope.
+
+## Addendum: continuation and fidelity for capture-derived directories (v0.5)
+
+Three more `agent.json` keys, all written by `upshift adapt --from-capture` and all legal by
+hand:
+
+- **`recorded_turns`** (integer) — how many assistant turns the deepest recorded conversation
+  contained. It is what "the end of the recording" means.
+- **`continuation`** — `"fail"` (default) or `"repeat_last"`. When a replayed episode needs a
+  turn past `recorded_turns`, there are no recorded parameters for it, because the framework
+  never sent any. `fail` ends the episode with a `continuation_exhausted` error — the same
+  non-behavioural class as `runner_error`, so the case is inconclusive rather than regressed.
+  `repeat_last` reuses the last recorded turn's parameters and writes `continuation_used: true`
+  into every rep record that did so. Never silently, in either direction. An agent without
+  `recorded_turns` (every hand-written one) is unaffected: there is no recording to run off.
+- **`unsupported_fields.json`** (a file, not a key) — every field the recording held that an
+  agent directory has no slot for: dropped request params (`metadata`, `mcp_servers`;
+  `response_format` is CARRIED and so is not listed), tool fields the chat-style shape cannot carry (a server tool's `type` and its
+  own configuration), beta headers, response blocks with no representation, non-2xx responses
+  in the capture, a non-provider upstream (a gateway's contract is not the provider's), and the
+  API paths the recorder does not record at all (`count_tokens`, `batches`). Each finding has a
+  `field`, `where`, `kind`, `count`, `detail` and `sample`; the same rows are rendered as a
+  table in `ADAPT_EDITS.md`. The list is denylist-free: anything upshift does not carry is
+  reported, so a field a provider adds tomorrow shows up as a finding on its first capture
+  rather than as silence. This list is the boundary of what a run on that directory can
+  measure — a regression that depends on a field listed there cannot be detected, and a `SAFE`
+  verdict says nothing about it.

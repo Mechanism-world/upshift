@@ -44,6 +44,7 @@ Not third-party — written for this project and licensed under this repo's MIT 
 | `victim/booking_agent/` | Ours. The synthetic booking agent used for the gpt-5.5 → gpt-5.6-sol experiment. |
 | `tests/todo_agent/` | Ours. A minimal agent fixture for the test suite. |
 | `tests/adapt_fixtures/` | Ours. Synthetic repos (`handrolled`, `anthropic_handrolled`, `framework_flavored`, `notebook_agent`) written to exercise `upshift adapt` offline. |
+| `tests/rescue/fixtures/` | Ours in form, third-party in subject. `incidents.json` records **API request parameters only** (endpoint, model pair, params dict) for eight incidents from the 2026-09 migration-rescue campaign — no upstream source text, prompt, tool schema or eval datum. Every incident's upstream repository is MIT or Apache-2.0; the per-fixture license table, and where each license was read, is `tests/rescue/fixtures/LICENSES.md`. Incidents whose upstream carries no OSI license (autonima, sandialabs/atlas-ui-3) or a non-commercial one (LayerDynamics/plastiq, PolyForm NC) are excluded there by name. |
 
 Eval cases (`cases/cases.json`) in every `agents/` directory are ours unless an
 `ATTRIBUTION.md` says a specific question was taken verbatim from upstream; none of the five

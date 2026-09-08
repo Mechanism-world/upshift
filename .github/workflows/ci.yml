@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
 
+# Every job here reads the checkout and nothing else: no job writes a comment, a release, a
+# package or a branch. Say so, so the token cannot do more than the workflow needs.
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -14,12 +19,16 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
       - run: uv sync --group dev
-      - run: uv run ruff check src tests
+      # `agents/` too: the adapted-agent backends are code the test suite imports and
+      # runs, so a lint regression there is a lint regression in the evidence path.
+      # `examples/` too: the reference runners and the shipped example agents are code a
+      # user is told to copy, and tests/test_examples_runners.py executes them.
+      - run: uv run ruff check src tests agents examples
       # Docker-backed shell_gpt sandbox tests self-skip when the image is absent (CI has no
       # sandbox image); everything else runs, offline, with zero API calls.
       - run: uv run pytest -q
@@ -27,7 +36,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
@@ -40,7 +49,7 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"

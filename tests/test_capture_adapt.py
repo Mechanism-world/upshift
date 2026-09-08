@@ -65,6 +65,9 @@ def test_the_generated_directory_satisfies_the_adapter_contract(adapted: Path) -
         "recorded_tools.json",
         "system_prompt.txt",
         "tools.json",
+        # DESIGN.md §F / capture fidelity: every field the recording held and the adapter
+        # cannot carry, machine-readable next to the prose in ADAPT_EDITS.md.
+        "unsupported_fields.json",
     ]
 
 
@@ -559,8 +562,13 @@ def test_without_terminal_tools_the_same_episode_keeps_going(tmp_path: Path) -> 
         rep=1,
         seed=1,
     )
-    assert provider.calls == config.max_turns
-    assert len(episode.tool_executions) == config.max_turns
+    # Not `max_turns`: the capture recorded `recorded_turns` assistant turns, and the default
+    # continuation policy (DESIGN.md §F, `continuation: "fail"`) stops the episode rather than
+    # replaying the last recorded turn's params into a turn the framework never sent. The stop
+    # is a NON-behavioural failure, so nothing here counts as a regression.
+    assert provider.calls == config.recorded_turns
+    assert len(episode.tool_executions) == config.recorded_turns
+    assert episode.api_error["error_type"] == "continuation_exhausted"
 
 
 # ---------------------------------------------------------------------------

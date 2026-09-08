@@ -16,9 +16,12 @@ the reference lists it as an active legacy model but carries no per-MTok rate fo
 guessed rate is worse than an honest "unknown rate".
 
 OpenAI rates verified 2026-08-27 against OpenAI's published pricing (gpt-5.6-sol promotional
-pricing effective through 2026-11-21). USD per 1M tokens, standard sync tier. Flex and
-Batch bill at 50% of standard; cached input tokens bill at 10% of the applicable input
-rate (90% caching discount, which stacks with flex).
+pricing effective through 2026-11-21), the whole gpt-5.6 family re-verified 2026-09-03, and
+gpt-4o-mini and gpt-4.1-nano verified 2026-09-05, all against
+https://developers.openai.com/api/docs/pricing. USD per 1M tokens, standard sync tier. Flex
+and Batch bill at 50% of standard; cached input tokens bill at 10% of the applicable input
+rate on the gpt-5 era models (90% caching discount, which stacks with flex) — the two
+pre-gpt-5 models carry their own published cached fractions instead.
 """
 
 from __future__ import annotations
@@ -31,8 +34,46 @@ from upshift import recorder
 
 # model prefix -> (input, output) at standard sync rates
 RATES: dict[str, tuple[float, float]] = {
+    # gpt-5.4 family: https://developers.openai.com/api/docs/pricing, fetched 2026-09-05.
+    # Standard tier, USD per 1M tokens. Every sibling gets its own entry because the table
+    # is prefix-matched: without them, `gpt-5.4-pro` (12x the base rate) and `gpt-5.4-mini`
+    # would both price as `gpt-5.4` and the spend ledger would be wrong in both directions.
+    # Published cached-input rates are exactly 10% of each model's input rate
+    # (0.25 / 0.075 / 0.02), which is CACHED_INPUT_FRACTION; gpt-5.4-pro publishes no
+    # cached-input row at all, so its cache-read figure is the default fraction rather
+    # than a published number.
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4-pro": (30.00, 180.00),
     "gpt-5.5": (5.00, 30.00),
+    # gpt-5.6 family: https://developers.openai.com/api/docs/pricing, fetched 2026-09-03.
+    # Standard tier, USD per 1M tokens. The published flex and batch rows are exactly half
+    # of these, and every published cached-input rate is exactly 10% of the model's input
+    # rate, so TIER_MULTIPLIER and CACHED_INPUT_FRACTION reproduce the table as printed.
+    # (The page also lists a fast-mode tier at 2x standard; upshift has no fast-mode
+    # provider, so no multiplier is recorded for it.)
     "gpt-5.6-sol": (4.00, 20.00),
+    "gpt-5.6-terra": (2.00, 12.00),
+    "gpt-5.6-luna": (0.20, 1.20),
+    # gpt-5.2 family and gpt-5-mini: https://developers.openai.com/api/docs/pricing,
+    # fetched 2026-09-03. Standard tier, USD per 1M tokens; the published flex and batch
+    # rows are exactly half of these and the published cached-input rows exactly 10% of
+    # input, so the existing multipliers reproduce the table as printed. gpt-5.2-pro gets
+    # its own entry because it is a separate published row at 12x gpt-5.2: without it,
+    # longest-prefix matching would price a -pro run as gpt-5.2 and understate the spend
+    # twelvefold. (The pro row publishes no cached-input price — it is "-" in the table.)
+    "gpt-5.2": (1.75, 14.00),
+    "gpt-5.2-pro": (21.00, 168.00),
+    "gpt-5-mini": (0.25, 2.00),
+    # Pre-gpt-5 OpenAI models a target repo still ships as its configured default, which a
+    # migration case therefore runs as the BASELINE leg. $0.15/$0.60 and $0.10/$0.40 per
+    # MTok, per https://developers.openai.com/api/docs/pricing (Standard tier), verified
+    # 2026-09-05. Their cached-input rates are NOT the 10% default (see
+    # MODEL_CACHED_INPUT_FRACTION): $0.075 = 50% of input on gpt-4o-mini, $0.025 = 25% on
+    # gpt-4.1-nano.
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1-nano": (0.10, 0.40),
     "claude-fable-5": (10.00, 50.00),
     "claude-fable-5-1": (10.00, 50.00),
     # Legacy Anthropic model still served, and still the model some target harnesses pin.
@@ -73,6 +114,11 @@ CACHE_WRITE_MULTIPLIER = 1.25
 MODEL_CACHED_INPUT_FRACTION: dict[str, float] = {
     "claude-fable-5": 0.1,
     "claude-fable-5-1": 0.025,
+    # The 90% caching discount is a gpt-5-era rate. The published cached-input prices for
+    # these two are $0.075 of $0.15 and $0.025 of $0.10, so the default 0.1 would
+    # UNDER-report a cache-heavy baseline leg by 4-8x on the cached part.
+    "gpt-4o-mini": 0.5,
+    "gpt-4.1-nano": 0.25,
 }
 
 
@@ -133,6 +179,57 @@ def price(
         + cache_creation_tokens * in_rate * CACHE_WRITE_MULTIPLIER
         + output_tokens * out_rate
     ) / 1_000_000
+
+
+def has_rate(model: str) -> bool:
+    """Whether `model` resolves to a published rate. A spend ceiling has to say so up front."""
+    return _rate_for(model) is not None
+
+
+def highest_rate() -> tuple[float, float]:
+    """The most expensive (input, output) pair in the table, used to fail closed."""
+    return (max(r[0] for r in RATES.values()), max(r[1] for r in RATES.values()))
+
+
+def ceiling_price(
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+    cache_creation_tokens: int = 0,
+) -> tuple[float, bool]:
+    """USD to charge against a spend ceiling, and whether that number is a published rate.
+
+    Differs from `price` in two ways, both so a ceiling fails closed rather than open:
+
+    * an unpriced model on a billing provider costs `highest_rate()` rather than None —
+      "we do not know" must never be spent as "$0" — and the caller is told (second element
+      False) so it can say so out loud;
+    * the provider is not what decides that something is free. `sim` is free only because
+      no rate exists for its model ids; if the table does list one (a test injecting a fake
+      table, a real model id run through the simulator) it is priced like any other. That
+      keeps the ceiling testable without a paid provider.
+    """
+    rates = _rate_for(model)
+    published = rates is not None
+    if rates is None:
+        if provider == "sim":
+            # The simulator issues no HTTP request; there is nothing to bill.
+            return 0.0, True
+        rates = highest_rate()
+    tier = TIER_MULTIPLIER.get(provider, 1.0)
+    in_rate, out_rate = rates[0] * tier, rates[1] * tier
+    cached = min(cached_input_tokens, input_tokens)
+    uncached = input_tokens - cached
+    cached_fraction = cached_input_fraction(model)
+    usd = (
+        uncached * in_rate
+        + cached * in_rate * cached_fraction
+        + cache_creation_tokens * in_rate * CACHE_WRITE_MULTIPLIER
+        + output_tokens * out_rate
+    ) / 1_000_000
+    return usd, published
 
 
 def run_cost(run_directory: str | Path) -> dict[str, Any]:
