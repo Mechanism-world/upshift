@@ -24,8 +24,8 @@ the first column is not a row you should bet a production migration on.
 | `upshift adapt` — Python repos | yes | yes | yes — shell_gpt's adapter came out of `adapt` |
 | `upshift adapt` — notebooks | yes | yes | no (adapters were reviewed by hand before the run) |
 | `upshift adapt --from-capture` | yes | yes | no |
-| Native runner (`agent.json` `runner` block, DESIGN §C) | pending — landing this sprint | no | no |
-| `upshift verify-patch` (DESIGN §E) | pending — landing this sprint | no | no |
+| Native runner (`agent.json` `runner` block, DESIGN §C) | implemented; offline-tested end to end through the CLI on the simulator (Python and Node reference runners) | no | no |
+| `upshift verify-patch` (DESIGN §E) | implemented; offline-tested (38/38 recorded requests rebuilt byte for byte on the sim run) | no (`--live` not implemented) | no |
 | Simulators (`sim-5.5`/`sim-5.6-*`, `sim-fable-5`/`5-1`) | yes | n/a | n/a — simulator results validate machinery and are never evidence |
 | AWS Bedrock | **not implemented** | — | — |
 | Google Vertex AI | **not implemented** | — | — |

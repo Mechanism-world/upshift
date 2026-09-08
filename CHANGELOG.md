@@ -1,6 +1,36 @@
 # Changelog
 
-## v0.5-dev — unreleased (reliability follow-ups)
+## v0.5.0 — 2026-09-07
+
+The reliability release. Everything below came out of running upshift against real
+migration incidents (the private rescue campaign: 109 OpenAI-track and 54 Anthropic-track
+cases) and fixing what broke, with a regression test per finding. Headline changes:
+
+- **Verification scope is explicit everywhere** (`request_contract` / `adapted_agent` /
+  `native_application`); no output claims application-level verification unless the
+  application ran.
+- **Native runner**: an `agent.json` `runner` block lets the application run itself (Python and
+  Node reference runners, protocol v1, authorization gate, minimal environment).
+- **`upshift verify-patch`**: the exact exported patch is applied to a clean copy and every
+  case's first request is rebuilt and compared with the run that verified it.
+- **Honest verdicts**: `INCONCLUSIVE` with reason codes; collateral protection measured and
+  reported (never assumed); fresh final verification separate from candidate selection;
+  evidence identity that refuses stale reuse; SAFE wording says what was measured.
+- **Endpoint translation is a tested table**: reasoning, output caps, tool choice, sampling,
+  seed, state-linking, `response_format`; every drop is recorded; local SDK failures are
+  `sdk_validation`, never a manufactured HTTP status; repairs that change a capability or
+  cost carry a disclosure and rank last.
+- **Repair loop**: every sibling candidate is screened before one is accepted; adjudication
+  cannot be skipped; transient provider errors are retried and never counted as behaviour.
+- **Capture**: continuation policy, machine-readable unsupported-fields findings.
+- **Docs**: the real data flow (what reaches the provider, what `adapt` sends to the
+  extraction model), a capabilities table with three evidence levels, a provider matrix
+  with unverified rows marked.
+
+Note: `--budget` (max repair candidates) now defaults to 24 because sibling screening
+counts every candidate screened; use `--max-cost-usd` to bound spend.
+
+### Reliability follow-ups
 
 Five findings from the OpenAI and Anthropic rescue tracks, each of which produced a wrong or
 unsupported ANSWER rather than a crash. Sources are the private ops repo's case files.
@@ -38,7 +68,7 @@ unsupported ANSWER rather than a crash. Sources are the private ops repo's case 
   OpenAI's three documented strict rules to one named schema. Disclosed: optional fields become
   required-and-nullable, so downstream code must accept null.
 
-## v0.4.1-dev — unreleased
+### Capture fixes (previously v0.4.1-dev)
 
 Three fixes found by running capture mode on its first real case outside pydantic-ai
 (rescue-ops `cases/A-075`, litellm 1.83.9). The first is a false pass, in the one direction
@@ -133,7 +163,7 @@ running 54 cases):
   inside one literal are joined with "" exactly as Python joins them; chunks from separate
   statements, from non-Python sources, or that cannot be placed keep the newline join.
 
-## v0.4.0-dev — unreleased
+### Capture mode (previously v0.4.0-dev)
 
 Framework agents, without reading a framework. If the failing request is built inside
 pydantic-ai, litellm, LangChain, the Vercel AI SDK, the Claude Agent SDK or opencode, there is

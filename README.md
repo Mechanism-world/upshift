@@ -142,6 +142,35 @@ knob a framework does not have is reported as "not mapped", never guessed.
 Live smoke on a real pydantic-ai agent, `claude-fable-5` → `claude-fable-5-1`:
 [reports/capture-pydantic-ai-smoke.md](reports/capture-pydantic-ai-smoke.md).
 
+### Let the application run itself (native runner)
+
+If your agent already has a test or eval command, you don't have to rebuild it as a Python
+backend. Add a `runner` block to `agent.json` and upshift invokes your command once per
+case and rep, feeding the case on stdin and reading one JSON result line (protocol v1,
+[ADAPTER.md](ADAPTER.md#native-runner)); the same checks, statistics and verdicts apply.
+Running repository code needs `--allow-runner`; the child gets a minimal environment, a
+timeout, bounded output and a fresh copy of its working directory per rep. Reference
+runners for Python and Node are in [`examples/runners/`](examples/runners/). Results from a
+native run are stamped `native_application` — the only scope that means "verified in the
+application". Repairs are not generated in native mode; upshift measures regressions and
+verifies the patch you supply.
+
+### Verify the patch you actually ship
+
+```bash
+upshift verify-patch --agent my-agent --patch runs/my-upgrade/upgrade.patch --run runs/my-upgrade-final
+```
+
+Applies the exact exported patch to a clean copy, rebuilds every case's first request through
+the same code path, and compares it with the run that verified the patch — exit 0 only when
+they match byte for byte (cache keys and seeds excluded). This closes the gap between "the
+repair idea worked" and "the file we exported is what was verified".
+
+Operational notes: `--max-cost-usd` bounds spend for a whole `upgrade` (the default
+`--budget` of 24 counts every repair candidate *screened*, since siblings are now screened
+before one is accepted); `--retry-errored` re-runs reps that ended in a transient provider
+error (rate limits, capacity, 5xx) when resuming — those never count as behaviour.
+
 ## What it has found so far
 
 Every number below is reproducible from the committed records with `upshift cost` and
