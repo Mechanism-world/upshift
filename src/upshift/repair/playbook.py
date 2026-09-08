@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from upshift.jsonschema import is_strict, make_strict
 from upshift.schemas import FileEdit, Patch
 
 DISCIPLINE_BLOCK = (
@@ -136,6 +137,15 @@ RANK_TRANSPORT = 0  # a spelling/route fix: the same agent, addressed correctly
 RANK_BEHAVIOURAL = 1  # a prompt, tool-schema or effort change: same guarantees, new wording
 RANK_CAPABILITY = 2  # removes or disables something the agent was guaranteed before
 
+#: A patch id may name the thing it edits after a colon (`schema-strict-compat:ExtractedEdges`),
+#: because one signature can produce one candidate per named schema and each has to be a
+#: distinct, screenable sibling. Rank and disclosure belong to the FAMILY, so both lookups read
+#: the part before the colon — otherwise a per-schema candidate would silently lose its
+#: disclosure, which is the one thing a disclosure may never do.
+def _family(patch_id: str) -> str:
+    return patch_id.split(":", 1)[0]
+
+
 #: patch id -> the rank it is tried at. Ids missing here are RANK_BEHAVIOURAL.
 PATCH_RANKS: dict[str, int] = {
     "route-to-responses": RANK_TRANSPORT,
@@ -144,6 +154,9 @@ PATCH_RANKS: dict[str, int] = {
     "drop-sampling-params": RANK_CAPABILITY,
     "drop-token-cap-param": RANK_CAPABILITY,
     "reasoning-effort-none": RANK_CAPABILITY,
+    # A schema edit changes the contract, not the transport, and it does not DISABLE anything
+    # the agent had — so: after the spelling fixes, before the capability-removing ones.
+    "schema-strict-compat": RANK_BEHAVIOURAL,
 }
 
 #: patch id -> sentences that MUST appear next to it wherever it is reported. Written for a
@@ -178,6 +191,12 @@ PATCH_DISCLOSURES: dict[str, tuple[str, ...]] = {
             "/v1/responses — expect different answers on anything the reasoning was doing."
         ),
     ),
+    "schema-strict-compat": (
+        (
+            "changes_capability: schema made strict — optional fields are now "
+            "required-and-nullable; downstream code must accept null."
+        ),
+    ),
     "raise-effort-one-rung": (
         (
             "changes_cost: a higher reasoning effort bills more output (reasoning) tokens per "
@@ -199,12 +218,12 @@ def disclosures_for(patch_id: str) -> list[str]:
     Empty for a patch that changes only how the request is spelled — the common case, and the
     only case where "the eval went green" means the same agent still works.
     """
-    return list(PATCH_DISCLOSURES.get(patch_id, ()))
+    return list(PATCH_DISCLOSURES.get(_family(patch_id), ()))
 
 
 def rank_for(patch_id: str) -> int:
     """Where `patch_id` sits in the try-order: transport fixes first, capability changes last."""
-    return PATCH_RANKS.get(patch_id, RANK_BEHAVIOURAL)
+    return PATCH_RANKS.get(_family(patch_id), RANK_BEHAVIOURAL)
 
 
 def _read(agent_dir: Path, rel: str) -> str:
@@ -459,6 +478,82 @@ def _tool_description_edit(
     return None
 
 
+#: OpenAI's strict structured-output rules, cited where they are applied. `make_strict`
+#: implements the three the API enforces; this URL is what a maintainer reading the patch
+#: needs in order to check that upshift did not invent them.
+STRICT_SCHEMA_DOC = "https://platform.openai.com/docs/guides/structured-outputs"
+
+
+def _replace_json_value(text: str, old, new) -> str | None:
+    """Textual swap of one JSON value, so the emitted diff touches only the schema.
+
+    Returns None when the old value is not in the file exactly once in this serialization —
+    a pretty-printed agent.json usually is not — and the caller re-serializes instead.
+    """
+    fragment = json.dumps(old)
+    return text.replace(fragment, json.dumps(new)) if text.count(fragment) == 1 else None
+
+
+def _strict_response_format_edit(agent_dir: Path, raw_config: dict):
+    """`(schema name, FileEdit)` making the agent's response_format schema strict, or None.
+
+    None when there is no `response_format`, when it is not a json_schema, or when its schema
+    is ALREADY strict: a candidate that changes nothing costs a screen run and tells whoever
+    reads the report that the schema was the problem when it was not.
+    """
+    declared = (raw_config.get("params") or {}).get("response_format")
+    if not isinstance(declared, dict):
+        return None
+    nested = declared.get("json_schema")
+    if not isinstance(nested, dict):
+        return None
+    schema = nested.get("schema")
+    if not isinstance(schema, dict) or is_strict(schema):
+        return None
+    strict = make_strict(schema)
+    text = _read(agent_dir, "agent.json")
+    minimal = _replace_json_value(text, schema, strict)
+    if minimal is None:
+        raw = json.loads(text)
+        raw["params"]["response_format"]["json_schema"]["schema"] = strict
+        minimal = json.dumps(raw, indent=2) + "\n"
+    name = str(nested.get("name") or "response_format")
+    return name, FileEdit(file="agent.json", new_content=minimal)
+
+
+def _strict_tool_edits(agent_dir: Path, raw_config: dict) -> list[tuple[str, FileEdit]]:
+    """One `(tool name, FileEdit)` per tool whose `parameters` breaks the strict subset.
+
+    One candidate per tool, not one candidate for all of them: the loop screens siblings
+    against each other now, and a patch a maintainer has to read should name one thing.
+    """
+    rel = raw_config["tools_file"]
+    text = _read(agent_dir, rel)
+    try:
+        tools = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(tools, list):
+        return []
+    out: list[tuple[str, FileEdit]] = []
+    for index, tool in enumerate(tools):
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        parameters = function.get("parameters")
+        name = function.get("name")
+        if not isinstance(parameters, dict) or not isinstance(name, str) or is_strict(parameters):
+            continue
+        strict = make_strict(parameters)
+        minimal = _replace_json_value(text, parameters, strict)
+        if minimal is None:
+            edited = json.loads(text)
+            edited[index]["function"]["parameters"] = strict
+            minimal = json.dumps(edited, indent=2) + "\n"
+        out.append((name, FileEdit(file=rel, new_content=minimal)))
+    return out
+
+
 def _forced_tool_choice_instruction(tool_choice) -> str | None:
     """The prompt sentence that replaces a forced `tool_choice`, or None if it is not forced.
 
@@ -545,6 +640,33 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     "Drop the forced tool_choice param (rejected by this model) and state the "
                     "same requirement as an instruction in the system prompt instead.",
                     [removal, _prompt_append(agent_dir, raw_config, "\n\n" + instruction)],
+                )
+        elif sig == "api_error_schema_invalid":
+            # The 400 names the offending schema, but the playbook sees signatures, not
+            # messages — so every schema the agent supplies that breaks the documented subset
+            # gets its own candidate, and the screen decides which one was the offender.
+            found = _strict_response_format_edit(agent_dir, raw_config)
+            for name, edit in ([found] if found is not None else []):
+                add(
+                    f"schema-strict-compat:{name}",
+                    "model_params",
+                    sig,
+                    f"Make the {name!r} response_format schema satisfy OpenAI's strict "
+                    f"structured-output subset (every property in `required`, "
+                    f"`additionalProperties: false`, optional properties nullable): "
+                    f"{STRICT_SCHEMA_DOC}",
+                    [edit],
+                )
+            for name, edit in _strict_tool_edits(agent_dir, raw_config):
+                add(
+                    f"schema-strict-compat:{name}",
+                    "tool_schema_edit",
+                    sig,
+                    f"Make the {name!r} tool's parameter schema satisfy OpenAI's strict "
+                    f"structured-output subset (every property in `required`, "
+                    f"`additionalProperties: false`, optional properties nullable): "
+                    f"{STRICT_SCHEMA_DOC}",
+                    [edit],
                 )
         elif sig == "api_error_unsupported_sampling_params":
             add(

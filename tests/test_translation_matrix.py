@@ -811,6 +811,10 @@ def test_no_disclosure_is_registered_for_a_patch_id_the_playbook_cannot_emit():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "src/upshift/repair/playbook.py").read_text()
+    # Two spellings, because a signature that can produce one candidate per named schema
+    # builds its id in an f-string: `f"schema-strict-compat:{name}"`. The registry is keyed on
+    # the FAMILY (playbook._family), so the family is what has to be emitted somewhere.
     emitted = set(re.findall(r'\n\s+add\(\s*\n?\s*"([a-z0-9-]+)"', source))
+    emitted |= set(re.findall(r'\n\s+add\(\s*\n?\s*f"([a-z0-9-]+):\{', source))
 
     assert set(PATCH_DISCLOSURES) <= emitted

@@ -118,6 +118,18 @@ Failure signatures drive candidate order (playbook.py):
 - `api_error_tools_reasoning` (400 matching the documented 5.6 break) →
   1. endpoint routing: chat_completions → responses
   2. params: reasoning_effort = "none" (stay on chat_completions)
+- `api_error_schema_invalid` (400 naming `additionalProperties`, `'required'`, or reading
+  `Invalid schema for response_format` / `Invalid schema for function`) → `schema-strict-compat`:
+  one candidate per NAMED schema the agent supplies (its `params.response_format.json_schema.schema`,
+  and each tool's `parameters` in tools.json), rewritten to OpenAI's documented strict subset —
+  every property listed in `required`, `additionalProperties: false` on every object, and a
+  property that was optional made nullable with `anyOf`
+  (<https://platform.openai.com/docs/guides/structured-outputs>). Ranked `RANK_BEHAVIOURAL`:
+  after the transport fixes, before the capability-disabling ones. DISCLOSED, because the third
+  rule changes the agent — "optional fields are now required-and-nullable; downstream code must
+  accept null". Already-strict schemas produce no candidate. (rescue-ops `ghisdk-051`, whose 400
+  had no signature at all; `p2-001`, where routing alone was 0/13 and routing plus a two-line
+  schema edit was 12/13.)
 - `duplicate_tool_calls` → prompt edit (execution discipline block), tool schema edit
   (strengthen book_flight description: exactly once per confirmed itinerary)
 - `acting_past_goal` → prompt edit (stop-after-goal block)

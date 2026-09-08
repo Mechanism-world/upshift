@@ -121,7 +121,11 @@ never crashes a run. Checks are deterministic by design — there is no LLM judg
 The differ classifies each failing case into signatures that drive candidate generation.
 Besides the OpenAI-era ones, it recognizes the documented Claude Fable 5 → 5.1 changes
 (DESIGN.md): `api_error_forced_tool_choice` (the 400 for `tool_choice` type `tool`/`any`) →
-drop the param and state the requirement in the prompt; `api_error_unsupported_sampling_params`
+drop the param and state the requirement in the prompt; `api_error_schema_invalid` (a 400
+naming `additionalProperties`/`'required'`, or `Invalid schema for response_format`/`for
+function`) → rewrite that ONE named schema — `params.response_format.json_schema.schema` or a
+tool's `parameters` — into OpenAI's strict subset, which makes previously-optional properties
+required-and-nullable and is reported with that disclosure; `api_error_unsupported_sampling_params`
 (a 400 naming `temperature`/`top_p`/`top_k`) → drop those params, from `params` or from
 `params.extra_body`; `serialized_tool_calls` (the
 candidate stopped batching tool calls the baseline batched, or blew a `turns_at_most` budget the

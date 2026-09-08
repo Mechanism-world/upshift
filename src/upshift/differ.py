@@ -35,6 +35,11 @@ SIG_API_ERROR_FORCED_TOOL_CHOICE = "api_error_forced_tool_choice"
 SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS = "api_error_unsupported_sampling_params"
 SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP = "api_error_unsupported_token_cap"
 SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE = "api_error_unsupported_effort_value"
+#: 400: the provider rejects a JSON Schema the agent supplied — a `response_format` schema or
+#: a tool's `parameters` — for breaking the strict structured-output subset. Named after the
+#: SCHEMA rather than the parameter because both carriers produce the same message shape and
+#: the same repair (rescue-ops ghisdk-051, p2-001).
+SIG_API_ERROR_SCHEMA_INVALID = "api_error_schema_invalid"
 SIG_API_ERROR_OTHER = "api_error_other"
 #: Not a model signature at all: the request never reached the provider (a local SDK
 #: validation error, or a param upshift refused to translate). Kept in the taxonomy so it
@@ -60,6 +65,7 @@ SIGNATURE_PRIORITY = (
     SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS,
     SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP,
     SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE,
+    SIG_API_ERROR_SCHEMA_INVALID,
     SIG_API_ERROR_TOOLS_REASONING,
     SIG_THINKING_BLOCK_INVALID,
     SIG_API_ERROR_OTHER,
@@ -105,6 +111,12 @@ SIGNATURE_DESCRIPTIONS = {
     SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE: (
         "400: the reasoning-effort VALUE the agent declares is not on this model's ladder "
         "(e.g. 'minimal' on the gpt-5.6 family, which lists none/low/medium/high/xhigh/max)."
+    ),
+    SIG_API_ERROR_SCHEMA_INVALID: (
+        "400: a JSON Schema the agent supplied (a `response_format` schema, or a tool's "
+        "`parameters`) breaks the provider's strict structured-output subset — typically "
+        "\"'additionalProperties' is required to be supplied and to be false\" or a "
+        "`required` list that does not name every property."
     ),
     SIG_API_ERROR_TOOLS_REASONING: (
         "400: function tools plus reasoning_effort are not supported on this endpoint."
@@ -172,6 +184,17 @@ _RE_TOKEN_CAP_PARAM = re.compile(
 #: happens to contain a sampling word cannot steal it.
 _RE_UNSUPPORTED_EFFORT_VALUE = re.compile(
     r"unsupported value:\s*'[^']+'\s+is not supported with the\s+'[^']+'\s+model",
+    re.IGNORECASE,
+)
+
+#: The provider refusing a schema the AGENT supplied. Matched on the API's own vocabulary:
+#: the two headline wordings ("Invalid schema for response_format 'X'", "Invalid schema for
+#: function 'y'") and the two rule names it cites inside them. Deliberately anchored on those
+#: four fragments rather than on the word "schema", so a 400 that merely mentions a schema in
+#: passing is not swept out of its own signature (rescue-ops ghisdk-051).
+_RE_SCHEMA_INVALID = re.compile(
+    r"invalid schema for response_format|invalid schema for function|"
+    r"\badditionalProperties\b|'required'",
     re.IGNORECASE,
 )
 
@@ -282,6 +305,8 @@ def _api_error_signature(err: dict[str, Any]) -> str:
             return SIG_API_ERROR_UNSUPPORTED_TOKEN_CAP
         if _RE_UNSUPPORTED_EFFORT_VALUE.search(message):
             return SIG_API_ERROR_UNSUPPORTED_EFFORT_VALUE
+        if _RE_SCHEMA_INVALID.search(message):
+            return SIG_API_ERROR_SCHEMA_INVALID
         if _RE_SAMPLING_PARAMS.search(message):
             return SIG_API_ERROR_UNSUPPORTED_SAMPLING_PARAMS
     return SIG_API_ERROR_OTHER
