@@ -105,6 +105,9 @@ def apply_patch(agent_dir: Path, patch_path: Path, dest: Path) -> dict[str, Any]
     shutil.copytree(
         agent_dir, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git")
     )
+    # Resolve before any cwd change: git runs inside `dest`, where a relative path no
+    # longer points at the patch the user named.
+    agent_dir, patch_path = Path(agent_dir).resolve(), Path(patch_path).resolve()
     patch_text = patch_path.read_text()
     level = strip_level(patch_text, patchable_files(agent_dir))
     commands: list[str] = []
@@ -228,7 +231,7 @@ def verify_patch(
     """Build the §E ``patch_verification`` block. Never raises on a mismatch — a mismatch is
     a RESULT, recorded in the block — but raises ``VerificationError`` when the patch cannot
     be applied at all, because then there is nothing to compare."""
-    agent_dir, patch_path = Path(agent_dir), Path(patch_path)
+    agent_dir, patch_path = Path(agent_dir).resolve(), Path(patch_path).resolve()
     run_directory = Path(run_dir)
     if not (agent_dir / "agent.json").is_file():
         raise VerificationError(f"{agent_dir} is not an agent directory (no agent.json)")
