@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **`upgrade` no longer crashes on a native-runner agent.** Reaching the repair loop with a
+  native agent (an `agent.json` with a `runner` block) raised `KeyError:
+  'system_prompt_file'` in `playbook.generate_candidates` — after both the baseline and the
+  candidate run had already been paid for, with `--no-repair` the only way through. DESIGN.md
+  §C already said repairs are not generated in native mode; `upgrade` now enforces it, prints
+  one line saying why (the playbook edits adapter files, and a native agent's prompt, tools
+  and backend belong to the application) and reports the unrepaired verdict `--no-repair`
+  would have produced.
+- **`verify-patch` refuses a native-runner agent instead of raising `KeyError`.** It proves an
+  adapter patch by rebuilding requests from the patched `agent.json`, prompt and tools files,
+  which a native agent does not have; it now raises a `VerificationError` naming that (exit 2,
+  no traceback). The `--commit` / git-worktree form for native agents is documented in
+  DESIGN.md §E as not implemented rather than as behaviour.
 - **`verify-patch` is strict about what it proves.** Two source-review findings, one
   regression test each (tests/test_verify_patch.py):
   - A case in the patched agent's `cases.json` with no recorded `rep_01` request in the

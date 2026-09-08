@@ -257,6 +257,17 @@ def verify_patch(
     run_directory = Path(run_dir)
     if not (agent_dir / "agent.json").is_file():
         raise VerificationError(f"{agent_dir} is not an agent directory (no agent.json)")
+    # A native agent has no prompt or tools file to patch — its configuration lives in the
+    # application. The `--commit` / git-worktree form DESIGN.md §E sketches is NOT implemented,
+    # and `patchable_files` would otherwise raise a bare KeyError on the missing fields.
+    if json.loads((agent_dir / "agent.json").read_text()).get("runner") is not None:
+        raise VerificationError(
+            f"{agent_dir} is a native-runner agent (agent.json has a `runner` block), and "
+            f"verify-patch does not support native-runner agents yet: it proves an ADAPTER "
+            f"patch by rebuilding requests from the patched agent.json, prompt and tools "
+            f"files, none of which a native agent has. The `--commit` form for native agents "
+            f"(DESIGN.md §E) is not implemented."
+        )
     if not patch_path.is_file():
         raise VerificationError(f"patch {patch_path} not found")
     manifest_path = run_directory / "manifest.json"

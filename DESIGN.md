@@ -618,8 +618,9 @@ truncated and flagged. Two reference runners ship in `examples/runners/`: Python
 (`python -m upshift.runners.example`) and a Node/TypeScript one (`node runner.mjs`) with the
 same protocol, each with a test that drives it through `run_suite`.
 
-Patched configuration for a native run: `upshift verify-patch --agent <dir> --patch <file>
---commit <sha>` makes a clean `git worktree` of `workdir` at `<sha>`, `git apply --check`
+Patched configuration for a native run (NOT IMPLEMENTED — see §E; `verify-patch` refuses a
+native agent): `upshift verify-patch --agent <dir> --patch <file>
+--commit <sha>` would make a clean `git worktree` of `workdir` at `<sha>`, `git apply --check`
 then applies the patch, runs baseline model / candidate model / candidate+patch through the
 runner, and writes a `patch_verification` block into verdict.json (§E). Repairs are NOT
 generated in native mode (the playbook edits adapter files, not application source); native
@@ -706,6 +707,12 @@ patched cases.json to have been compared: a case with no recorded `rep_01` was n
 Exit 2 with the differing request on any mismatch — request, config, or uncompared case. This
 closes the gap between `patched_agent/` (what the loop verified) and `upgrade.patch` (what we
 export).
+
+The `--commit <sha>` / `git worktree` form for NATIVE agents sketched in §C is **not
+implemented**. `upshift verify-patch` refuses a native-runner agent directory (an `agent.json`
+with a `runner` block) with an error and exit 2: it proves an adapter patch by rebuilding
+requests from the patched `agent.json`, prompt and tools files, and a native agent has none of
+them.
 
 ### F. Capture continuation policy
 

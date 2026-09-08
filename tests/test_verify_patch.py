@@ -365,3 +365,58 @@ def test_the_cli_candidate_model_is_not_a_config_mismatch(workspace) -> None:
     assert block["config_mismatches"] == []
     assert block["fields_not_proven_by_the_patch"] == ["model"]
     assert block["verified"] is True
+
+
+# ---------------------------------------------------------------------------
+# Native-runner agents: refused, not crashed
+# ---------------------------------------------------------------------------
+
+
+def test_a_native_agent_is_refused_with_a_clear_error(workspace, tmp_path: Path) -> None:
+    """A native agent.json has no `system_prompt_file`/`tools_file`, so `patchable_files`
+    raised a bare KeyError. The `--commit` / git-worktree form DESIGN.md §E describes is not
+    implemented, so verify-patch says so instead of half-doing it."""
+    native = tmp_path / "native-agent"
+    native.mkdir()
+    (native / "agent.json").write_text(
+        json.dumps(
+            {
+                "name": "native",
+                "model": "stub-model-a",
+                "endpoint": "chat_completions",
+                "runner": {"kind": "command", "workdir": "app", "command": ["python3", "x.py"]},
+            }
+        )
+    )
+
+    with pytest.raises(VP.VerificationError, match="native-runner"):
+        VP.verify_patch(native, workspace["patch"], workspace["run"])
+
+
+def test_the_native_refusal_exits_two_through_the_cli(workspace, tmp_path: Path, capsys) -> None:
+    from upshift import cli
+
+    native = tmp_path / "native-agent-cli"
+    native.mkdir()
+    (native / "agent.json").write_text(
+        json.dumps(
+            {
+                "name": "native",
+                "model": "stub-model-a",
+                "endpoint": "chat_completions",
+                "runner": {"kind": "command", "workdir": "app", "command": ["python3", "x.py"]},
+            }
+        )
+    )
+
+    code = cli.main(
+        [
+            "verify-patch",
+            "--agent", str(native),
+            "--patch", str(workspace["patch"]),
+            "--run", str(workspace["run"]),
+        ]
+    )
+
+    assert code == 2
+    assert "native-runner" in capsys.readouterr().out
