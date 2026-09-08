@@ -39,7 +39,8 @@ patched copy) is future work and deliberately absent rather than stubbed, so tha
 can mistake a free structural check for a paid behavioural one.
 
 Exit codes: 0 verified, 2 any mismatch (a request mismatch, a config mismatch, a case with no
-recorded request, or no case compared at all) or any failure to apply.
+recorded request, or no case compared at all), any failure to apply, or a refused agent
+(a native-runner agent, which this command does not support).
 """
 
 from __future__ import annotations

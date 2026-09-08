@@ -267,3 +267,6 @@ def test_a_regressed_native_agent_reaches_a_verdict_without_no_repair(tmp_path, 
     assert verdict["patch_path"] is None
     assert not (out / "patched_agent").exists()
     assert "repairs are not generated for native" in printed
+    # The STAY PINNED reason must not claim a repair budget was spent when none was tried.
+    assert "no repair was attempted" in printed
+    assert "after the repair budget" not in printed
