@@ -394,10 +394,18 @@ def _verdict_summary(result: DiffResult, verdict: dict[str, Any]) -> list[str]:
     elif name == "STAY PINNED":
         remaining = _num(regressed_total) - _num(restored)
         still = [c.case_id for c in result.by_label(LABEL_REGRESSED)]
-        reason = (
-            f"reason: {remaining} of {regressed_total} regressed cases still fail after the "
-            "repair budget"
-        )
+        # An empty repair_log means no candidate was ever tried (--no-repair, a native-runner
+        # agent, or an INCONCLUSIVE short-circuit): say so instead of citing a budget.
+        if verdict.get("repair_log"):
+            reason = (
+                f"reason: {remaining} of {regressed_total} regressed cases still fail after "
+                "the repair budget"
+            )
+        else:
+            reason = (
+                f"reason: {remaining} of {regressed_total} regressed cases fail and no repair "
+                "was attempted"
+            )
         if broken:
             reason += f"; {broken} previously-passing cases broken by the patch"
         lines.append(reason)

@@ -1215,7 +1215,19 @@ def cmd_upgrade(args) -> int:
 
             repair_outcome = None
             patch_path = None
-            if regressed and not args.no_repair:
+            if regressed and native:
+                # DESIGN.md §C: repairs are NOT generated in native mode. Enforced here, not
+                # left to the playbook, which reads `system_prompt_file`/`tools_file` out of
+                # agent.json and died with a KeyError once both runs had already been paid for.
+                console.print(
+                    "\n[yellow]repairs are not generated for native-runner agents: the repair "
+                    "playbook edits adapter files (agent.json, the system prompt, the tools "
+                    "schema) and a native agent's prompt, tools and backend belong to the "
+                    "application. The verdict below is the unrepaired comparison — exactly "
+                    "what --no-repair reports.[/yellow]\n",
+                    highlight=False, soft_wrap=True,
+                )
+            elif regressed and not args.no_repair:
                 console.rule(f"[bold]4/4 repair loop ({len(regressed)} regressed cases)")
                 if ceiling is not None:
                     ceiling.check("4/4 repair loop")

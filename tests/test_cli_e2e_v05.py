@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from upshift import cli, recorder
-from upshift.verdict import EXIT_INCONCLUSIVE, INCONCLUSIVE, SAFE_WITH_PATCH
+from upshift.verdict import EXIT_INCONCLUSIVE, INCONCLUSIVE, SAFE_WITH_PATCH, STAY_PINNED
 
 pytestmark = [pytest.mark.sim]
 
@@ -231,3 +231,42 @@ def test_an_empty_suite_exits_inconclusive_with_a_verdict_on_disk(tmp_path):
     assert verdict["reasons"] == ["empty_suite"]
     # Nothing was run: no baseline directory, so no money and no time was spent finding out.
     assert not recorder.run_dir(runs, "empty-baseline").exists()
+
+
+# ---------------------------------------------------------------------------
+# e. a native agent reaches a verdict without --no-repair (repairs are skipped, not crashed)
+# ---------------------------------------------------------------------------
+
+
+def test_a_regressed_native_agent_reaches_a_verdict_without_no_repair(tmp_path, capsys):
+    """The repair playbook edits adapter files a native agent does not have, so `upgrade`
+    used to die with a KeyError in `generate_candidates` AFTER both runs were paid for.
+    DESIGN.md §C says repairs are not generated in native mode; this proves the pipeline
+    enforces it and still produces a verdict."""
+    agent = _native_agent(tmp_path / "agent")
+    runs = tmp_path / "runs"
+
+    code = cli.main(
+        [
+            "upgrade", "--agent", str(agent), "--provider", "sim",
+            "--baseline-model", "stub-model-a", "--candidate-model", "stub-model-b",
+            "--tag", "native-upgrade", "--runs-root", str(runs), "--n", "2",
+            "--allow-runner", "--quiet",
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    out = recorder.run_dir(runs, "native-upgrade")
+    verdict = json.loads((out / "verdict.json").read_text())
+
+    assert code == 1
+    assert verdict["verdict"] == STAY_PINNED
+    assert verdict["regressed"] == ["add_one_task"]
+    # Skipped, not attempted: no repair candidates, and no patched_agent/ directory.
+    assert verdict["repair_log"] == []
+    assert verdict["patch_path"] is None
+    assert not (out / "patched_agent").exists()
+    assert "repairs are not generated for native" in printed
+    # The STAY PINNED reason must not claim a repair budget was spent when none was tried.
+    assert "no repair was attempted" in printed
+    assert "after the repair budget" not in printed
