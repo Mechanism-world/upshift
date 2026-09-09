@@ -58,7 +58,7 @@ def _one_generation(patches: list[Patch]):
     does not get a second chance to find the candidate it skipped.
     """
 
-    def generate(agent_dir, signatures):
+    def generate(agent_dir, signatures, **_kwargs):
         prompt = (Path(agent_dir) / "prompt.txt").read_text()
         if MARK_A in prompt or MARK_B in prompt:
             return []

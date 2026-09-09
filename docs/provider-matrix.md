@@ -47,6 +47,11 @@ Re-check this file whenever a provider ships a model family, and update the date
 Listed so nobody mistakes an absence for a check. Where a row above is unverified, upshift
 forwards the value and records a note; it does not encode a rule.
 
+- **gpt-6-astra long-context and fast pricing tiers.** The pricing page publishes a
+  long-context row (prompts over 272K input tokens: $20 / $2 / $75 per 1M) and a fast row
+  ($20 / $2 / $100) alongside the standard $10 / $1 / $50 that `pricing.RATES` records.
+  upshift routes neither tier, so a run that somehow hit one would be reported UNDER its real
+  cost. Verified 2026-09-08 against developers.openai.com/api/docs/pricing.
 - **Per-family effort value lists for gpt-5, gpt-5.1, gpt-5.2, gpt-5.5.** The models page
   enumerates only the gpt-5.6 family and gpt-6-astra. Do not assume the seven values apply
   uniformly to older families.

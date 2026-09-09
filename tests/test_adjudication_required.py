@@ -47,7 +47,7 @@ def _patch() -> Patch:
     )
 
 
-def _one_generation(agent_dir, signatures):
+def _one_generation(agent_dir, signatures, **_kwargs):
     return [] if MARKER in (Path(agent_dir) / "prompt.txt").read_text() else [_patch()]
 
 

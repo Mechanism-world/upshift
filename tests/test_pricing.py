@@ -269,3 +269,22 @@ def test_gpt_54_flex_and_cached_follow_the_published_table(model):
     assert abs(price("openai-batch", model, 1_000_000, 100_000, 0) - standard / 2) < 1e-9
     full_input = price("openai", model, 1_000_000, 0, 0)
     assert abs(price("openai", model, 1_000_000, 0, 1_000_000) - full_input / 10) < 1e-9
+
+
+def test_gpt_6_astra_published_rates():
+    """developers.openai.com/api/docs/pricing, fetched 2026-09-08; USD per 1M tokens,
+    standard tier. Cross-checked against the model page, which prints the same $10/$1/$50."""
+    assert abs(price("openai", "gpt-6-astra", 1_000_000, 0, 0) - 10.00) < 1e-9
+    assert abs(price("openai", "gpt-6-astra", 0, 1_000_000, 0) - 50.00) < 1e-9
+
+
+def test_gpt_6_astra_cached_input_is_the_published_ten_percent():
+    """The page prints $1.00 cached against $10.00 input, which is CACHED_INPUT_FRACTION —
+    so this model must NOT carry a MODEL_CACHED_INPUT_FRACTION override. `cached_input_tokens`
+    is the cache-served PART of `input_tokens`, so a fully-cached 1M prompt is (1M, 0, 1M)."""
+    assert abs(price("openai", "gpt-6-astra", 1_000_000, 0, 1_000_000) - 1.00) < 1e-9
+
+
+def test_gpt_6_astra_batch_is_half_of_standard():
+    standard = price("openai", "gpt-6-astra", 1_000_000, 100_000, 0)
+    assert abs(price("openai-batch", "gpt-6-astra", 1_000_000, 100_000, 0) - standard / 2) < 1e-9

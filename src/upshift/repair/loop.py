@@ -342,7 +342,9 @@ def repair(
     while unrestored and tried < budget:
         candidates = [
             p
-            for p in generate_candidates(work_dir, _ordered_signatures(per_case_sigs))
+            for p in generate_candidates(
+                work_dir, _ordered_signatures(per_case_sigs), candidate_model=candidate_model
+            )
             if p.id not in tried_ids
         ]
         if not candidates:
