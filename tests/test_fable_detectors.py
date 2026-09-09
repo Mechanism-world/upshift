@@ -701,3 +701,57 @@ def test_no_candidate_when_the_sequence_forces_nothing(tmp_path):
     )
     ids = [p.id for p in generate_candidates(agent_dir, ["api_error_forced_tool_choice"])]
     assert "remove-forced-tool-choice" not in ids
+
+
+# ---------------------------------------------------------------------------
+# gpt-6-astra: `reasoning_effort="none"` is documented as unsupported, so the
+# `reasoning-effort-none` candidate must not be offered when upgrading TO it.
+# https://developers.openai.com/api/docs/guides/latest-model (fetched 2026-09-08):
+# "GPT-6 Astra does not support the `none` reasoning effort."
+# ---------------------------------------------------------------------------
+
+
+def test_effort_none_is_still_offered_when_no_candidate_model_is_named(tmp_path):
+    """The gate is opt-in: an unnamed model keeps the pre-v0.5 candidate set."""
+    agent_dir = write_agent(tmp_path, endpoint="chat_completions")
+    ids = [p.id for p in generate_candidates(agent_dir, ["api_error_tools_reasoning"])]
+    assert "reasoning-effort-none" in ids
+    assert "route-to-responses" in ids
+
+
+def test_effort_none_is_still_offered_for_a_model_that_accepts_it(tmp_path):
+    agent_dir = write_agent(tmp_path, endpoint="chat_completions")
+    ids = [
+        p.id
+        for p in generate_candidates(
+            agent_dir, ["api_error_tools_reasoning"], candidate_model="gpt-5.6-sol"
+        )
+    ]
+    assert "reasoning-effort-none" in ids
+
+
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-2026-09-01"])
+def test_effort_none_is_not_offered_for_gpt_6_astra(tmp_path, model):
+    """The documented alternative to endpoint routing is illegal on this model: offering it
+    would spend a repair-budget unit and a paid screening run on a guaranteed second 400."""
+    agent_dir = write_agent(tmp_path, endpoint="chat_completions")
+    patches = generate_candidates(
+        agent_dir, ["api_error_tools_reasoning"], candidate_model=model
+    )
+    ids = [p.id for p in patches]
+    assert "reasoning-effort-none" not in ids
+    # The real fix for this signature is still generated, so suppressing the illegal
+    # sibling never leaves the signature with no candidate behind it.
+    assert "route-to-responses" in ids
+
+
+def test_the_astra_gate_does_not_suppress_the_effort_ladder(tmp_path):
+    """Only `none` is documented as refused; raising effort stays available on Astra."""
+    agent_dir = write_agent(tmp_path, endpoint="responses", params={"reasoning_effort": "low"})
+    ids = [
+        p.id
+        for p in generate_candidates(
+            agent_dir, ["reduced_retrieval_calls"], candidate_model="gpt-6-astra"
+        )
+    ]
+    assert "raise-effort-one-rung" in ids

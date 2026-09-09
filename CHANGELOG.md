@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`reasoning-effort-none` is no longer proposed for a model documented as refusing it.**
+  `generate_candidates` gained an optional `candidate_model`, which the repair loop now
+  passes, and a `MODELS_WITHOUT_EFFORT_NONE` table gating the one candidate whose value the
+  vendor publishes as illegal. `gpt-6-astra` is the first entry: the docs say "GPT-6 Astra
+  does not support the `none` reasoning effort"
+  (https://developers.openai.com/api/docs/guides/latest-model, fetched 2026-09-08), so the
+  documented ALTERNATIVE to `route-to-responses` for the chat/completions tools+reasoning 400
+  is on that model a guaranteed second 400 — it would have consumed a repair-budget unit and
+  a paid screening run to rediscover a published fact. `route-to-responses` is unaffected, so
+  the signature never loses its real fix, and the effort LADDER is untouched (only the value
+  `none` is documented as refused). An unnamed or unlisted model keeps the previous candidate
+  set, because suppressing a documented repair on a model that accepts it is the worse error.
+- **`gpt-6-astra` has a rate.** $10 / $50 per 1M input / output, standard tier, cached input
+  $1.00 = the default 10% fraction (no override), from
+  https://developers.openai.com/api/docs/pricing fetched 2026-09-08 and cross-checked against
+  the model page. The published long-context (over 272K input: $20/$2/$75) and fast
+  ($20/$2/$100) tiers are NOT recorded — upshift routes neither, and a run that used one
+  would be under-priced; the long-context tier is called out in docs/provider-matrix.md
+  rather than averaged in.
+
 - **`upgrade` no longer crashes on a native-runner agent.** Reaching the repair loop with a
   native agent (an `agent.json` with a `runner` block) raised `KeyError:
   'system_prompt_file'` in `playbook.generate_candidates` — after both the baseline and the

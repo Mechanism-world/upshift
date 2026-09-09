@@ -56,6 +56,16 @@ RATES: dict[str, tuple[float, float]] = {
     "gpt-5.6-sol": (4.00, 20.00),
     "gpt-5.6-terra": (2.00, 12.00),
     "gpt-5.6-luna": (0.20, 1.20),
+    # gpt-6-astra: https://developers.openai.com/api/docs/pricing, fetched 2026-09-08, and
+    # cross-checked against https://developers.openai.com/api/docs/models/gpt-6-astra (same
+    # $10 / $1 / $50). Standard tier, USD per 1M tokens. Cached input is $1.00 = exactly 10%
+    # of input, which is CACHED_INPUT_FRACTION, so no MODEL_CACHED_INPUT_FRACTION override.
+    # The page also publishes a long-context tier (prompts over 272K input tokens: $20/$2/$75)
+    # and a fast tier ($20/$2/$100); upshift routes neither, so neither is recorded here — a
+    # run that used one would be UNDER-priced, which is why the long-context tier is called
+    # out in docs/provider-matrix.md rather than silently averaged in. The batch row
+    # ($5/$0.50/$25) is exactly half of standard, which TIER_MULTIPLIER already reproduces.
+    "gpt-6-astra": (10.00, 50.00),
     # gpt-5.2 family and gpt-5-mini: https://developers.openai.com/api/docs/pricing,
     # fetched 2026-09-03. Standard tier, USD per 1M tokens; the published flex and batch
     # rows are exactly half of these and the published cached-input rows exactly 10% of

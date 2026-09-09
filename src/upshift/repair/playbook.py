@@ -100,6 +100,15 @@ EFFORT_LADDERS = {
     "responses": ("none", "low", "medium", "high"),
 }
 EFFORT_WHEN_UNSET = {"messages": "high", "chat_completions": "medium", "responses": "medium"}
+#: Candidate models documented as NOT accepting `reasoning_effort="none"`. Prefix-matched, so a
+#: dated or suffixed id (`gpt-6-astra-2026-09-01`) is covered by the family entry. The
+#: `reasoning-effort-none` candidate is the documented ALTERNATIVE to `route-to-responses` for
+#: the chat/completions tools+reasoning 400, but on these models it is not an alternative at
+#: all: the request 400s a second time on the effort value itself, so proposing it spends a
+#: repair-budget unit and a paid screening run to learn what the vendor already published.
+#: Source (fetched 2026-09-08): https://developers.openai.com/api/docs/guides/latest-model —
+#: "GPT-6 Astra does not support the `none` reasoning effort."
+MODELS_WITHOUT_EFFORT_NONE = ("gpt-6-astra",)
 #: Params both Fables reject at non-default values (item 5).
 SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
 
@@ -599,9 +608,28 @@ def _declared_forced_tool_choice(raw_config: dict) -> str | None:
     return None
 
 
-def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Patch]:
+def _accepts_effort_none(candidate_model: str | None) -> bool:
+    """Whether `reasoning_effort="none"` is a legal value on the model being upgraded TO.
+
+    An unknown or unnamed model is assumed to accept it: the table lists only models whose
+    vendor documents the refusal, and a wrong assumption here costs one rejected candidate,
+    whereas suppressing a documented repair on a model that does accept it would remove a
+    real fix from the loop.
+    """
+    if not candidate_model:
+        return True
+    return not candidate_model.startswith(MODELS_WITHOUT_EFFORT_NONE)
+
+
+def generate_candidates(
+    agent_dir: str | Path, signatures: list[str], candidate_model: str | None = None
+) -> list[Patch]:
     """Ordered repair candidates for the observed failure signatures, computed against the
-    CURRENT contents of agent_dir (so candidates stack across repair iterations)."""
+    CURRENT contents of agent_dir (so candidates stack across repair iterations).
+
+    ``candidate_model`` is the model being upgraded TO. It gates only those candidates the
+    vendor documents as illegal on that model (see ``MODELS_WITHOUT_EFFORT_NONE``); when it is
+    None every documented candidate is offered, which is the pre-v0.5 behaviour."""
     agent_dir = Path(agent_dir)
     raw_config = json.loads(_read(agent_dir, "agent.json"))
     prompt = _read(agent_dir, raw_config["system_prompt_file"]).lower()
@@ -741,7 +769,9 @@ def generate_candidates(agent_dir: str | Path, signatures: list[str]) -> list[Pa
                     "for this model family).",
                     [_agent_json_edit(agent_dir, ["endpoint"], "responses")],
                 )
-            if raw_config.get("params", {}).get("reasoning_effort") != "none":
+            if raw_config.get("params", {}).get("reasoning_effort") != "none" and (
+                _accepts_effort_none(candidate_model)
+            ):
                 add(
                     "reasoning-effort-none",
                     "model_params",
