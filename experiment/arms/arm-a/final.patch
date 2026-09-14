@@ -1,0 +1,692 @@
+diff --git a/gptme/llm/llm_openai.py b/gptme/llm/llm_openai.py
+index 14a7f5c7f..2f884a4c3 100644
+--- a/gptme/llm/llm_openai.py
++++ b/gptme/llm/llm_openai.py
+@@ -133,21 +133,77 @@ def _get_provider_api_key(config: Config, provider: Provider, env_var: str) -> s
+ # `from gptme.llm.llm_openai import OPENROUTER_APP_HEADERS` imports.
+ 
+ 
++# OpenAI's reasoning-era model families: the o-series (o1, o3, o4, o5, ...) and
++# gpt-5 and later (gpt-5..gpt-9, gpt-10+).  These share a set of wire quirks
++# (restricted sampling parameters, ``max_completion_tokens`` instead of
++# ``max_tokens``, the ``verbosity`` field, o1-style message preparation).
++# Matched by family so new releases in these lines keep working without a code
++# change; older models (gpt-4o, gpt-4.1, ...) are excluded.
++#
++# Several call sites previously spelled this check as ``"gpt-5" in model`` or
++# ``model.startswith("gpt-5")``, which silently stopped matching at GPT-6 and
++# gave gpt-6-astra a different code path than gpt-5.6-sol on the same request.
++_OPENAI_REASONING_ERA_RE = re.compile(r"^(?:o\d|gpt-(?:[5-9]|\d\d))")
++# The GPT-5-and-later half of the above, without the o-series.  Used where the
++# previous spelling was `"gpt-5" in model` so the o-series keeps its existing
++# behaviour and only the GPT family is widened past GPT-5.
++_OPENAI_GPT5_PLUS_RE = re.compile(r"^gpt-(?:[5-9]|\d\d)")
++
++
++# Dated snapshot suffix, e.g. "gpt-6-astra-2026-09-03" / "-20260903".
++_DATE_SUFFIX_RE = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
++
++
++def _bare_model_name(model_name: str) -> str:
++    """Strip any provider prefix and OpenRouter ``@host`` pin, lowercased."""
++    return model_name.rsplit("/", 1)[-1].split("@")[0].lower()
++
++
++def _is_openai_reasoning_era_model(model_name: str) -> bool:
++    """Whether this model id belongs to OpenAI's o-series / GPT-5-and-later families."""
++    return bool(_OPENAI_REASONING_ERA_RE.match(_bare_model_name(model_name)))
++
++
++def _is_gpt5_or_later(model_name: str) -> bool:
++    """Whether this model id is GPT-5 or a later GPT release (gpt-5..gpt-9, gpt-10+)."""
++    return bool(_OPENAI_GPT5_PLUS_RE.match(_bare_model_name(model_name)))
++
++
++# Models that reject ``temperature`` / ``top_p`` outright rather than merely
++# pinning them to a fixed value.  GPT-5 class models accept ``temperature=1``;
++# GPT-6 Astra removed the sampling parameters entirely, so sending any value
++# (1.0 included) is an error.
++# Source: https://developers.openai.com/api/docs/guides/latest-model
++# ("Remove: temperature, top_p, top_logprobs").
++_OPENAI_MODELS_WITHOUT_SAMPLING_PARAMS = ("gpt-6",)
++
++
++def _rejects_sampling_params(model_meta: ModelMeta | None) -> bool:
++    if model_meta is None:
++        return False
++    bare = _bare_model_name(model_meta.model)
++    return bare.startswith(_OPENAI_MODELS_WITHOUT_SAMPLING_PARAMS)
++
++
+ def _get_temperature(
+     provider: Provider,
+     model_meta: ModelMeta | None = None,
+     temperature: float | None = None,
+-) -> float:
+-    """Return the temperature for a given provider/model.
++) -> float | None:
++    """Return the temperature for a given provider/model, or None to omit it.
+ 
+     Moonshot/Kimi models require temperature=1. K3 is marked as a reasoner, so
+     callers omit this fixed parameter rather than invoking this helper. OpenAI
+-    GPT-5 class models require temperature=1. All others use the caller value
+-    or global default.
++    GPT-5 class models require temperature=1; GPT-6 and later removed the
++    parameter altogether and 400 on any value, so None is returned and callers
++    leave it out of the request. All others use the caller value or global
++    default.
+     """
++    if _rejects_sampling_params(model_meta):
++        return None
+     if provider == "moonshot":
+         return 1.0
+-    if model_meta is not None and "gpt-5" in model_meta.model:
++    if model_meta is not None and _is_gpt5_or_later(model_meta.model):
+         return 1.0
+     return temperature if temperature is not None else TEMPERATURE
+ 
+@@ -164,7 +220,9 @@ def _get_top_p(
+     others use the caller value or global default. Returns None for models
+     that don't support top_p.
+     """
+-    if model_meta is not None and "gpt-5" in model_meta.model:
++    if _rejects_sampling_params(model_meta):
++        return None
++    if model_meta is not None and _is_gpt5_or_later(model_meta.model):
+         return None
+     if provider == "moonshot":
+         return 0.95
+@@ -354,15 +412,71 @@ def _responses_api_enabled() -> bool:
+     return value.strip().lower() not in {"0", "false", "no", "off"}
+ 
+ 
++# Models that cannot do function calling on /v1/chat/completions at all.
++#
++# > "Use the Responses API for function calling. Chat Completions does not
++# >  support function calling with GPT-6 Astra."
++# Source: https://developers.openai.com/api/docs/guides/reasoning
++#
++# For these models the Responses API is not a preference that a debugging
++# switch may turn off — with tools in the request it is the only endpoint that
++# works.  The wire error is
++#   400 Function tools with reasoning_effort are not supported for gpt-6-astra
++#       in /v1/chat/completions. To use function tools, use /v1/responses or
++#       set reasoning_effort to 'none'.
++# and the 'none' it suggests is itself rejected by this model (see
++# _OPENAI_MODEL_UNSUPPORTED_EFFORTS), so there is no chat-completions fallback
++# to degrade to.
++_MODELS_REQUIRING_RESPONSES_FOR_TOOLS = ("gpt-6-astra",)
++_responses_override_warned: set[str] = set()
++
++
++def _requires_responses_api_for_tools(model_meta: ModelMeta) -> bool:
++    bare = _DATE_SUFFIX_RE.sub("", _bare_model_name(model_meta.model))
++    return bare in _MODELS_REQUIRING_RESPONSES_FOR_TOOLS
++
++
+ def _should_use_responses_api(
+-    provider: Provider, model_meta: ModelMeta, client: OpenAI
++    provider: Provider,
++    model_meta: ModelMeta,
++    client: OpenAI,
++    tools: list[ToolSpec] | None = None,
+ ) -> bool:
+-    return (
+-        provider == "openai"
+-        and model_meta.supports_responses_api
+-        and not _is_proxy(client)
+-        and _responses_api_enabled()
+-    )
++    if provider != "openai" or not model_meta.supports_responses_api:
++        return False
++    if _is_proxy(client):
++        # A proxy may not speak the Responses wire format, so we cannot simply
++        # force it — but on a model that has no chat-completions tool support
++        # the request is going to fail, so say why up front.
++        if tools and _requires_responses_api_for_tools(model_meta):
++            _warn_responses_override_once(
++                model_meta,
++                "an OpenAI-compatible proxy/base_url is configured, so gptme is "
++                "sending tools over /v1/chat/completions; this model only "
++                "supports function calling on /v1/responses and the request is "
++                "expected to fail. Point OPENAI_BASE_URL at an endpoint that "
++                "implements /v1/responses, or use a model that supports tools "
++                "on chat completions.",
++            )
++        return False
++    if not _responses_api_enabled():
++        if tools and _requires_responses_api_for_tools(model_meta):
++            _warn_responses_override_once(
++                model_meta,
++                "GPTME_OPENAI_RESPONSES_API is disabled, but this model only "
++                "supports function calling on /v1/responses; ignoring the "
++                "override for this tool-carrying request.",
++            )
++            return True
++        return False
++    return True
++
++
++def _warn_responses_override_once(model_meta: ModelMeta, reason: str) -> None:
++    if model_meta.model in _responses_override_warned:
++        return
++    _responses_override_warned.add(model_meta.model)
++    logger.warning("%s: %s", model_meta.model, reason)
+ 
+ 
+ _VALID_VERBOSITY = {"low", "medium", "high"}
+@@ -382,7 +496,7 @@ def _make_responses_text_config(
+             "strict": True,
+         }
+ 
+-    if OPENAI_VERBOSITY and model_meta.model.startswith("gpt-5"):
++    if OPENAI_VERBOSITY and _is_gpt5_or_later(model_meta.model):
+         global _verbosity_warned
+         if OPENAI_VERBOSITY not in _VALID_VERBOSITY:
+             if not _verbosity_warned:
+@@ -1014,7 +1128,7 @@ def _maybe_apply_verbosity(body: dict[str, Any], model_meta: ModelMeta) -> None:
+     global _verbosity_warned
+     if not OPENAI_VERBOSITY:
+         return
+-    if not model_meta.model.startswith("gpt-5"):
++    if not _is_gpt5_or_later(model_meta.model):
+         return
+     if OPENAI_VERBOSITY not in _VALID_VERBOSITY:
+         if not _verbosity_warned:
+@@ -1049,10 +1163,10 @@ def _gptme_api_model(
+ 
+ # OpenAI's reasoning-era models reject `max_tokens` and require
+ # `max_completion_tokens`: the o-series (o1, o3, o4, o5, ...) and gpt-5 and
+-# later (gpt-5..gpt-9, gpt-10+). Matched by family so new releases in these
+-# lines keep working without a code change; older models (gpt-4o, etc.) keep
+-# `max_tokens`.
+-_OPENAI_MAX_COMPLETION_RE = re.compile(r"^(?:o\d|gpt-(?:[5-9]|\d\d))")
++# later (gpt-5..gpt-9, gpt-10+). Matched by family (see
++# _OPENAI_REASONING_ERA_RE) so new releases in these lines keep working
++# without a code change; older models (gpt-4o, etc.) keep `max_tokens`.
++_OPENAI_MAX_COMPLETION_RE = _OPENAI_REASONING_ERA_RE
+ 
+ 
+ def _max_tokens_param_name(provider: Provider, api_model: str) -> str:
+@@ -1066,8 +1180,7 @@ def _max_tokens_param_name(provider: Provider, api_model: str) -> str:
+         provider == "gptme" and api_model.startswith("openai/")
+     )
+     if targets_openai:
+-        bare = api_model.rsplit("/", 1)[-1].split("@")[0].lower()
+-        if _OPENAI_MAX_COMPLETION_RE.match(bare):
++        if _is_openai_reasoning_era_model(api_model):
+             return "max_completion_tokens"
+     return "max_tokens"
+ 
+@@ -1100,7 +1213,7 @@ def chat(
+     api_model = _gptme_api_model(provider, model_meta, is_proxy, model, base_model)
+     reasoning_effort = _resolve_reasoning_effort(provider, model_meta)
+ 
+-    if _should_use_responses_api(provider, model_meta, client):
++    if _should_use_responses_api(provider, model_meta, client, tools):
+         instructions, input_items, responses_tools = (
+             _prepare_messages_for_responses_api(messages, model, tools)
+         )
+@@ -1122,9 +1235,11 @@ def chat(
+         if reasoning_effort is not None:
+             response_kwargs["reasoning"] = {"effort": reasoning_effort}
+         if not is_reasoner:
+-            response_kwargs["temperature"] = _get_temperature(
++            temperature_value = _get_temperature(
+                 provider, model_meta, temperature=temperature
+             )
++            if temperature_value is not None:
++                response_kwargs["temperature"] = temperature_value
+             top_p_value = _get_top_p(provider, model_meta, top_p=top_p)
+             if top_p_value is not None:
+                 response_kwargs["top_p"] = top_p_value
+@@ -1166,9 +1281,11 @@ def chat(
+     # Build optional kwargs to avoid NOT_GIVEN/Omit type mismatch
+     optional_kwargs: dict[str, Any] = {}
+     if not is_reasoner:
+-        optional_kwargs["temperature"] = _get_temperature(
++        temperature_value = _get_temperature(
+             provider, model_meta, temperature=temperature
+         )
++        if temperature_value is not None:
++            optional_kwargs["temperature"] = temperature_value
+         top_p_value = _get_top_p(provider, model_meta, top_p=top_p)
+         if top_p_value is not None:
+             optional_kwargs["top_p"] = top_p_value
+@@ -1289,6 +1406,49 @@ _OPENAI_REASONING_EFFORTS = {
+ # See: https://openrouter.ai/docs/use-cases/reasoning-tokens
+ _OPENROUTER_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+ 
++# Per-model exceptions to "the subset is enforced server-side".
++#
++# GPT-6 Astra dropped the two cheapest levels: ``reasoning_effort: 'none'``
++# returns HTTP 400, and ``minimal`` is no longer among its accepted values
++# (``low``, ``medium``, ``high``, ``xhigh``, ``max``).  Deferring to the server
++# is not good enough here, because Astra's own 400 for sending tools to
++# /v1/chat/completions *recommends* ``reasoning_effort: 'none'`` as the
++# escape hatch — following the error text produces a second 400.  OpenAI's
++# migration guidance for models that removed these levels is to start at
++# ``low``, which is what we substitute (once, with a warning) so a session that
++# was configured for an older model keeps running after the upgrade instead of
++# failing every request.
++# Source: https://developers.openai.com/api/docs/guides/reasoning
++#         https://developers.openai.com/api/docs/guides/latest-model
++_OPENAI_MODEL_UNSUPPORTED_EFFORTS: dict[str, frozenset[str]] = {
++    "gpt-6-astra": frozenset({"none", "minimal"}),
++}
++_OPENAI_EFFORT_DOWNGRADE_TARGET = "low"
++_effort_downgrade_warned: set[tuple[str, str]] = set()
++
++
++def openai_unsupported_efforts(model_name: str) -> frozenset[str]:
++    """Reasoning levels this OpenAI model rejects despite being valid SDK values."""
++    bare = _DATE_SUFFIX_RE.sub("", _bare_model_name(model_name))
++    return _OPENAI_MODEL_UNSUPPORTED_EFFORTS.get(bare, frozenset())
++
++
++def valid_reasoning_efforts(provider: Provider, model_meta: ModelMeta) -> set[str]:
++    """The reasoning levels this (provider, model) pair actually accepts.
++
++    This is what the application should report as valid — not the raw SDK
++    literal, which includes levels individual models reject with a 400.
++    """
++    if provider == "moonshot" and model_meta.model == "kimi-k3":
++        return set(_KIMI_K3_REASONING_EFFORTS)
++    if not model_meta.supports_reasoning:
++        return set()
++    if provider == "openai":
++        return _OPENAI_REASONING_EFFORTS - openai_unsupported_efforts(model_meta.model)
++    if provider == "openrouter":
++        return set(_OPENROUTER_REASONING_EFFORTS)
++    return set()
++
+ 
+ def _resolve_reasoning_effort(provider: Provider, model_meta: ModelMeta) -> str | None:
+     """Return the validated ``GPTME_THINKING_EFFORT`` level for this request, or ``None``.
+@@ -1319,6 +1479,19 @@ def _resolve_reasoning_effort(provider: Provider, model_meta: ModelMeta) -> str
+         raise ValueError(
+             f"Invalid {label} reasoning effort: {effort!r}. Must be one of: {valid}."
+         )
++    if provider == "openai" and effort in openai_unsupported_efforts(model_meta.model):
++        key = (model_meta.model, effort)
++        if key not in _effort_downgrade_warned:
++            _effort_downgrade_warned.add(key)
++            logger.warning(
++                "%s does not support reasoning effort %r; using %r instead "
++                "(per OpenAI's migration guidance). Accepted levels: %s.",
++                model_meta.model,
++                effort,
++                _OPENAI_EFFORT_DOWNGRADE_TARGET,
++                ", ".join(sorted(valid_reasoning_efforts(provider, model_meta))),
++            )
++        return _OPENAI_EFFORT_DOWNGRADE_TARGET
+     return effort
+ 
+ 
+@@ -1521,9 +1694,11 @@ def _stream_responses(
+     if reasoning_effort is not None:
+         kwargs["reasoning"] = {"effort": reasoning_effort}
+     if not is_reasoner:
+-        kwargs["temperature"] = _get_temperature(
++        temperature_value = _get_temperature(
+             provider, model_meta, temperature=temperature
+         )
++        if temperature_value is not None:
++            kwargs["temperature"] = temperature_value
+         top_p_value = _get_top_p(provider, model_meta, top_p=top_p)
+         if top_p_value is not None:
+             kwargs["top_p"] = top_p_value
+@@ -1575,7 +1750,7 @@ def stream(
+     api_model = _gptme_api_model(provider, model_meta, is_proxy, model, base_model)
+ 
+     # Dispatch to Responses API streaming when enabled for GPT-5 class models
+-    if _should_use_responses_api(provider, model_meta, client):
++    if _should_use_responses_api(provider, model_meta, client, tools):
+         captured_metadata = yield from _stream_responses(
+             messages,
+             model,
+@@ -1596,9 +1771,11 @@ def stream(
+     # Build optional kwargs to avoid NOT_GIVEN/Omit type mismatch
+     optional_kwargs: dict[str, Any] = {}
+     if not is_reasoner:
+-        optional_kwargs["temperature"] = _get_temperature(
++        temperature_value = _get_temperature(
+             provider, model_meta, temperature=temperature
+         )
++        if temperature_value is not None:
++            optional_kwargs["temperature"] = temperature_value
+         top_p_value = _get_top_p(provider, model_meta, top_p=top_p)
+         if top_p_value is not None:
+             optional_kwargs["top_p"] = top_p_value
+@@ -2474,7 +2651,7 @@ def _prepare_messages_for_api(
+     # o1 models need _prep_o1 applied to ALL messages (including first), but no merging
+     if any(
+         model_meta.model.startswith(om) for om in ["o1", "o3", "o4"]
+-    ) or model_meta.model.startswith("gpt-5"):
++    ) or _is_gpt5_or_later(model_meta.model):
+         messages = list(_prep_o1(messages))
+     # other reasoning models use deepseek reasoner prep (first message unchanged, then _prep_o1 on rest)
+     elif (
+diff --git a/gptme/prompts/templates.py b/gptme/prompts/templates.py
+index 07f9d7ddd..c71d1274e 100644
+--- a/gptme/prompts/templates.py
++++ b/gptme/prompts/templates.py
+@@ -308,11 +308,20 @@ If the user aborted or interrupted an operation don't try it again, ask for clar
+ If clarification is needed, ask the user.
+ """.strip()
+ 
++    # The "do not ask a clarifying question" line makes the existing
++    # non-interactive contract ("the user is not available to provide
++    # feedback") explicit about questions, not just about permission.
++    # Newer OpenAI reasoning models are documented as "more likely to ask the
++    # user a question when additional input could materially change the
++    # result" (https://developers.openai.com/api/docs/guides/latest-model),
++    # which in a non-interactive run ends the turn with nobody to answer and
++    # the task unfinished.
+     non_interactive_prompt = """
+ You are in non-interactive mode. The user is not available to provide feedback.
+ All code blocks you suggest will be automatically executed.
+ Do not provide examples or ask for permission before running commands.
+ Proceed directly with the most appropriate actions to complete the task.
++Do not ask the user a clarifying question: no one is there to answer it, and ending your turn with a question leaves the task unfinished. If something is ambiguous, choose the most reasonable interpretation, state the assumption you made in one line, and carry on.
+ """.strip()
+ 
+     projectdir = get_project_git_dir()
+diff --git a/tests/test_llm_openai_gpt6.py b/tests/test_llm_openai_gpt6.py
+new file mode 100644
+index 000000000..5defd500b
+--- /dev/null
++++ b/tests/test_llm_openai_gpt6.py
+@@ -0,0 +1,292 @@
++"""GPT-6 Astra migration contracts.
++
++Extends the existing OpenAI provider contracts (``test_llm_openai.py``,
++``test_llm_openai_sampling.py``, ``test_llm_openai_reasoning_effort.py``) to the
++GPT-6 family.  Every assertion here mirrors one that already exists for
++gpt-5.x; the migration bug class is that the gpt-5 assertions passed while the
++same code silently took a different branch for ``gpt-6-astra``.
++
++Documented behaviour under test (developers.openai.com):
++  - function calling requires ``/v1/responses`` on this model
++  - ``reasoning_effort: 'none'`` returns HTTP 400 (and ``minimal`` is not an
++    accepted level); migration guidance is to start at ``low``
++  - ``temperature`` / ``top_p`` / ``top_logprobs`` are removed
++"""
++
++from types import SimpleNamespace
++from typing import Any, cast
++from unittest.mock import Mock
++
++import pytest
++
++from gptme.llm import llm_openai
++from gptme.llm.llm_openai import (
++    _get_temperature,
++    _get_top_p,
++    _is_gpt5_or_later,
++    _max_tokens_param_name,
++    _resolve_reasoning_effort,
++    _should_use_responses_api,
++    extra_body,
++    valid_reasoning_efforts,
++)
++from gptme.llm.models import get_model
++from gptme.message import Message
++from gptme.tools import ToolSpec
++from gptme.tools.base import Parameter
++
++ASTRA = "openai/gpt-6-astra"
++
++
++@pytest.fixture
++def _tool() -> list[ToolSpec]:
++    return [
++        ToolSpec(
++            name="shell",
++            desc="Run a shell command",
++            parameters=[
++                Parameter(
++                    name="command", type="string", description="cmd", required=True
++                )
++            ],
++        )
++    ]
++
++
++# --- registry ---------------------------------------------------------------
++
++
++def test_astra_is_registered_with_responses_support():
++    """M1 precondition: the endpoint decision is driven by this registry flag."""
++    meta = get_model(ASTRA)
++    assert meta.provider == "openai"
++    assert meta.supports_responses_api is True
++    assert meta.supports_reasoning is True
++    assert meta.supports_strict_tools is True
++
++
++def test_astra_matches_the_gpt5_plus_family():
++    """The wire-quirk branches keyed on the GPT-5+ family must include GPT-6."""
++    assert _is_gpt5_or_later("gpt-6-astra")
++    assert _is_gpt5_or_later("gpt-5.6-sol")
++    assert not _is_gpt5_or_later("gpt-4o")
++    assert _max_tokens_param_name("openai", "gpt-6-astra") == "max_completion_tokens"
++
++
++# --- M1: endpoint -----------------------------------------------------------
++
++
++def test_astra_uses_responses_api_by_default(monkeypatch):
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++    monkeypatch.delenv("GPTME_OPENAI_RESPONSES_API", raising=False)
++    client = cast(Any, SimpleNamespace())
++    assert _should_use_responses_api("openai", get_model(ASTRA), client) is True
++
++
++def test_astra_keeps_responses_api_for_tool_calls_even_when_disabled(
++    monkeypatch, _tool
++):
++    """The debug opt-out may not route a tool call to chat completions.
++
++    Chat Completions does not support function calling on this model, and the
++    400 it returns advertises ``reasoning_effort: 'none'`` — a value this same
++    model also rejects — so there is no fallback to degrade to.
++    """
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++    monkeypatch.setenv("GPTME_OPENAI_RESPONSES_API", "0")
++    client = cast(Any, SimpleNamespace())
++    meta = get_model(ASTRA)
++
++    assert _should_use_responses_api("openai", meta, client, _tool) is True
++    # ...but a request with no tools is a legal chat-completions request, so
++    # the debug override still works there.
++    assert _should_use_responses_api("openai", meta, client, None) is False
++    # and the override is still honoured in full for gpt-5.x.
++    assert (
++        _should_use_responses_api(
++            "openai", get_model("openai/gpt-5.6-sol"), client, _tool
++        )
++        is False
++    )
++
++
++def test_astra_chat_with_tools_hits_the_responses_endpoint(monkeypatch, _tool):
++    """End to end: tools present → client.responses.create, not chat.completions."""
++    monkeypatch.delenv("GPTME_THINKING_EFFORT", raising=False)
++    response = SimpleNamespace(
++        usage=None,
++        output=[
++            SimpleNamespace(
++                type="message", content=[SimpleNamespace(type="output_text", text="ok")]
++            )
++        ],
++    )
++    responses_create = Mock(return_value=response)
++    chat_create = Mock()
++    client = SimpleNamespace(
++        responses=SimpleNamespace(create=responses_create),
++        chat=SimpleNamespace(
++            completions=SimpleNamespace(
++                with_raw_response=SimpleNamespace(create=chat_create)
++            )
++        ),
++    )
++    monkeypatch.setattr(llm_openai, "get_client", lambda provider: client)
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++
++    result, _ = llm_openai.chat([Message(role="user", content="hi")], ASTRA, _tool)
++
++    assert result == "ok"
++    chat_create.assert_not_called()
++    responses_create.assert_called_once()
++    assert responses_create.call_args.kwargs["tools"]
++
++
++# --- M2: sampling parameters ------------------------------------------------
++
++
++def test_astra_never_carries_sampling_params():
++    """``temperature``/``top_p`` are removed on this model — not pinned to 1.0."""
++    meta = get_model(ASTRA)
++    assert _get_temperature("openai", meta, temperature=0.37) is None
++    assert _get_top_p("openai", meta, top_p=0.82) is None
++    # gpt-5.x behaviour is unchanged (temperature is pinned, not dropped)
++    gpt5 = get_model("openai/gpt-5.6-sol")
++    assert _get_temperature("openai", gpt5, temperature=0.37) == 1.0
++
++
++@pytest.mark.parametrize("streaming", [False, True])
++def test_astra_request_body_has_no_sampling_or_logprob_params(monkeypatch, streaming):
++    monkeypatch.delenv("GPTME_THINKING_EFFORT", raising=False)
++    if streaming:
++        create = Mock(
++            return_value=[
++                SimpleNamespace(type="response.output_text.delta", delta="ok"),
++                SimpleNamespace(
++                    type="response.completed", response=SimpleNamespace(usage=None)
++                ),
++            ]
++        )
++    else:
++        create = Mock(
++            return_value=SimpleNamespace(
++                usage=None,
++                output=[
++                    SimpleNamespace(
++                        type="message",
++                        content=[SimpleNamespace(type="output_text", text="ok")],
++                    )
++                ],
++            )
++        )
++    client = SimpleNamespace(responses=SimpleNamespace(create=create))
++    monkeypatch.setattr(llm_openai, "get_client", lambda provider: client)
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++
++    if streaming:
++        gen = llm_openai.stream([Message(role="user", content="hi")], ASTRA, None)
++        while True:
++            try:
++                next(gen)
++            except StopIteration:
++                break
++    else:
++        llm_openai.chat([Message(role="user", content="hi")], ASTRA, None)
++
++    kwargs = create.call_args.kwargs
++    for banned in ("temperature", "top_p", "top_logprobs", "logprobs"):
++        assert banned not in kwargs, f"{banned} must not be sent to gpt-6-astra"
++
++
++def test_astra_chat_completions_body_has_no_sampling_params(monkeypatch):
++    """Even on the (tool-less) chat-completions path, nothing sampling-shaped leaks."""
++    monkeypatch.delenv("GPTME_THINKING_EFFORT", raising=False)
++    completion = SimpleNamespace(
++        usage=None,
++        choices=[
++            SimpleNamespace(
++                finish_reason="stop",
++                message=SimpleNamespace(content="ok", tool_calls=None),
++            )
++        ],
++    )
++    create = Mock(return_value=SimpleNamespace(parse=lambda: completion, headers={}))
++    client = SimpleNamespace(
++        chat=SimpleNamespace(
++            completions=SimpleNamespace(
++                with_raw_response=SimpleNamespace(create=create)
++            )
++        )
++    )
++    monkeypatch.setattr(llm_openai, "get_client", lambda provider: client)
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++    monkeypatch.setattr(llm_openai, "_should_use_responses_api", lambda *a: False)
++
++    llm_openai.chat([Message(role="user", content="hi")], ASTRA, None)
++
++    kwargs = create.call_args.kwargs
++    extra = kwargs.get("extra_body") or {}
++    for banned in ("temperature", "top_p", "top_logprobs", "logprobs"):
++        assert banned not in kwargs
++        assert banned not in extra
++
++
++# --- M3: reasoning effort ---------------------------------------------------
++
++
++def test_astra_reports_only_levels_the_model_accepts():
++    meta = get_model(ASTRA)
++    assert valid_reasoning_efforts("openai", meta) == {
++        "low",
++        "medium",
++        "high",
++        "xhigh",
++        "max",
++    }
++    # gpt-5.x keeps the full SDK set
++    assert "none" in valid_reasoning_efforts("openai", get_model("openai/gpt-5.6-sol"))
++
++
++@pytest.mark.parametrize("removed", ["none", "minimal"])
++def test_astra_downgrades_removed_effort_levels(monkeypatch, removed):
++    """``none``/``minimal`` are 400s on this model; OpenAI says start at ``low``."""
++    monkeypatch.setenv("GPTME_THINKING_EFFORT", removed)
++    meta = get_model(ASTRA)
++    assert _resolve_reasoning_effort("openai", meta) == "low"
++    assert extra_body("openai", meta) == {"reasoning_effort": "low"}
++
++
++@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
++def test_astra_passes_supported_effort_levels_through(monkeypatch, level):
++    monkeypatch.setenv("GPTME_THINKING_EFFORT", level)
++    assert _resolve_reasoning_effort("openai", get_model(ASTRA)) == level
++
++
++def test_gpt5_effort_levels_are_untouched(monkeypatch):
++    """The downgrade is per-model: gpt-5.x still sends what it was given."""
++    monkeypatch.setenv("GPTME_THINKING_EFFORT", "none")
++    assert (
++        _resolve_reasoning_effort("openai", get_model("openai/gpt-5.6-sol")) == "none"
++    )
++
++
++def test_astra_responses_path_sends_downgraded_effort(monkeypatch):
++    monkeypatch.setenv("GPTME_THINKING_EFFORT", "none")
++    response = SimpleNamespace(
++        usage=None,
++        output=[
++            SimpleNamespace(
++                type="message", content=[SimpleNamespace(type="output_text", text="ok")]
++            )
++        ],
++    )
++    create = Mock(return_value=response)
++    client = SimpleNamespace(responses=SimpleNamespace(create=create))
++    monkeypatch.setattr(llm_openai, "get_client", lambda provider: client)
++    monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
++
++    _, metadata = llm_openai.chat([Message(role="user", content="hi")], ASTRA, None)
++
++    assert create.call_args.kwargs["reasoning"] == {"effort": "low"}
++    # observability records what was actually sent, not what was configured
++    assert metadata is not None and metadata["reasoning_effort"] == "low"

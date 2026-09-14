@@ -1,0 +1,289 @@
+{
+  "arm": "B",
+  "started_utc": "2026-09-14T18:53:13Z",
+  "finished_utc": "2026-09-14T20:45:00Z",
+  "elapsed_minutes_total": 112,
+  "setup_minutes": 14,
+  "_setup_minutes_note": "Wall-clock minutes, re-derived after discovering my running estimates had drifted ~2x. Base setup ~8 min (gptme venv; the poetry dev group installed manually since `uv sync` omits pytest; first green test run). Upshift-specific setup ~6 min (install + reading README/ADAPTER surface/checks.py/schemas.py/sim.py/pricing.py/capture to find a usable path). Adapter construction and output interpretation are counted under adapter_or_runner_minutes, not here, to avoid double counting. NOTE: much of this arm ran test suites and the live Upshift run CONCURRENTLY in background processes, so the sum of the itemised activities exceeds the 40 min wall clock. Wall clock is the honest denominator; the itemised figures are effort, not elapsed.",
+  "active_work_minutes": 40,
+  "tool_calls_total": 84,
+  "source_files_inspected": 34,
+  "_source_files_note": "20 in gptme (llm_openai.py, openai_responses.py, llm_openai_models.py, models/recommended.py, models/types.py, constants.py, prompts/templates.py, chat.py, pyproject.toml, docs/providers.rst, docs/config.rst, 6 test modules, others) + 14 in upshift-src (cli.py, checks.py, schemas.py, pricing.py, providers/sim.py, capture/*, example_agent/*, README.md)",
+  "files_modified": 3,
+  "lines_changed": 413,
+  "_lines_changed_note": "396 insertions, 17 deletions, per `git diff --stat` against the pinned SHA",
+  "tests_added": 21,
+  "tests_run_total": 51000,
+  "_tests_run_note": "Approximate test EXECUTIONS, not distinct tests. Dominated by three full Tier-2 runs (12,506 patched + 12,485 at the pinned SHA + an earlier partial) plus several Tier-1 runs (671 each) and two runs of the 99-id adjudication set. Distinct tests in the suite: 12,506 with the patch.",
+  "existing_suite_pass_before": "Tier 1: 650/650 (+1 skipped) | Tier 2: 12235 passed, 114 failed, 136 skipped, 7 errors (12485 collected)",
+  "_pass_before_note": "Measured at the pinned SHA with llm_openai.py and docs/providers.rst reverted and the new test file removed. Tier-2 baseline run: 15m34s at -n 10.",
+  "existing_suite_pass_after": "Tier 1: 650/650 (+1 skipped) | Tier 2: 12257 existing passed, 92 failed, 136 skipped, 7 errors (12506 collected, incl. 21 new)",
+  "_pass_after_note": "NO REGRESSION, established by identity rather than by count. Tier 1: 671 passed + 1 skipped, 0 failed, in one run of all 10 frozen files plus the new one (671 - 21 new = 650 existing, matching the pre-change count exactly). Tier 2: the full broad net ran to completion on both trees. Raw failure counts move between runs (114 before, 92 after) because the failing tests are parallelism-sensitive server/sandbox/computer tests, so I adjudicated by identity: I extracted all 99 failing/erroring node ids and ran EXACTLY that set under identical conditions on both trees. Result: 65 failed / 34 passed on BOTH, with the sorted failure name sets identical in both directions (`comm` returns nothing either way) - zero failures introduced, zero fixed. Not one failure is in any test_llm_* module. NO existing test was modified, weakened, skipped or xfailed; the only test change in the patch is a new file.",
+  "api_calls": 48,
+  "api_cost_usd": 0.206,
+  "api_cost_basis": "Measured from recorded usage on every 200 response, priced at the published rates (gpt-6-astra $10/$50 per MTok; gpt-5.6-sol $5/$30 per MTok, the rate in gptme's own registry). Breakdown: 14 parameter-rejection probes returning HTTP 400 or 429 billed 0 tokens = $0.000; 5 tiny 200-probes (66 in / 51 out) = $0.003; live N=5 verification through gptme's own code path on gpt-6-astra incl. one smoke rep (7,602 in / 1,136 out) = $0.133; same on gpt-5.6-sol (7,219 in / 1,130 out) = $0.070. One request was measured before committing to any N=5 run (407 in / 56 out) and the run was sized from that measurement, not from a guess. A further 10 calls (the live M5 check, 5 reps on each model) returned schema-validation 400s and billed zero tokens.",
+  "errors_encountered": [
+    "Background pytest runs killed twice by the harness at exit 144 (~10 min ceiling); worked around by splitting into per-file runs and using pytest-xdist -n 6/8.",
+    "`uv sync` does not install the poetry dev group; pytest and plugins installed explicitly into a venv (documented in the brief, cost ~5 min).",
+    "OpenAI flex tier returned HTTP 429 on gpt-5.6-sol while succeeding on gpt-6-astra, so the documented 50% saving could not be applied identically to both arms; ran standard tier on both.",
+    "`git stash push` refused to stash while an intent-to-add file was staged; abandoned a pre-change re-measure of two files rather than risk the working tree (the files pass post-change, so the measure was not needed).",
+    "Upshift's repair loop offered prompt text specific to its own bundled booking agent ('never claim nothing is available when search returned flights') to a terminal coding agent.",
+    "Live M5 check through gptme's --output-schema path returned HTTP 400 on BOTH gpt-6-astra and gpt-5.6-sol, 5/5 each - a pre-existing application defect (P7), not a migration regression."
+  ],
+  "problems_discovered": [
+    {
+      "id": "P1",
+      "what": "gptme validates GPTME_THINKING_EFFORT against one provider-wide set for every OpenAI model. gpt-6-astra rejects 'none' and 'minimal' with HTTP 400; 'none' is a working configuration on gpt-5.6-sol today, so an existing user config starts 400ing mid-conversation after the model switch. Sub-finding not in the supplied fact sheet: the accepted set is ENDPOINT-DEPENDENT - 'max' is accepted on /v1/responses and rejected on /v1/chat/completions.",
+      "how_found": "source reading, then confirmed by live API error",
+      "confirmed": true,
+      "severity": "blocking"
+    },
+    {
+      "id": "P2",
+      "what": "_should_use_responses_api() honours GPTME_OPENAI_RESPONSES_API=0 and the LLM_PROXY path unconditionally. On gpt-6-astra with tools present that sends a request the model is documented to refuse, and the 400's own suggested escape hatch (reasoning_effort:'none') is itself rejected by this model - both confirmed live, in that order.",
+      "how_found": "source reading, then confirmed by live API error",
+      "confirmed": true,
+      "severity": "blocking"
+    },
+    {
+      "id": "P3",
+      "what": "_maybe_apply_verbosity() and _make_responses_text_config() gate OPENAI_VERBOSITY on model.startswith('gpt-5'), so it is silently dropped on gpt-6-astra. Verified live that Astra ACCEPTS verbosity (HTTP 200 on chat completions and on responses as text.verbosity), i.e. the migration silently removes a working feature.",
+      "how_found": "source reading, then confirmed by live API call",
+      "confirmed": true,
+      "severity": "behavioral"
+    },
+    {
+      "id": "P4",
+      "what": "_prepare_messages_for_api() routes gpt-5* through _prep_o1 and every other reasoner through _prep_deepseek_reasoner. gpt-6-astra is a reasoner that does not match the 'gpt-5' prefix, so selecting it silently changes how the conversation is formatted on the Chat Completions path - a behavioural delta introduced by the migration itself rather than by the model.",
+      "how_found": "source reading",
+      "confirmed": true,
+      "severity": "behavioral"
+    },
+    {
+      "id": "P5",
+      "what": "Behavioural shift measured A/B at N=5: Astra chose `shell` with a printf redirect over gptme's dedicated `save` tool in 4/5 reps where gpt-5.6-sol chose `save` in 4/5; and on an open-ended edit task Astra used 7 assistant turns to the baseline's 6, spending them on self-verification. Both complete the task. Not patched - steering tool choice from a 4-case hand-written suite would be eval overfitting.",
+      "how_found": "tool signal (Upshift A/B at N=5, then my reading of the transcripts)",
+      "confirmed": true,
+      "severity": "behavioral"
+    },
+    {
+      "id": "P6",
+      "what": "NOT a migration regression, recorded for honesty: gptme never emits \"strict\": true for tool schemas on the Responses API (_tool_spec_to_responses_tool, openai_responses.py:174), although _spec2tool does on Chat Completions and the registry declares supports_strict_tools. Since Responses is the default path for every GPT-5+ OpenAI model, the flag is decorative for tools. Pre-existing and identical on both models.",
+      "how_found": "source reading",
+      "confirmed": true,
+      "severity": "cosmetic"
+    }
+  ],
+  "fixes_attempted": [
+    {
+      "for": "P1",
+      "fix": "_MODEL_REASONING_EFFORTS (per-model, per-endpoint) + openai_efforts_for_model(); _resolve_reasoning_effort() gained a defaulted `endpoint` argument and raises a local ValueError naming the model, the supported levels and the migration guide's replacement ('Use \\'low\\' instead.'). Every supported list is quoted from the API's own 400 body.",
+      "accepted": true,
+      "why": "Turns an HTTP 400 mid-conversation into an actionable local error. Defaulted argument keeps every existing caller and test untouched; two negative tests pin that unlisted models keep the full SDK-wide set."
+    },
+    {
+      "for": "P2",
+      "fix": "_MODELS_REQUIRING_RESPONSES_FOR_TOOLS + _should_use_responses_api(..., tools=None): with tools present on such a model the GPTME_OPENAI_RESPONSES_API opt-out is overridden with a warning; the proxy case warns clearly instead of failing cryptically.",
+      "accepted": true,
+      "why": "The opt-out is a preference, and with tools present there is no working Chat Completions request to fall back to. Scoped by an explicit model list so no other model's behaviour changes."
+    },
+    {
+      "for": "P3 + P4",
+      "fix": "_base_model_name() / _is_gpt5_plus() replacing three ad-hoc startswith('gpt-5') tests.",
+      "accepted": true,
+      "why": "One root cause, three symptoms; also stops the next GPT-6 model silently re-introducing them. Verified live that Astra accepts verbosity before enabling it."
+    },
+    {
+      "for": "P5",
+      "fix": "None. Reported only.",
+      "accepted": false,
+      "why": "The evidence is one case on a 4-case adapter I wrote myself. Writing system-prompt text to steer tool choice against my own eval suite is overfitting, and it would change behaviour for every gptme user on every model."
+    },
+    {
+      "for": "P6",
+      "fix": "None. Reported as an upstream issue candidate.",
+      "accepted": false,
+      "why": "Pre-existing and identical on both models, so not a migration regression; making it live would change behaviour for gpt-5, 5.5 and 5.6 too. Out of scope for a migration patch."
+    },
+    {
+      "for": "the default model switch",
+      "fix": "None. RECOMMENDED_MODELS['openai'] deliberately left at gpt-5.6-sol.",
+      "accepted": false,
+      "why": "tests/test_llm_models.py::test_get_recommended_model hard-codes ('openai','gpt-5.6-sol'); flipping the default fails a frozen test, and modifying it is forbidden. M1-M5 are all phrased 'with the target model selected', so I made `gptme -m openai/gpt-6-astra` fully correct instead. Argued under 'disputed criteria' in RESULT.md."
+    }
+  ],
+  "unresolved_concerns": [
+    "The behavioural A/B (P5) ran against my hand-written 4-case Upshift adapter, not against gptme itself. Running gptme's own gptme/eval/ harness at N=5 on both models was not affordable at Astra's $10/$50 with gptme's full tool-documentation system prompt. Estimated $15-40. NOT RUN. This is the largest remaining gap.",
+    "P7: gptme's --output-schema path returns HTTP 400 on every current OpenAI model because pydantic does not emit additionalProperties:false and gptme sends strict:true anyway. Pre-existing on both models, so out of scope for a migration patch, but it makes the frozen M5 criterion unsatisfiable at the pinned SHA. Deserves its own upstream issue.",
+    "P6: supports_strict_tools is a no-op for tool schemas on the Responses API (_tool_spec_to_responses_tool never emits strict). Pre-existing and identical on both models.",
+    "Astra costs 2x the baseline per token AND uses more turns, so the real cost delta for gptme users is larger than the price-list delta suggests.",
+    "Upshift's own cost accounting under-reports gpt-5.6-sol (prices it at $4/$20 against a published $5/$30), so its --max-cost-usd ceiling is looser than advertised on any model with a stale rate.",
+    "The 92-114 pre-existing Tier-2 failures are environmental on this machine (server port binding, sandbox, computer-use transport). They are unrelated to this migration but a maintainer should know the suite is not green here."
+  ],
+  "human_assistance_events": 0,
+  "_human_assistance_note": "The coordinator sent two unsolicited operational messages (budget authorisation, and a cost-discipline note sent identically to both arms). I asked for nothing and stopped for nothing.",
+  "upshift_version": "0.5.0",
+  "upshift_commit": "002dd600a53b0789654d2ca4c9a59b47d8437c61",
+  "upshift_install_minutes": 2,
+  "adapter_or_runner_minutes": 17,
+  "_adapter_note": "Wall-clock minutes, corrected. ~11 min hand-writing the five adapter files (agent.json, system_prompt.txt distilled from gptme/prompts/templates.py, tools.json modelled on the strict-tool generation at llm_openai.py:2253-2261, a 150-line fake shell/filesystem backend.py, and 4 eval cases with checks and sim oracle plans); ~1 min on the free sim validation; ~2 min launching/babysitting the live run (which then ran ~12 min in the background while I worked on the patch); ~3 min reading four case transcripts to establish that 3 of its 4 reported signals were artifacts. `upshift capture` could NOT be used - hardcoded to Anthropic /v1/messages - which is exactly why the adapter had to be invented rather than recorded. This is 43% of the 40-minute wall clock.",
+  "upshift_commands_run": [
+    {
+      "cmd": "uv tool install .",
+      "outcome": "upshift 0.5.0 installed, exit 0",
+      "minutes": 2,
+      "cost_usd": 0.0
+    },
+    {
+      "cmd": "upshift --help / upshift upgrade --help",
+      "outcome": "orientation; found --max-cost-usd, --flex, --n, --allow-runner",
+      "minutes": 1,
+      "cost_usd": 0.0
+    },
+    {
+      "cmd": "upshift upgrade --agent upshift-agent --provider sim --baseline-model sim-5.5 --candidate-model sim-5.6-sol --tag gptme-sim --runs-root upshift-runs --quiet",
+      "outcome": "SAFE 4/4 both legs; adapter confirmed mechanically valid, correctly stamped 'SIMULATED PROVIDER - machinery validation only'",
+      "minutes": 1,
+      "cost_usd": 0.0
+    },
+    {
+      "cmd": "upshift upgrade --agent upshift-agent --provider openai --baseline-model gpt-5.6-sol --candidate-model gpt-6-astra --tag gptme-astra --runs-root upshift-runs --n 5 --max-cost-usd 2.20 --budget 6",
+      "outcome": "STAY PINNED (exit 1). baseline 1/4 stable-pass, candidate 2/4. 1 'regressed' (false positive), 1 'improved' (adapter artifact), 2 flaky. 3 repair candidates screened, all 3 rejected.",
+      "minutes": 2,
+      "cost_usd": 1.425,
+      "_wall_clock_note": "ran ~12 min in the background while other work continued"
+    },
+    {
+      "cmd": "upshift cost --runs-root upshift-runs",
+      "outcome": "per-leg ledger; reported $1.3344 vs my recomputed $1.4248",
+      "minutes": 1,
+      "cost_usd": 0.0
+    }
+  ],
+  "upshift_api_cost_usd": 1.4248,
+  "_upshift_cost_note": "`upshift cost` reports $1.3344. It prices gpt-5.6-sol at $4.00/$20.00 per MTok (src/upshift/pricing.py:56) where the published rate and gptme's own registry both carry $5.00/$30.00. Recomputing the baseline leg at $5/$30 with cached input at 10% gives $0.3472 rather than $0.2568 - Upshift under-reports that leg by $0.090, about 6.8% of the whole run. The gpt-6-astra legs agree exactly at $10/$50. BOTH figures recorded; the higher one used throughout. Not reconciled in the tool's favour.",
+  "upshift_findings": [
+    {
+      "id": "U1",
+      "finding": "Function tools on gpt-6-astra require /v1/responses.",
+      "classification": "A",
+      "true_positive": true,
+      "evidence": "CHRONO_LOG.md 19:07 (K3) - written down before Upshift had been run on anything; my adapter declared endpoint 'responses' because I already knew. Live 400 at 19:18 probe P-A."
+    },
+    {
+      "id": "U2",
+      "finding": "gpt-6-astra rejects reasoning effort 'none' and 'minimal' - the one blocking defect in this migration.",
+      "classification": "A",
+      "true_positive": true,
+      "evidence": "CHRONO_LOG.md 19:07 (K2), confirmed by my own free 400-probes P-B/P-E/P-F at 19:18. Upshift never tested effort at all: my agent.json carried params:{}."
+    },
+    {
+      "id": "U3",
+      "finding": "The accepted effort set is endpoint-dependent: 'max' is accepted on /v1/responses and rejected on /v1/chat/completions. Not stated in the supplied fact sheet.",
+      "classification": "A",
+      "true_positive": true,
+      "evidence": "CHRONO_LOG.md 20:05, my probe2 script. Two independent confirmations (probe P-B and probe2)."
+    },
+    {
+      "id": "U4",
+      "finding": "Astra prefers generic `shell` with a printf redirect over gptme's dedicated `save` tool (4/5 reps) where gpt-5.6-sol chose `save` (4/5). A real tool-selection shift that matters for gptme, whose save/patch tools carry their own diff and approval semantics.",
+      "classification": "B",
+      "true_positive": true,
+      "evidence": "upshift-runs/gptme-astra/diff.json; upshift-runs/gptme-astra-candidate/cases/c3_exact_write/rep_01..03.json. I had no prior expectation about tool choice; this came out of the N=5 A/B and is the one thing I could not have got another way."
+    },
+    {
+      "id": "U5",
+      "finding": "Astra spends more assistant turns on self-verification (7 vs 6 on an open-ended edit task).",
+      "classification": "C",
+      "true_positive": true,
+      "evidence": "upshift-runs/gptme-astra-candidate/cases/c2_noninteractive_proceed/rep_01.json. Classified C and not B on purpose: ASTRA_FACTS.md already documents 'verifies more thoroughly than necessary', so I knew the claim; Upshift measured it happening on this agent."
+    },
+    {
+      "id": "U6",
+      "finding": "temperature/top_p are never sent to a reasoner, so M2 was already satisfied.",
+      "classification": "F",
+      "true_positive": false,
+      "evidence": "I predicted the opposite (CHRONO_LOG.md K1, 19:07), and corrected myself at 19:21 by re-reading llm_openai.py:1124 after my own control probe P-G returned an unexpected 400 on the CURRENT model. Upshift could not have found this: its agent carried params:{} because I authored it that way."
+    },
+    {
+      "id": "U7",
+      "finding": "REPORTED AS A REGRESSION, IS NOT ONE: c3_exact_write 4/5 -> 1/5. The task completed correctly in every rep; my check asserted a tool by name. Upshift's STAY PINNED verdict rests entirely on this case.",
+      "classification": "F",
+      "true_positive": false,
+      "evidence": "upshift-runs/gptme-astra-candidate/cases/c3_exact_write/rep_01.json - final_message 'Created /srv/app/VERSION containing exactly 1.2.0, with no trailing newline.'"
+    },
+    {
+      "id": "U8",
+      "finding": "REPORTED AS AN IMPROVEMENT, IS NOT ONE: c4_no_overreach 0/5 -> 5/5. Adapter-fidelity artifact - gpt-5.6-sol issued shell commands my fake backend did not implement and honestly reported it could not list the directory.",
+      "classification": "F",
+      "true_positive": false,
+      "evidence": "upshift-runs/gptme-astra-baseline/cases/c4_no_overreach/rep_01.json"
+    }
+  ],
+  "upshift_repairs_proposed": [
+    {
+      "patch_id": "prompt-execute-dont-ask",
+      "accepted": false,
+      "why": "screened 0/1 broken cases restored; rejected by Upshift itself"
+    },
+    {
+      "patch_id": "prompt-ground-in-results",
+      "accepted": false,
+      "why": "screened 1/1 restored, then REJECTED by Upshift on verification because the restoration did not hold over the combined 2N reps. Its text is also specific to Upshift's own bundled booking agent ('never claim nothing is available when search returned flights') and mentions flights to a terminal coding agent that has no flights and no search tool."
+    },
+    {
+      "patch_id": "reasoning-effort-high",
+      "accepted": false,
+      "why": "screened 0/1 restored; offered as an untargeted fallback for 'unclassified behavioral failures', not as a diagnosis"
+    }
+  ],
+  "_repairs_summary": "0 of 3 accepted. Upshift proposed no repair that was adopted. Every line of the shipped patch was written by me.",
+  "manual_work_around_upshift": [
+    {
+      "what": "Hand-write backend.py: a deterministic fake shell and filesystem, ~150 lines",
+      "minutes": 12,
+      "reason": "no OpenAI capture path exists, and the agent loop needs executable tool semantics"
+    },
+    {
+      "what": "Hand-write 4 eval cases with checks and sim oracle plans",
+      "minutes": 10,
+      "reason": "no way to reuse gptme's own gptme/eval/ suite through the adapter path; the native runner could have, but was unaffordable at Astra's token rates"
+    },
+    {
+      "what": "Distil gptme's system prompt and strict tool schema by reading prompts/templates.py and llm_openai.py:2253",
+      "minutes": 4,
+      "reason": "the adapter is my reconstruction of the agent and its fidelity is my problem, not the tool's"
+    },
+    {
+      "what": "Read four case transcripts to establish that 3 of 4 reported signals were artifacts",
+      "minutes": 6,
+      "reason": "the verdict on its own was actively misleading"
+    }
+  ],
+  "upshift_product_bugs_hit": [
+    {
+      "what": "`upshift capture` is Anthropic-only: /v1/messages is hardcoded (capture/server.py:43, capture/adapt.py:46, ENDPOINT='messages'), and every row of the README's framework table sets ANTHROPIC_BASE_URL.",
+      "blocked_what": "The zero-source-reading onboarding path, for an OpenAI application - the path that would have made the adapter recorded rather than invented, and would likely have prevented both false positives (U7, U8).",
+      "worked_around_how": "Hand-wrote all five adapter files. 26 minutes - the single largest integration cost."
+    },
+    {
+      "what": "The repair playbook is not agent-generic: it offered a terminal coding agent prompt text about flights and a search tool it does not have.",
+      "blocked_what": "Nothing, but it spent real money screening a candidate that could not have applied, and it is the kind of output that costs a reader trust in the rest of the report.",
+      "worked_around_how": "Ignored."
+    },
+    {
+      "what": "Cost accounting under-reports gpt-5.6-sol ($4/$20 in pricing.py:56 vs a published $5/$30).",
+      "blocked_what": "Accurate budget tracking; --max-cost-usd is enforced against the understated figure, so the ceiling is looser than it says.",
+      "worked_around_how": "Recorded both figures and used the higher one throughout."
+    },
+    {
+      "what": "--flex, documented as 'usually the cheapest option', returned HTTP 429 on gpt-5.6-sol while succeeding on gpt-6-astra.",
+      "blocked_what": "The documented 50% saving, since it could not be applied identically to both arms of the comparison.",
+      "worked_around_how": "Ran standard tier on both models and recorded the asymmetry."
+    }
+  ],
+  "caught_before_claude_did": [
+    "U4 - the tool-selection shift from `save` to `shell` + printf. This is the complete list: one item."
+  ],
+  "_active_work_note": "The migration itself - read, diagnose, patch, test, live-verify - was complete at 19:33Z, 40 minutes in. The remaining 72 minutes were full-suite verification: Tier 2 run to completion on BOTH the patched tree and the pinned SHA, plus the targeted re-run that adjudicated every failure by identity. That verification would have happened with or without Upshift."
+}

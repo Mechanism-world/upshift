@@ -76,3 +76,29 @@ migration may therefore leave M5 unexercised.
 EXERCISED counts neither for nor against a candidate. Committed by the evaluator while
 blind, before it could know whom it helps. This is the one entry here that does alter an
 acceptance criterion, and it is recorded as such.
+
+## E7 — 2026-09-14, post-unblinding. A real defect in the protocol's scope, symmetric.
+PROTOCOL §5 forbids modifying ANY pre-existing test, and the evaluator's W1-W3 make such a
+modification an automatic FAILURE. But `tests/test_llm_models.py:35` and `:243` hardcode
+`gpt-5.6-sol` as `RECOMMENDED_MODELS["openai"]`. Changing the application's DEFAULT model to
+Astra is therefore impossible without editing a frozen test.
+
+Consequence: "migration" in this experiment means **"make Astra correct when it is
+selected"**, not **"make Astra the default"**. That is a narrower thing than the word
+usually implies, and I did not intend it.
+
+**Effect on the comparison: none.** Both arms hit the constraint independently, both
+correctly refused to edit the test, and both recorded it under disputed criteria rather than
+quietly weakening the suite. It is symmetric and therefore does not bias the result — but it
+is a flaw in my protocol, not in either arm's work, and updating a test to match a
+deliberate behaviour change would normally be a legitimate migration edit rather than
+"weakening". A future protocol should distinguish the two.
+
+## E8 — 2026-09-14. An upstream bug neither arm was asked to look for.
+The evaluator found, while establishing the pinned-SHA baseline, that on the **current**
+model `gpt-5.6-sol` the unpatched application already sends `minimal`, which the API rejects
+with HTTP 400. This is a live defect in gptme today, independent of the Astra migration.
+
+Both arms' patches have the right shape to fix it; neither added the entry, because neither
+was looking at the current model's effort set. Worth an upstream issue to gptme.
+Credited to the evaluator. Not creditable to either arm, and not counted in the comparison.

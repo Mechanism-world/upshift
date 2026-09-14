@@ -1,0 +1,123 @@
+{
+  "arm": "A",
+  "started_utc": "2026-09-14T18:52:49Z",
+  "finished_utc": "2026-09-14T20:16:18Z",
+  "elapsed_minutes_total": 83,
+  "setup_minutes": 9,
+  "_setup_minutes_note": "uv sync (~3 min), installing the Poetry-group dev deps uv does not install (pytest + 8 plugins, ~2 min), ruff/mypy (~1 min), and getting the frozen suite to actually run once (~3 min). Later I also built a second clean env in a git worktree at the pinned SHA to measure an uncontaminated baseline; that ~4 min is counted in active_work_minutes, not here.",
+  "active_work_minutes": 74,
+  "tool_calls_total": 96,
+  "source_files_inspected": 28,
+  "files_modified": 3,
+  "lines_changed": 534,
+  "_lines_changed_note": "git diff --stat vs the pinned SHA: 506 insertions + 28 deletions across gptme/llm/llm_openai.py (+233/-28), gptme/prompts/templates.py (+9), tests/test_llm_openai_gpt6.py (+292, new).",
+  "tests_added": 19,
+  "tests_run_total": 22797,
+  "existing_suite_pass_before": "10799/10854",
+  "existing_suite_pass_after": "10819/10874",
+  "api_calls": 0,
+  "api_cost_usd": 0.8,
+  "api_cost_basis": "Mixed, both measured rather than estimated. For the 17 non-interactive gptme sessions I used gptme's own end-of-session cost line, which it computes from the usage block returned by the API; gptme rounds it to the cent, so the total is accurate to roughly +/-0.01. For the 11 raw wire probes and the M5 checks I computed cost from the returned usage object at the published gpt-6-astra rate ($10/MTok input, $50/MTok output). Breakdown: wire probes $0.002; pilot calibration session $0.04; M4 baseline gpt-5.6-sol N=5 $0.13; M4/M1/M2 gpt-6-astra N=5 $0.17; M3 gpt-6-astra effort=none N=5 $0.20; M5 strict schema N=5 $0.012; M1/M2 re-run in the DEFAULT configuration (no GPTME_THINKING_EFFORT) gpt-6-astra N=5 $0.19; patched RESPONSES_API=0 demo $0.05. M1 and M2 were each measured twice at N=5 - once under effort=none and once in the shipped default configuration - because evidence gathered only under a non-default env var is weaker evidence about the default. The two unpatched failure demos and all 400-returning probes billed $0.00 (rejected requests are not billed), which is why the strongest before/after evidence in the report was free. Authorized cap $1.75.",
+  "errors_encountered": [
+    "First Tier-2 baseline run was started before I began editing and finished after, so it measured neither tree. Discarded as contaminated and redone against a git worktree pinned at 3411afec5. Cost ~20 min of wall clock.",
+    "Second Tier-2 attempt ran the pristine and patched suites concurrently at -n 8 each; both died around 28-31% with xdist worker loss (OSError: cannot send (already closed?) from pytest_sessionfinish across many workers). gptme's suite spawns and kills real processes (shell-background, tmux, subagent), so two full suites on one machine is not a safe configuration. Re-run sequentially at -n 16, the project's own Makefile setting. Cost ~15 min.",
+    "First system-prompt size measurement picked up the machine's real gptme skills directory and reported 28,769 tokens/call (~$0.29). At N=5 across three checks that would have been ~$10 and blown the $1.75 cap ~6x. Fixed by isolating HOME/XDG dirs; prompt dropped to 860 tokens.",
+    "First version of the family-predicate fix widened _get_temperature to the whole reasoning era, which would have silently changed o1/o3/o4 from the caller's temperature to 1.0. Caught by review before running; split into two predicates.",
+    "First M5 check failed 5/5 with HTTP 400 and I briefly took it for a migration regression; running the identical schema against gpt-5.6-sol and gpt-4o showed the same 400, i.e. pre-existing and model-independent."
+  ],
+  "problems_discovered": [
+    {
+      "id": "P1",
+      "what": "GPTME_THINKING_EFFORT=none (and minimal) is accepted by the app's validation for any OpenAI reasoning model, but gpt-6-astra rejects both with HTTP 400 ('Supported values are: low, medium, high, xhigh, max'). Worse, Astra's OWN 400 for sending tools to /v1/chat/completions recommends reasoning_effort:'none' as the fix, so following the error text produces a second 400. Unpatched, a session configured this way fails every request.",
+      "how_found": "docs -> source reading -> confirmed with a live API error",
+      "confirmed": true,
+      "severity": "blocking"
+    },
+    {
+      "id": "P2",
+      "what": "_should_use_responses_api() returns False when GPTME_OPENAI_RESPONSES_API is disabled (a documented debugging switch) or when an OpenAI-compatible proxy/base_url is configured. On gpt-6-astra with tools in the request, chat completions cannot serve function calls at all, so that path is a guaranteed 400 with no fallback to degrade to.",
+      "how_found": "source reading, then reproduced end to end as a live API error on the pinned checkout",
+      "confirmed": true,
+      "severity": "blocking"
+    },
+    {
+      "id": "P3",
+      "what": "Four model-family checks were spelled '\"gpt-5\" in model' or 'model.startswith(\"gpt-5\")' and therefore stop matching at GPT-6: _get_temperature, _get_top_p, the verbosity gate, and the o1-style message-prep branch in _prepare_messages_for_api. Effects on astra: it silently took the deepseek-reasoner message-prep branch (different conversation shape, merges consecutive same-role messages) instead of the branch gpt-5.6-sol takes; OPENAI_VERBOSITY was silently ignored; and on any path where supports_reasoning is not set the sampling helpers would have sent gptme's defaults temperature=0 / top_p=0.1, both of which I confirmed live are hard 400s on this model.",
+      "how_found": "source reading; the rejected parameter values confirmed live",
+      "confirmed": true,
+      "severity": "blocking"
+    },
+    {
+      "id": "P4",
+      "what": "GPT-6 Astra is documented as 'more likely to ask the user a question when additional input could materially change the result'. gptme's non-interactive system prompt forbids asking permission but never forbids asking a clarifying question, and M4 requires a non-interactive run not to terminate by asking one.",
+      "how_found": "docs -> source reading",
+      "confirmed": false,
+      "severity": "behavioral"
+    },
+    {
+      "id": "P5",
+      "what": "PRE-EXISTING, NOT A MIGRATION REGRESSION. _make_response_format and _make_responses_text_config set strict:True while passing output_schema.model_json_schema() through verbatim; pydantic omits additionalProperties:false unless the model sets extra='forbid', and strict mode requires it. Identical HTTP 400 on gpt-4o, gpt-5.6-sol and gpt-6-astra. Also: strict tool schemas are never emitted on the Responses API path at all (_tool_spec_to_responses_tool has no strict key), so supports_strict_tools=True is inert for every model that uses Responses, including the current one. Reported, deliberately not fixed - two frozen tests pin the verbatim pass-through.",
+      "how_found": "running tests (building the M5 acceptance check), then confirmed live on three models",
+      "confirmed": true,
+      "severity": "behavioral"
+    },
+    {
+      "id": "P6",
+      "what": "Astra's published max input (922,000) is below its context window (1,050,000), and gptme uses ModelMeta.context as an input budget: autocompact triggers at 0.9*context = 945,000, above the API's input ceiling. Flagged, not fixed - the correct fix is a separate max_input field plumbed through the autocompact thresholds, and verifying the failure needs a ~1M-token request.",
+      "how_found": "docs -> source reading",
+      "confirmed": false,
+      "severity": "behavioral"
+    }
+  ],
+  "fixes_attempted": [
+    {
+      "for": "P1",
+      "fix": "Added a per-model exception table (_OPENAI_MODEL_UNSUPPORTED_EFFORTS) plus a new valid_reasoning_efforts(provider, model_meta) helper that reports what a model actually accepts instead of the raw SDK literal. _resolve_reasoning_effort now substitutes 'low' for none/minimal on an affected model, once, with a warning naming the accepted levels.",
+      "accepted": true,
+      "why": "Substitute rather than raise because 'start with low' is OpenAI's own published migration guidance, and an operator with a global GPTME_THINKING_EFFORT=none should get a working agent plus a warning rather than a hard stop on every request. The substitution is strictly per-model: verified live that the same process sends effort=low to gpt-6-astra and effort=none to gpt-5-mini (the summary model) in one session. 5/5 live passes with effort=none set."
+    },
+    {
+      "for": "P2",
+      "fix": "_should_use_responses_api now takes the request's tools as an optional 4th argument. For a model in _MODELS_REQUIRING_RESPONSES_FOR_TOOLS, a tool-carrying request ignores the env override and stays on /v1/responses with a one-time warning; a tool-less request still honours the override (chat completions without tools is legal on Astra - verified live, 200). Under a proxy the Responses format cannot be forced, so it emits a specific diagnostic naming the cause instead of letting an opaque 400 surface.",
+      "accepted": true,
+      "why": "Verified end to end: with GPTME_OPENAI_RESPONSES_API=0 the pinned checkout dies with the documented 400 and exit 1; the patched tree warns, routes to /responses, completes the task and exits 0. The optional-4th-arg shape keeps all existing 3-positional call sites and the tests that monkeypatch it with 'lambda *a:' working."
+    },
+    {
+      "for": "P3",
+      "fix": "One family predicate _is_gpt5_or_later() ('^gpt-(?:[5-9]|\\d\\d)'), reusing the regex the same file already used correctly for max_completion_tokens, applied to all four sites. The o-series half is kept as a separate predicate so o1/o3/o4 behaviour is byte-identical. _get_temperature may now return None (callers omit the key) for models that removed the parameter rather than pinning it, matching the shape _get_top_p already had.",
+      "accepted": true,
+      "why": "The max_completion_tokens site was already written family-wise and therefore had no GPT-6 bug, which is what identified the family regex as the intended spelling rather than my invention. The verbosity widening was verified live BEFORE shipping (verbosity returns 200 on astra on both endpoints); had it 400'd I would have left that gate at gpt-5. Live: temperature and top_p appear 0 times in a full SDK debug log of a complete astra session."
+    },
+    {
+      "for": "P4",
+      "fix": "One sentence added to the non-interactive branch of prompt_gptme() only: do not ask a clarifying question, choose the most reasonable interpretation, state the assumption in one line, continue.",
+      "accepted": true,
+      "why": "ACCEPTED BUT UNPROVEN. It is a strengthening of the contract already stated two lines above it ('the user is not available to provide feedback') and interactive mode is untouched. I did NOT observe this failure mode in any of the 15 live Astra sessions - the task I could afford at N=5 is unambiguous and does not exercise the trigger. Prophylactic and docs-driven; I do not claim it as a demonstrated fix."
+    },
+    {
+      "for": "P5",
+      "fix": "None. Reported only.",
+      "accepted": false,
+      "why": "The one-line fix (recursively inject additionalProperties:false into object schemas when strict is set) breaks two frozen tests that assert the schema reaches the API as model_json_schema() verbatim, and the protocol forbids weakening a frozen test. There is also a defensible reading in which those tests are right and the responsibility is the schema author's (extra='forbid'). M5 was therefore scored with a well-formed strict schema and passes 5/5 on astra, so the migration is not what breaks it either way."
+    },
+    {
+      "for": "P6",
+      "fix": "None. Flagged in RESULT.md under unresolved concerns.",
+      "accepted": false,
+      "why": "ModelMeta.context is documented and used as the context window (the token display counts input+output against it); silently redefining it to mean max input is a conflation that bites later. The correct fix is a separate field plumbed through the autocompact thresholds - more surface area than a migration should take on unannounced - and confirming the failure would need a ~1M-token request, far outside the $1.75 cap."
+    }
+  ],
+  "unresolved_concerns": [
+    "The default model was NOT flipped. tests/test_llm_models.py:35 and :243 hardcode 'gpt-5.6-sol' as RECOMMENDED_MODELS['openai'], so setting it to gpt-6-astra - the one-line change that 'migrate the application' means in the ordinary sense - cannot be done without editing a frozen test. Recorded under disputed criteria; the exact three lines required are listed in RESULT.md 8.1. M1-M5 are all phrased 'with the target model selected', which this patch satisfies.",
+    "P4's prompt fix is unverified against the behaviour it targets; detecting Astra's documented question-asking drift needs deliberately ambiguous eval tasks at N>=5 on both models.",
+    "max input 922,000 < context 1,050,000 and gptme compacts at 0.9*context = 945,000 (P6).",
+    "Strict tool schemas are inert on the Responses API path for every model, including the current one (P5).",
+    "M4 passing 5/5 on one unambiguous file-writing task shows the tool loop closes; it says nothing about the harder documented behavioural drifts (output formatting, over-verification, reduced delegation). A real production migration would run gptme's own gptme-eval suite across both models, which is far beyond this budget.",
+    "openai-subscription/gpt-6-astra (the Codex/ChatGPT-subscription provider, a separate module) was scoped out and is unaudited and untested.",
+    "Both Tier-2 measurements were run with -n 16 (xdist), matching the project's own Makefile, rather than serially, and sequentially rather than concurrently (concurrent runs killed each other's workers). Parallelism can move flaky tests; both arms of the before/after comparison used identical flags on identical hardware."
+  ],
+  "human_assistance_events": 0,
+  "_human_assistance_note": "None. The coordinator sent one unprompted mid-task message authorizing a $1.75 live budget (superseding the $0.00 instruction); I did not request it and did not stop to ask for anything.",
+  "_existing_suite_note": "Tier 2 = `uv run pytest tests/ -m \"not slow and not requires_api and not integration\"` at -n 16. Ratios are passed/(passed+failed); skipped excluded (200 before, 199 after). Before: 55 failed, 10799 passed, 200 skipped (pinned SHA in a separate git worktree). After: 55 failed, 10819 passed, 199 skipped. The +19 collected is exactly the new test file; the +20th pass is a test that was conditionally skipped in the baseline run and ran in the patched run, which I could not identify without another 25-minute run with -rs. The set of FAILING tests is byte-identical before and after (sorted FAILED lists diffed, no output). All 55 are pre-existing and environmental on this macOS host: 20 systemd unit tests, 10 X11/xdotool, 6 Docker-daemon-absent, 5 container-dependent evals, 1 prompt-size test inflated to 33,634 tokens by the host's real gptme skills directory, 13 others in the same families.",
+  "_tests_run_note": "11,054 (pinned-SHA Tier 2) + 11,073 (patched Tier 2) + 670 (Tier 1 incl. the new file). Excludes two discarded Tier-2 attempts (one contaminated, one killed by xdist worker loss) and several targeted re-runs of the new file during development."
+}
