@@ -1,5 +1,20 @@
 # Changelog
 
+## archive-2026-09 — development paused
+
+Mechanism/Upshift is archived. No further releases; issues and pull requests are not
+triaged. The last functional release is **v0.5.0**; the `archive-2026-09` tag marks the
+final state of the tree, which adds the controlled-A/B experiment record and the
+verify-patch run evidence on top of it.
+
+- README carries the pause notice, the strongest result (36/38 regressed, 32 repaired,
+  4 remained broken, verdict `STAY PINNED`), the three controlled A/B studies that did not
+  support the detection wedge, and a guide to the pieces worth reusing.
+- `experiment/astra-gptme-ab` holds the frozen protocol, the pre-registration, the blinding
+  script and the results for A/B #3 (gptme -> gpt-6-astra), committed in that order and
+  before any result existed.
+- Everything remains MIT-licensed, runs locally, and holds no credentials.
+
 ## Unreleased
 
 - **`reasoning-effort-none` is no longer proposed for a model documented as refusing it.**

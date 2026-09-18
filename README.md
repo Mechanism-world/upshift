@@ -11,6 +11,28 @@
   <img src="https://img.shields.io/badge/runs-on%20your%20machine-64748b" alt="runs locally">
 </p>
 
+> ## Paused — archived 2026-09
+>
+> **Mechanism/Upshift was an experiment in detecting and repairing AI-agent regressions
+> across model upgrades. Development is paused while I pursue a new research direction.**
+>
+> The repository stays up as a technical artifact: the code is MIT-licensed and complete,
+> and every run record behind every number below is committed here. Nothing is being
+> maintained — issues and pull requests will not be triaged, and the CLI is pinned to
+> whatever the provider SDKs looked like in September 2026.
+>
+> **The strongest result.** On the real `gpt-5.5` → `gpt-5.6-sol` upgrade, a 38-case
+> booking agent regressed on **36 of 38** cases. Three stacked, full-suite-verified
+> repairs restored **32**; **4** remained broken. The verdict was `STAY PINNED` — the bar
+> was every regression repaired, and 88.9% is not every.
+> [Full accounting.](runs/real-56sol/REPORT.md)
+>
+> **What the evidence did not support**, and why the work stopped: see
+> [What it has found so far](#what-it-has-found-so-far). Three controlled A/B studies
+> found that competent engineers close these migrations quickly and cheaply without the
+> tool. That finding is recorded here rather than buried, because it is the most useful
+> thing this repository knows.
+
 **upshift** takes a tool-calling agent, runs its eval cases on two model versions, tells you
 with a p-value what regressed, tries a small set of repairs, and either hands you a patch
 it has verified against your whole suite — or tells you to stay pinned, and why. It is a
@@ -200,6 +222,35 @@ migration. [Report](reports/fable-5-1-upgrade.md) · upstream issues
 [FACT#5](https://github.com/ruvnet/FACT/issues/5),
 [claude-cookbooks#854](https://github.com/anthropics/claude-cookbooks/issues/854).
 
+### What the controlled studies showed
+
+The runs above say the machinery works. They do not say it was worth running. Three
+controlled A/B studies asked that second question — a competent engineer with the official
+docs and the project's own tests (Arm A) against the same engineer plus upshift (Arm B),
+on a public repo neither arm had touched, with the protocol frozen and the patches judged
+by a blinded evaluator before any result existed.
+
+| Study | Target | Outcome |
+|---|---|---|
+| 2026-09-08 | [shell_gpt](https://github.com/TheR1D/shell_gpt) → GPT-6 Astra | Break was documented in the 400 itself; upshift supplied confidence, not diagnosis |
+| 2026-09-11 | [lovia](https://github.com/cymoo/lovia) → GPT-6 Astra | **Tie.** Both arms found the same four defects and both patches were accepted at 42/42 live results. Arm B cost +6 min and ≈$0.55 and produced no run, no verdict and no flag. |
+| 2026-09-14 | [gptme](https://github.com/gptme/gptme) → GPT-6 Astra | **Loss.** Arm A: 83 min, $0.80. Arm B: 112 min, $1.63. upshift took ~25 min and $1.42 for one finding that changed nothing, 0 accepted repairs, 2 false positives — and a `STAY PINNED` verdict that was **wrong**. Both arms passed blinded evaluation with zero regressions. |
+
+The conclusion the three agree on: **these breaks are loud, documented and cheap to find.**
+Engineers close them in about forty minutes for under a dollar without weakening a test.
+A detection-and-repair tool priced in engineer-minutes has to beat that, and this one did
+not. A confidence product that emits a confident wrong verdict has the worst failure mode
+available to it, and that happened once in three studies.
+
+What remains unfalsified is the thesis this tool was never pointed at: **silent behavioural
+drift** — the upgrade that throws no error, passes the type checker, and quietly answers
+differently. Every study above tested a loud break, because loud breaks are what the
+release notes advertise. That is the open question this repository leaves behind.
+
+Protocols, pre-registrations, sealed blinding mappings and both arms' patches are in the
+private ops repository; the frozen protocol and results are committed on
+[`experiment/astra-gptme-ab`](https://github.com/Mechanism-world/upshift/commits/experiment/astra-gptme-ab).
+
 ## How it fits together
 
 - **The adapter** (`agent.json`, system prompt, tool schemas, `backend.py`, `cases/`) — five
@@ -334,18 +385,35 @@ macOS note: uv's editable-install `.pth` file sometimes gets the `UF_HIDDEN` fla
 skips it; tests self-heal via `tests/conftest.py`, and for the CLI entry point run
 `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Community
+## Status
 
-- **The ask:** if you run a tool-calling agent, point `upshift adapt` at it and tell us what it
-  got wrong — [open an agent report](https://github.com/Mechanism-world/upshift/issues/new/choose).
-  Nothing reaches us that you do not put in the report yourself; `adapt` itself sends your
-  code only to the extraction model you configured.
-- Questions and ideas: [Discussions](https://github.com/Mechanism-world/upshift/discussions).
-- Bugs: [Issues](https://github.com/Mechanism-world/upshift/issues).
-- Project site: [mechanism.world](https://mechanism.world).
+This repository is **archived and unmaintained** as of September 2026. Issues,
+pull requests and discussions are not being triaged, and there will be no further
+releases. The final tagged version is the last state the work reached.
 
-upshift is built by [Mechanism.world](https://github.com/Mechanism-world) and released under
-the MIT License.
+You are welcome to fork it. The parts most likely to be useful on their own are the
+model-comparison harness, the N-rep runner and recorder, the statistical differ, the
+repair loop, and the eval/verification infrastructure — see
+[What to take from this repository](#what-to-take-from-this-repository) below.
+
+upshift was built by [Mechanism.world](https://github.com/Mechanism-world) and is released
+under the MIT License.
+
+## What to take from this repository
+
+Everything here runs locally, holds no credentials, and is MIT-licensed. If you are
+building something adjacent, these are the pieces that stand alone:
+
+| Piece | Where | What it does |
+|---|---|---|
+| **Runner + recorder** | `src/upshift/runner.py`, `recorder.py` | Runs every eval case N times against two model versions, resumable, with every input, output, param and version written to disk so any diff stays inspectable later |
+| **Statistical differ** | `src/upshift/differ.py`, `stats.py` | Fisher exact / Wilson intervals over pass rates — turns N reps into a claim about regression with a p-value, instead of a single-run anecdote |
+| **Repair loop** | `src/upshift/repair/` | Signature-driven candidate generation, then accept-only-if: restores broken cases AND breaks nothing AND survives full-suite re-verification |
+| **Provider layer** | `src/upshift/providers/` | OpenAI chat/completions, OpenAI responses, Anthropic messages behind one interface, with table-driven translation between the three request shapes |
+| **Capture** | `src/upshift/capture/` | A loopback forwarding recorder that reconstructs an agent from its wire traffic — credential and account-id redaction, SSE reassembly, per-turn param derivation |
+| **Verification scope** | `src/upshift/verify_patch.py`, `verdict.py` | The honest-verdict machinery: what a green result actually proves, what the patch cannot carry, and why a partial verification is never a passing one |
+
+The test suite (2,018 tests, `uv run pytest`) is the real documentation for all of it.
 
 ## Contributors
 
